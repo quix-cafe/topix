@@ -1,4 +1,4 @@
-export function StreamingProgressPanel({ progress, foundBits, processing, status, huntProgress }) {
+export function StreamingProgressPanel({ progress, foundBits, processing, status, huntProgress, onDismiss }) {
   // Show panel whenever ANY LLM process is active
   const hasActivity = progress || processing || huntProgress;
   if (!hasActivity) return null;
@@ -45,6 +45,19 @@ export function StreamingProgressPanel({ progress, foundBits, processing, status
         <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 11, color: "#666", fontWeight: 600 }}>
           {progress && <span>{progress.currentBit} bits found</span>}
           {huntProgress && <span>{huntProgress.found} matches found</span>}
+          {onDismiss && (
+            <button
+              onClick={onDismiss}
+              title="Dismiss"
+              style={{
+                background: "none", border: "1px solid #333", color: "#888",
+                borderRadius: 4, padding: "2px 8px", fontSize: 12, cursor: "pointer",
+                lineHeight: 1, fontWeight: 700,
+              }}
+            >
+              &times;
+            </button>
+          )}
         </div>
       </div>
 

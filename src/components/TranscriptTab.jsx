@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { MixPanel } from "./MixPanel";
 
 export function TranscriptTab({
@@ -27,6 +27,7 @@ export function TranscriptTab({
   onViewBitDetail,
   mixTranscriptInit,
   mixBitInit,
+  mixGapInit,
   onConsumeMixInit,
   approvedGaps,
   onApproveGap,
@@ -34,6 +35,18 @@ export function TranscriptTab({
   const [sortCol, setSortCol] = useState("file");
   const [sortDir, setSortDir] = useState("asc");
   const [searchFilter, setSearchFilter] = useState("");
+  const prevSelectedRef = useRef(null);
+
+  // Scroll to transcript row when selectedTranscript changes from external navigation
+  useEffect(() => {
+    if (selectedTranscript && selectedTranscript !== prevSelectedRef.current) {
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`transcript-row-${selectedTranscript.id}`);
+        if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
+    }
+    prevSelectedRef.current = selectedTranscript;
+  }, [selectedTranscript]);
 
   // Build set of all bit IDs that belong to any touchstone
   const touchstoneBitIds = useMemo(() => {
@@ -179,12 +192,22 @@ export function TranscriptTab({
         />
       </div>
 
-      <div style={{ marginBottom: 24, overflowX: "auto" }}>
+      <div style={{ marginBottom: 24 }}>
         <table style={{
           width: "100%",
+          tableLayout: "fixed",
           borderCollapse: "collapse",
           fontSize: "12px",
         }}>
+          <colgroup>
+            <col />
+            <col style={{ width: 60 }} />
+            <col style={{ width: 44 }} />
+            <col style={{ width: 44 }} />
+            <col style={{ width: 70 }} />
+            <col style={{ width: 80 }} />
+            <col style={{ width: 240 }} />
+          </colgroup>
           <thead>
             <tr style={{ borderBottom: "2px solid #1e1e30" }}>
               <th style={thStyle("file")} onClick={() => handleSort("file")}>File{sortArrow("file")}</th>
@@ -203,6 +226,7 @@ export function TranscriptTab({
               return (
                 <React.Fragment key={tr.id}>
                   <tr
+                    id={`transcript-row-${tr.id}`}
                     style={{
                       borderBottom: isSelected ? "none" : "1px solid #1a1a2a",
                       background: isSelected ? "#1a1a2a" : "transparent",
@@ -211,8 +235,9 @@ export function TranscriptTab({
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#161628"; }}
                     onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
                   >
-                    <td style={{ padding: "10px 6px", color: "#ddd", fontWeight: 500, cursor: "pointer" }}
+                    <td style={{ padding: "10px 6px", color: "#ddd", fontWeight: 500, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                       onClick={() => setSelectedTranscript(isSelected ? null : tr)}
+                      title={tr.name}
                     >
                       {tr.name}
                     </td>
@@ -309,6 +334,7 @@ export function TranscriptTab({
                           onViewBitDetail={onViewBitDetail}
                           initialTranscript={tr}
                           initialBitId={mixTranscriptInit?.id === tr.id ? mixBitInit : null}
+                          initialGap={mixTranscriptInit?.id === tr.id ? mixGapInit : null}
                           onConsumeInitialTranscript={onConsumeMixInit}
                           approvedGaps={approvedGaps}
                           onApproveGap={onApproveGap}

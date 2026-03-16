@@ -11,10 +11,11 @@ import { uid } from "../utils/ollama";
  * - Multiple selected bits highlight overlapping regions
  * - "View" toggles expanded full text without leaving the page
  */
-export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOverlap, onDeleteBit, onScrollBoundary, onGenerateTitle, onConfirmRename, onAddPhantomBit, onReParseGap, onViewBitDetail, initialTranscript, initialBitId, onConsumeInitialTranscript, approvedGaps, onApproveGap, onBack }) {
+export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOverlap, onDeleteBit, onScrollBoundary, onGenerateTitle, onConfirmRename, onAddPhantomBit, onReParseGap, onViewBitDetail, initialTranscript, initialBitId, initialGap, onConsumeInitialTranscript, approvedGaps, onApproveGap, onBack }) {
   const [selectedTranscript, setSelectedTranscript] = useState(null);
 
   const [pendingScrollBitId, setPendingScrollBitId] = useState(null);
+  const [pendingScrollGap, setPendingScrollGap] = useState(null);
 
   // Accept pre-selected transcript from parent (e.g. clicking from Upload tab)
   useEffect(() => {
@@ -27,6 +28,9 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
     } else {
       setSelectedIds(new Set());
       setExpandedIds(new Set());
+    }
+    if (initialGap) {
+      setPendingScrollGap(initialGap);
     }
     onConsumeInitialTranscript?.();
   }, [initialTranscript]);
@@ -117,6 +121,41 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
     }
     return analysis;
   }, [sortedBits]);
+
+  // Auto-expand and scroll to a gap when navigating from ValidationTab
+  useEffect(() => {
+    if (!pendingScrollGap || bitAnalysis.length === 0) return;
+    const { gapStart, gapEnd } = pendingScrollGap;
+    // Find matching gap key
+    let targetKey = null;
+    // Check leading gap
+    if (sortedBits.length > 0) {
+      const firstStart = sortedBits[0].textPosition?.startChar || 0;
+      if (gapStart === 0 && gapEnd === firstStart) targetKey = "leading";
+    }
+    // Check inter-bit gaps
+    if (!targetKey) {
+      for (const { gapInfo, index } of bitAnalysis) {
+        if (gapInfo && gapInfo.gapStart === gapStart && gapInfo.gapEnd === gapEnd) {
+          targetKey = `${index}`;
+          break;
+        }
+      }
+    }
+    // Check trailing gap
+    if (!targetKey && sortedBits.length > 0) {
+      const lastEnd = sortedBits[sortedBits.length - 1].textPosition?.endChar || 0;
+      if (gapStart === lastEnd) targetKey = "trailing";
+    }
+    if (targetKey) {
+      setExpandedGaps((prev) => new Set(prev).add(targetKey));
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`mix-gap-${targetKey}`);
+        if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    }
+    setPendingScrollGap(null);
+  }, [pendingScrollGap, bitAnalysis]);
 
   const selectedBits = sortedBits.filter((b) => selectedIds.has(b.id));
 
@@ -509,7 +548,7 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
         const isAdding = addingGaps.has(gapKey);
         const gapText = isGapExpanded ? selectedTranscript.text.substring(0, firstStart).trim() : "";
         return (
-          <div>
+          <div id={`mix-gap-${gapKey}`}>
             <div
               style={{ display: "flex", alignItems: "center", padding: "2px 12px", fontSize: 10, color: "#c4b5fd", cursor: "pointer" }}
               onClick={() => setExpandedGaps((prev) => { const next = new Set(prev); if (next.has(gapKey)) next.delete(gapKey); else next.add(gapKey); return next; })}
@@ -828,7 +867,7 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
                   : "";
 
                 return (
-                  <div>
+                  <div id={`mix-gap-${gapKey}`}>
                     <div
                       style={{
                         display: "flex", alignItems: "center", padding: "2px 12px",
@@ -945,7 +984,7 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
           const isAdding = addingGaps.has(gapKey);
           const gapText = isGapExpanded ? cleanText.substring(lastEnd).trim() : "";
           return (
-            <div>
+            <div id={`mix-gap-${gapKey}`}>
               <div
                 style={{ display: "flex", alignItems: "center", padding: "2px 12px", fontSize: 10, color: "#c4b5fd", cursor: "pointer" }}
                 onClick={() => setExpandedGaps((prev) => { const next = new Set(prev); if (next.has(gapKey)) next.delete(gapKey); else next.add(gapKey); return next; })}

@@ -17,6 +17,7 @@ export function DetailPanel({
   setEditingMode,
   setActiveTab,
   onGoToMix,
+  onGoToTouchstone,
   handleBoundaryChange,
   handleSplitBit,
   handleJoinBits,
@@ -239,7 +240,7 @@ export function DetailPanel({
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div
                   style={{ flex: 1, cursor: "pointer" }}
-                  onClick={() => setActiveTab("touchstones")}
+                  onClick={() => onGoToTouchstone ? onGoToTouchstone(ts.id) : setActiveTab("touchstones")}
                 >
                   <div style={{ fontWeight: 600, color: "#51cf66", fontSize: 12 }}>
                     {ts.name}

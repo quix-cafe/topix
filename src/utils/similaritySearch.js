@@ -311,14 +311,20 @@ export function getSimilarityStats(bits) {
 
   if (bits.length < 2) return stats;
 
+  // Cap to avoid O(n²) browser freeze — sample if too many bits
+  const MAX_BITS = 80;
+  const sample = bits.length > MAX_BITS
+    ? bits.slice().sort(() => Math.random() - 0.5).slice(0, MAX_BITS)
+    : bits;
+
   let totalSimilarities = 0;
   let pairCount = 0;
   let maxSimilarity = 0;
   let mostSimilarPair = null;
 
-  for (let i = 0; i < bits.length; i++) {
-    for (let j = i + 1; j < bits.length; j++) {
-      const similarity = calculateSimilarity(bits[i], bits[j]);
+  for (let i = 0; i < sample.length; i++) {
+    for (let j = i + 1; j < sample.length; j++) {
+      const similarity = calculateSimilarity(sample[i], sample[j]);
       totalSimilarities += similarity;
       pairCount++;
 
@@ -332,8 +338,8 @@ export function getSimilarityStats(bits) {
       if (similarity > maxSimilarity) {
         maxSimilarity = similarity;
         mostSimilarPair = {
-          bit1: bits[i],
-          bit2: bits[j],
+          bit1: sample[i],
+          bit2: sample[j],
           similarity,
         };
       }

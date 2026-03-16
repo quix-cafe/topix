@@ -290,7 +290,7 @@ export function ValidationTab({
                   onClick={(e) => {
                     e.stopPropagation();
                     const tr = transcripts.find((t) => t.name === issue.source);
-                    if (tr) onGoToMix(tr, issue.bitId);
+                    if (tr) onGoToMix(tr, issue.bitId, issue.type === "gap" ? { gapStart: issue.gapStart, gapEnd: issue.gapEnd } : null);
                   }}
                   style={{
                     padding: "3px 8px",
@@ -479,7 +479,7 @@ export function ValidationTab({
 
                   {transcript && (
                     <button
-                      onClick={() => onGoToMix(transcript, issue.bitId)}
+                      onClick={() => onGoToMix(transcript, issue.bitId, issue.type === "gap" ? { gapStart: issue.gapStart, gapEnd: issue.gapEnd } : null)}
                       style={{
                         padding: "6px 12px",
                         background: "#1e1e30",

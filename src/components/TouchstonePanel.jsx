@@ -11,11 +11,19 @@ export function TouchstonePanel({
   onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onCreateTouchstone,
   onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, onUpdateTouchstoneEdits,
   onCommuneTouchstone, onSynthesizeTouchstone, onMassTouchstoneCommunion, onSaintInstance,
+  initialTouchstoneId, onConsumeInitialTouchstone,
 }) {
   const [selectedTouchstoneId, setSelectedTouchstoneId] = useState(null);
   const [autoOpenMerge, setAutoOpenMerge] = useState(false);
   const [creatingFrom, setCreatingFrom] = useState(null); // bit to seed new touchstone
   const [newTouchstoneName, setNewTouchstoneName] = useState("");
+
+  // Navigate to a specific touchstone from external (e.g. DetailPanel)
+  useEffect(() => {
+    if (!initialTouchstoneId) return;
+    setSelectedTouchstoneId(initialTouchstoneId);
+    onConsumeInitialTouchstone?.();
+  }, [initialTouchstoneId]);
 
   const sortByInstances = (list) => [...list].sort((a, b) => (b.instances?.length || 0) - (a.instances?.length || 0));
   const confirmed = useMemo(() => sortByInstances(touchstones?.confirmed || []), [touchstones?.confirmed]);
@@ -138,49 +146,45 @@ export function TouchstonePanel({
         <HuntButton onHunt={onHunt} huntProgress={huntProgress} processing={processing} />
       )}
 
-      {onRectifyOverlaps && possible.length > 0 && (
-        <button
-          onClick={onRectifyOverlaps}
-          disabled={processing}
-          style={{
-            width: "100%",
-            padding: "10px 16px",
-            background: processing ? "#33333a" : "#1e1e30",
-            color: processing ? "#666" : "#ffa94d",
-            border: "1px solid #ffa94d40",
-            borderRadius: 8,
-            fontWeight: 600,
-            fontSize: 12,
-            cursor: processing ? "default" : "pointer",
-            marginBottom: 12,
-            transition: "all 0.2s",
-          }}
-        >
-          Rectify Overlapping Possibles
-        </button>
-      )}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        {onRectifyOverlaps && possible.length > 0 && (
+          <button
+            onClick={onRectifyOverlaps}
+            disabled={processing}
+            style={{
+              padding: "5px 12px",
+              background: processing ? "#33333a" : "#1e1e30",
+              color: processing ? "#666" : "#ffa94d",
+              border: "1px solid #ffa94d40",
+              borderRadius: 6,
+              fontWeight: 600,
+              fontSize: 11,
+              cursor: processing ? "default" : "pointer",
+            }}
+          >
+            Rectify Overlaps
+          </button>
+        )}
 
-      {onMassTouchstoneCommunion && (confirmed.length + possible.length + rejected.length) > 0 && (
-        <button
-          onClick={onMassTouchstoneCommunion}
-          disabled={processing}
-          style={{
-            width: "100%",
-            padding: "10px 16px",
-            background: processing ? "#33333a" : "#1e1e30",
-            color: processing ? "#666" : "#c4b5fd",
-            border: "1px solid #c4b5fd40",
-            borderRadius: 8,
-            fontWeight: 600,
-            fontSize: 12,
-            cursor: processing ? "default" : "pointer",
-            marginBottom: 12,
-            transition: "all 0.2s",
-          }}
-        >
-          {processing ? "Communing..." : `Mass Touchstone Communion (${confirmed.length + possible.length + rejected.length} touchstones)`}
-        </button>
-      )}
+        {onMassTouchstoneCommunion && (confirmed.length + possible.length + rejected.length) > 0 && (
+          <button
+            onClick={onMassTouchstoneCommunion}
+            disabled={processing}
+            style={{
+              padding: "5px 12px",
+              background: processing ? "#33333a" : "#1e1e30",
+              color: processing ? "#666" : "#c4b5fd",
+              border: "1px solid #c4b5fd40",
+              borderRadius: 6,
+              fontWeight: 600,
+              fontSize: 11,
+              cursor: processing ? "default" : "pointer",
+            }}
+          >
+            {processing ? "Communing..." : `Mass Communion (${confirmed.length + possible.length + rejected.length})`}
+          </button>
+        )}
+      </div>
 
       {/* Stats bar + create touchstone */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -988,7 +992,7 @@ function HuntButton({ onHunt, huntProgress, processing }) {
 
   return (
     <div style={{ marginBottom: 16 }}>
-      <button onClick={onHunt} disabled={processing} style={{ width: "100%", padding: "12px 16px", background: processing ? "#33333a" : "#4ecdc4", color: processing ? "#888" : "#000", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: processing ? "default" : "pointer", transition: "all 0.2s" }}>
+      <button onClick={onHunt} disabled={processing} style={{ width: "100%", padding: "6px 12px", background: processing ? "#33333a" : "#4ecdc4", color: processing ? "#888" : "#000", border: "none", borderRadius: 6, fontWeight: 700, fontSize: 12, cursor: processing ? "default" : "pointer", transition: "all 0.2s" }}>
         {isHunting ? `Hunting... ${huntProgress.current}/${huntProgress.total}` : "Hunt for Touchstones"}
       </button>
       {huntProgress && (

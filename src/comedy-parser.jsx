@@ -123,6 +123,8 @@ export default function ComedyParser() {
   const embeddingStore = useRef(new EmbeddingStore()).current;
   const [mixTranscriptInit, setMixTranscriptInit] = useState(null);
   const [mixBitInit, setMixBitInit] = useState(null);
+  const [mixGapInit, setMixGapInit] = useState(null);
+  const [touchstoneInit, setTouchstoneInit] = useState(null);
   const [approvedGaps, setApprovedGaps] = useState(() => {
     try { return JSON.parse(localStorage.getItem("topix-approved-gaps") || "[]"); } catch { return []; }
   });
@@ -136,6 +138,13 @@ export default function ComedyParser() {
 
   const addDebugEntry = useCallback((entry) => {
     update('debugLog', (prev) => [...prev.slice(-19), { ...entry, id: uid(), timestamp: Date.now() }]);
+  }, []);
+
+  // Warn before closing tab
+  useEffect(() => {
+    const handler = (e) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
   // Initialize database and load models on mount
@@ -2789,6 +2798,8 @@ export default function ComedyParser() {
               huntProgress={huntProgress}
               processing={processing}
               onGenerateTitle={handleGenerateTitle}
+              initialTouchstoneId={touchstoneInit}
+              onConsumeInitialTouchstone={() => setTouchstoneInit(null)}
               onRenameTouchstone={(touchstoneId, newName) => {
                 update('touchstones', (prev) => {
                   const rename = (list) => list.map((t) => {
@@ -3171,6 +3182,7 @@ export default function ComedyParser() {
                 if (tr) {
                   setMixTranscriptInit(tr);
                   setMixBitInit(bit.id);
+                  setSelectedTranscript(tr);
                   setActiveTab("transcripts");
                 }
               }}
@@ -3226,7 +3238,8 @@ export default function ComedyParser() {
             onViewBitDetail={setSelectedTopic}
             mixTranscriptInit={mixTranscriptInit}
             mixBitInit={mixBitInit}
-            onConsumeMixInit={() => { setMixTranscriptInit(null); setMixBitInit(null); }}
+            mixGapInit={mixGapInit}
+            onConsumeMixInit={() => { setMixTranscriptInit(null); setMixBitInit(null); setMixGapInit(null); }}
             approvedGaps={approvedGaps}
             onApproveGap={handleApproveGap}
           />
@@ -3238,7 +3251,7 @@ export default function ComedyParser() {
             topics={topics}
             transcripts={transcripts}
             onUpdateBitPosition={handleBoundaryChange}
-            onGoToMix={(tr, bitId) => { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setActiveTab("transcripts"); }}
+            onGoToMix={(tr, bitId, gapInfo) => { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setMixGapInit(gapInfo || null); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
             onSelectBit={setSelectedTopic}
             approvedGaps={approvedGaps}
             onApproveGap={handleApproveGap}
@@ -3340,7 +3353,7 @@ export default function ComedyParser() {
       </div>
 
       {/* Streaming Progress Panel — always show during hunts, otherwise only when debug is off */}
-      {(!debugMode || huntProgress) && <StreamingProgressPanel progress={!debugMode ? streamingProgress : null} foundBits={!debugMode ? foundBits : null} processing={processing} status={status} huntProgress={huntProgress} />}
+      {(!debugMode || huntProgress) && <StreamingProgressPanel progress={!debugMode ? streamingProgress : null} foundBits={!debugMode ? foundBits : null} processing={processing} status={status} huntProgress={huntProgress} onDismiss={() => { set('huntProgress', null); set('streamingProgress', null); set('status', ''); }} />}
 
       {/* Debug Panel */}
       {debugMode && <DebugPanel log={debugLog} onClear={() => { set('debugLog', []); set('debugMode', false); }} />}
@@ -3358,7 +3371,8 @@ export default function ComedyParser() {
         setAdjustingBit={setAdjustingBit}
         setEditingMode={setEditingMode}
         setActiveTab={setActiveTab}
-        onGoToMix={(tr, bitId) => { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setActiveTab("transcripts"); setSelectedTopic(null); }}
+        onGoToMix={(tr, bitId) => { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setSelectedTranscript(tr); setActiveTab("transcripts"); setSelectedTopic(null); }}
+        onGoToTouchstone={(touchstoneId) => { setTouchstoneInit(touchstoneId); setActiveTab("touchstones"); setSelectedTopic(null); }}
         handleBoundaryChange={handleBoundaryChange}
         handleSplitBit={handleSplitBit}
         handleJoinBits={handleJoinBits}

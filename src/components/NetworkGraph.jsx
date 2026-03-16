@@ -112,32 +112,6 @@ export function NetworkGraph({ topics, matches }) {
       d.fy = null;
     }
 
-    // Legend
-    const legend = svg.append("g").attr("transform", `translate(16, ${height - 100})`);
-    const legendData = [
-      { label: "Same bit", color: "#ff6b6b", dash: null },
-      { label: "Evolved", color: "#ffa94d", dash: null },
-      { label: "Callback", color: "#74c0fc", dash: null },
-      { label: "Related", color: "#555", dash: "4,4" },
-    ];
-    legendData.forEach((d, i) => {
-      const row = legend.append("g").attr("transform", `translate(0, ${i * 20})`);
-      row.append("line").attr("x1", 0).attr("x2", 24).attr("y", 0)
-        .attr("stroke", d.color).attr("stroke-width", 2)
-        .attr("stroke-dasharray", d.dash);
-      row.append("text").attr("x", 30).attr("y", 4)
-        .attr("fill", "#888").attr("font-size", "10px").text(d.label);
-    });
-
-    // Source legend
-    const srcLeg = svg.append("g").attr("transform", "translate(16, 20)");
-    sources.forEach((s, i) => {
-      const row = srcLeg.append("g").attr("transform", `translate(0, ${i * 20})`);
-      row.append("circle").attr("r", 6).attr("fill", colorBySource(s));
-      row.append("text").attr("x", 14).attr("y", 4)
-        .attr("fill", "#888").attr("font-size", "10px").text(s);
-    });
-
     return () => sim.stop();
   }, [topics, matches]);
 
@@ -233,8 +207,73 @@ export function NetworkGraph({ topics, matches }) {
     return counts;
   }, [matches]);
 
+  const downloadPng = () => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+    // Get the bounding box of all graph content (the <g> group)
+    const gEl = svgEl.querySelector("g");
+    if (!gEl) return;
+    const bbox = gEl.getBBox();
+    if (bbox.width === 0 || bbox.height === 0) return;
+    const pad = 60;
+    const vbX = bbox.x - pad;
+    const vbY = bbox.y - pad;
+    const vbW = bbox.width + pad * 2;
+    const vbH = bbox.height + pad * 2;
+    // Cap canvas at 4096px on longest side, scale accordingly
+    const maxDim = 8192;
+    const fitScale = Math.min(maxDim / vbW, maxDim / vbH, 3);
+    const canvasW = Math.round(vbW * fitScale);
+    const canvasH = Math.round(vbH * fitScale);
+    const clone = svgEl.cloneNode(true);
+    // Reset the inner <g> transform so we see the full untransformed graph
+    const cloneG = clone.querySelector("g");
+    if (cloneG) cloneG.removeAttribute("transform");
+    clone.setAttribute("viewBox", `${vbX} ${vbY} ${vbW} ${vbH}`);
+    clone.setAttribute("width", canvasW);
+    clone.setAttribute("height", canvasH);
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    // Add background rect inside SVG so it renders in the image
+    const bgRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bgRect.setAttribute("x", vbX);
+    bgRect.setAttribute("y", vbY);
+    bgRect.setAttribute("width", vbW);
+    bgRect.setAttribute("height", vbH);
+    bgRect.setAttribute("fill", "#0d0d1a");
+    clone.insertBefore(bgRect, clone.firstChild);
+    const svgString = new XMLSerializer().serializeToString(clone);
+    // Use base64 data URL to avoid blob/encoding issues
+    const base64 = btoa(unescape(encodeURIComponent(svgString)));
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvasW;
+      canvas.height = canvasH;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvasW, canvasH);
+      const a = document.createElement("a");
+      a.download = "topix-graph.png";
+      a.href = canvas.toDataURL("image/png");
+      a.click();
+    };
+    img.onerror = () => console.error("Failed to render SVG to image for PNG export");
+    img.src = `data:image/svg+xml;base64,${base64}`;
+  };
+
   return (
     <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+        <button
+          onClick={downloadPng}
+          style={{
+            padding: "5px 12px", background: "#1e1e30", color: "#4ecdc4",
+            border: "1px solid #4ecdc444", borderRadius: 6, fontWeight: 600,
+            fontSize: 11, cursor: "pointer",
+          }}
+        >
+          Download PNG
+        </button>
+      </div>
       <svg
         ref={svgRef}
         style={{ width: "100%", height: "500px", background: "#0d0d1a", borderRadius: "12px" }}

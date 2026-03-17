@@ -26,6 +26,8 @@ export function DetailPanel({
   onRemoveFromTouchstone,
   onBaptize,
   onCommuneBit,
+  onDeleteBit,
+  onApproveGap,
 }) {
   const [addToTouchstoneOpen, setAddToTouchstoneOpen] = useState(false);
   const [touchstoneSearch, setTouchstoneSearch] = useState("");
@@ -123,6 +125,21 @@ export function DetailPanel({
               disabled={communing}
               style={{ padding: "6px 10px", background: communing ? "#33333380" : "#74c0fc18", color: communing ? "#888" : "#74c0fc", border: `1px solid ${communing ? "#33333380" : "#74c0fc44"}`, borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: communing ? "not-allowed" : "pointer" }}
             >{communing ? "Communing..." : `Commune (${getMatchesForTopic(selectedTopic.id).length})`}</button>
+          )}
+          {onDeleteBit && (
+            <button
+              onClick={() => {
+                if (!window.confirm(`Delete "${selectedTopic.title}"? This cannot be undone.`)) return;
+                // Approve the gap left behind
+                if (onApproveGap && selectedTopic.textPosition && selectedTopic.sourceFile) {
+                  const gapKey = `${selectedTopic.sourceFile}:${selectedTopic.textPosition.startChar}-${selectedTopic.textPosition.endChar}`;
+                  onApproveGap(gapKey);
+                }
+                onDeleteBit(selectedTopic.id);
+                setSelectedTopic(null);
+              }}
+              style={{ padding: "6px 10px", background: "#ff6b6b18", color: "#ff6b6b", border: "1px solid #ff6b6b44", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
+            >Delete</button>
           )}
         </div>
       )}

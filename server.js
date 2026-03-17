@@ -8,9 +8,30 @@
 import http from "http";
 import { exec } from "child_process";
 import { promisify } from "util";
+import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
+import path from "node:path";
 
 const execPromise = promisify(exec);
 const PORT = process.env.PORT || 3001;
+const AUDIO_DIR = "/home/kai/ownCloud/Comedy/Audio";
+const REGISTRY_FILE = path.join(AUDIO_DIR, "audio_registry.json");
+
+async function loadRegistry() {
+  try {
+    const data = await fs.readFile(REGISTRY_FILE, "utf-8");
+    return JSON.parse(data);
+  } catch {
+    return {};
+  }
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return "--:--";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
 
 async function execCommand(command) {
   try {
@@ -87,6 +108,58 @@ const server = http.createServer(async (req, res) => {
     const result = await restartOllama();
     res.writeHead(result.success ? 200 : 500, { "Content-Type": "application/json" });
     res.end(JSON.stringify(result));
+    return;
+  }
+
+  // List all transcripts from Play registry
+  if (req.url === "/api/transcripts" && req.method === "GET") {
+    try {
+      const registry = await loadRegistry();
+      const entries = [];
+      for (const [hash, record] of Object.entries(registry)) {
+        const transcriptPath = path.join(AUDIO_DIR, record.transcript_filename);
+        entries.push({
+          hash,
+          audio_filename: record.audio_filename,
+          transcript_filename: record.transcript_filename,
+          has_transcript: existsSync(transcriptPath),
+          duration_formatted: formatDuration(record.duration_seconds),
+        });
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(entries));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // Get transcript content by hash
+  const transcriptMatch = req.url.match(/^\/api\/transcripts\/([a-f0-9]+)$/);
+  if (transcriptMatch && req.method === "GET") {
+    try {
+      const registry = await loadRegistry();
+      const record = registry[transcriptMatch[1]];
+      if (!record) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Not found" }));
+        return;
+      }
+      const transcriptPath = path.join(AUDIO_DIR, record.transcript_filename);
+      let text = "";
+      try { text = await fs.readFile(transcriptPath, "utf-8"); } catch {}
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        hash: transcriptMatch[1],
+        audio_filename: record.audio_filename,
+        transcript_filename: record.transcript_filename,
+        text,
+      }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
     return;
   }
 

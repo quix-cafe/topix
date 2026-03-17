@@ -279,12 +279,6 @@ export function TranscriptTab({
                     </td>
                     <td style={{ padding: "10px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
                       <button
-                        onClick={() => setSelectedTranscript(isSelected ? null : tr)}
-                        style={actionBtnStyle(isSelected ? "#4ecdc4" : "#1e1e30", isSelected ? "#000" : "#ccc", { border: `1px solid ${isSelected ? "#4ecdc4" : "#2a2a40"}`, fontWeight: isSelected ? 700 : 400 })}
-                      >
-                        {isSelected ? "Collapse" : "Mix"}
-                      </button>
-                      <button
                         onClick={() => onHuntTranscript?.(tr)}
                         disabled={processing || bitsParsed.length === 0}
                         style={actionBtnStyle("#da77f2", "#000", { disabled: processing || bitsParsed.length === 0 })}
@@ -322,6 +316,7 @@ export function TranscriptTab({
                         <MixPanel
                           topics={topics}
                           transcripts={transcripts}
+                          touchstones={touchstones}
                           onJoinBits={onJoinBits}
                           onSplitBit={onSplitBit}
                           onTakeOverlap={onTakeOverlap}

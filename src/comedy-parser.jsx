@@ -29,8 +29,9 @@ import { generateObsidianVault } from "./utils/obsidianExport";
 import { NetworkGraph } from "./components/NetworkGraph";
 import { DebugPanel } from "./components/DebugPanel";
 import { StreamingProgressPanel } from "./components/StreamingProgressPanel";
-import { UploadTab } from "./components/UploadTab";
+import { SyncTab } from "./components/SyncTab";
 import { DatabaseTab } from "./components/DatabaseTab";
+import { TagsTab } from "./components/TagsTab";
 import { TranscriptTab } from "./components/TranscriptTab";
 import { ExportTab } from "./components/ExportTab";
 import { ValidationTab } from "./components/ValidationTab";
@@ -45,7 +46,6 @@ const initialState = {
   processing: false,
   activeTab: "upload",
   selectedTopic: null,
-  filterTag: null,
   streamingProgress: null,
   foundBits: [],
   selectedTranscript: null,
@@ -94,7 +94,7 @@ export default function ComedyParser() {
 
   const {
     transcripts, topics, matches, status, processing,
-    activeTab, selectedTopic, filterTag, streamingProgress,
+    activeTab, selectedTopic, streamingProgress,
     foundBits, selectedTranscript, adjustingBit, validationResult,
     editingMode, touchstones, rootBits, dbStats, lastSave,
     selectedModel, availableModels, shouldStop, debugMode,
@@ -108,13 +108,11 @@ export default function ComedyParser() {
   // Named setters for child component props (stable references)
   const setActiveTab = useCallback((v) => dispatch({ type: 'SET', field: 'activeTab', value: v }), []);
   const setSelectedTopic = useCallback((v) => dispatch({ type: 'SET', field: 'selectedTopic', value: v }), []);
-  const setFilterTag = useCallback((v) => dispatch({ type: 'SET', field: 'filterTag', value: v }), []);
   const setSelectedTranscript = useCallback((v) => dispatch({ type: 'SET', field: 'selectedTranscript', value: v }), []);
   const setAdjustingBit = useCallback((v) => dispatch({ type: 'SET', field: 'adjustingBit', value: v }), []);
   const setEditingMode = useCallback((v) => dispatch({ type: 'SET', field: 'editingMode', value: v }), []);
   const setShouldStop = useCallback((v) => dispatch({ type: 'SET', field: 'shouldStop', value: v }), []);
 
-  const fileInput = useRef(null);
   const restoreFileInput = useRef(null);
   const abortControllerRef = useRef(null);
   const huntControllerRef = useRef(null);
@@ -1647,29 +1645,6 @@ export default function ComedyParser() {
     }
   }, []);
 
-  const handleFiles = useCallback(async (files) => {
-    const s = stateRef.current;
-    const existingNames = new Set(s.transcripts.map((tr) => tr.name));
-    const newTranscripts = [];
-    const skipped = [];
-    for (const file of files) {
-      if (existingNames.has(file.name)) {
-        skipped.push(file.name);
-        continue;
-      }
-      const text = await file.text();
-      newTranscripts.push({ name: file.name, text, id: uid() });
-      existingNames.add(file.name);
-    }
-    if (skipped.length > 0) {
-      set('status', `Skipped ${skipped.length} duplicate${skipped.length > 1 ? 's' : ''}: ${skipped.join(', ')}`);
-    }
-    if (newTranscripts.length > 0) {
-      update('transcripts', (prev) => [...prev, ...newTranscripts]);
-    }
-    setActiveTab("upload");
-  }, []);
-
   // Helper function to match a newly found bit against existing topics (pairwise)
   const matchBitLive = useCallback(async (newBit, existingTopics, signal) => {
     try {
@@ -2239,6 +2214,88 @@ export default function ComedyParser() {
     }
   }, [topics, matches, transcripts, touchstones, rootBits, selectedTranscript]);
 
+  // Handle sync apply from SyncTab — adds, renames, deletes in one batch
+  const handleSyncApply = useCallback(async ({ toAdd, toRename, toDelete, toLink }) => {
+    const s = stateRef.current;
+    let updatedTranscripts = [...s.transcripts];
+    let updatedTopics = [...s.topics];
+    let updatedMatches = [...s.matches];
+    let updatedTouchstones = { ...s.touchstones };
+
+    // 1. Deletes — cascade remove transcript + bits + matches
+    for (const tr of toDelete) {
+      const bitsToRemoveIds = new Set(
+        updatedTopics.filter((t) => t.sourceFile === tr.name || t.transcriptId === tr.id).map((t) => t.id)
+      );
+      updatedTopics = updatedTopics.filter((t) => !bitsToRemoveIds.has(t.id));
+      updatedMatches = updatedMatches.filter((m) => !bitsToRemoveIds.has(m.sourceId) && !bitsToRemoveIds.has(m.targetId));
+      updatedTranscripts = updatedTranscripts.filter((t) => t.id !== tr.id);
+
+      // Clean touchstones
+      for (const cat of ["confirmed", "possible"]) {
+        updatedTouchstones[cat] = (updatedTouchstones[cat] || [])
+          .map((ts) => ({ ...ts, bitIds: ts.bitIds.filter((id) => !bitsToRemoveIds.has(id)) }))
+          .filter((ts) => ts.bitIds.length >= 2);
+      }
+
+      console.log(`[Sync] Deleted "${tr.name}" and ${bitsToRemoveIds.size} bits`);
+    }
+
+    // 2. Renames — update transcript name + sourceFile refs on bits
+    for (const { entry, existing } of toRename) {
+      const oldName = existing.name;
+      const newName = entry.transcript_filename;
+      updatedTranscripts = updatedTranscripts.map((t) =>
+        t.id === existing.id ? { ...t, name: newName } : t
+      );
+      updatedTopics = updatedTopics.map((t) =>
+        t.sourceFile === oldName ? { ...t, sourceFile: newName } : t
+      );
+      console.log(`[Sync] Renamed "${oldName}" → "${newName}"`);
+    }
+
+    // 3. Links — set playHash on existing transcripts matched by name
+    for (const { entry, existing } of (toLink || [])) {
+      updatedTranscripts = updatedTranscripts.map((t) =>
+        t.id === existing.id ? { ...t, playHash: entry.hash } : t
+      );
+      console.log(`[Sync] Linked "${existing.name}" → hash ${entry.hash}`);
+    }
+
+    // 4. Adds — create new transcript objects
+    for (const entry of toAdd) {
+      updatedTranscripts.push({
+        id: uid(),
+        name: entry.name,
+        text: entry.text,
+        playHash: entry.hash,
+      });
+      console.log(`[Sync] Added "${entry.name}"`);
+    }
+
+    dispatch({ type: 'MERGE', payload: {
+      transcripts: updatedTranscripts,
+      topics: updatedTopics,
+      matches: updatedMatches,
+      touchstones: updatedTouchstones,
+    }});
+
+    await saveVaultState({
+      transcripts: updatedTranscripts,
+      topics: updatedTopics,
+      matches: updatedMatches,
+      touchstones: updatedTouchstones,
+      rootBits: s.rootBits,
+    });
+
+    const parts = [];
+    if (toAdd.length) parts.push(`${toAdd.length} added`);
+    if ((toLink || []).length) parts.push(`${toLink.length} linked`);
+    if (toRename.length) parts.push(`${toRename.length} renamed`);
+    if (toDelete.length) parts.push(`${toDelete.length} deleted`);
+    set('status', `Sync complete: ${parts.join(", ")}`);
+  }, []);
+
   // Clear processed data but keep transcript list
   const clearProcessedData = useCallback(async () => {
     if (!window.confirm("Clear all bits, matches, and touchstones? Transcripts will be kept but reset to unparsed.")) {
@@ -2497,27 +2554,6 @@ export default function ComedyParser() {
     URL.revokeObjectURL(url);
   }, [topics, matches, transcripts, touchstones, rootBits]);
 
-  const allTags = useMemo(() => {
-    const counts = {};
-    topics.forEach((t) => (t.tags || []).forEach((tag) => {
-      const normalized = tag.trim().replace(/\s+/g, "-").toLowerCase();
-      if (normalized) counts[normalized] = (counts[normalized] || 0) + 1;
-    }));
-    return Object.entries(counts)
-      .filter(([, count]) => count > 1)
-      .sort((a, b) => b[1] - a[1])
-      .map(([tag]) => tag);
-  }, [topics]);
-  const filteredTopics = useMemo(() => {
-    const filtered = filterTag
-      ? topics.filter((t) => (t.tags || []).some((tag) => tag.trim().replace(/\s+/g, "-").toLowerCase() === filterTag))
-      : topics;
-    // Sort by source file then by position in transcript
-    return [...filtered].sort((a, b) => {
-      if (a.sourceFile !== b.sourceFile) return (a.sourceFile || "").localeCompare(b.sourceFile || "");
-      return (a.textPosition?.startChar || 0) - (b.textPosition?.startChar || 0);
-    });
-  }, [topics, filterTag]);
 
   const getMatchesForTopic = (topicId) =>
     matches
@@ -2666,13 +2702,13 @@ export default function ComedyParser() {
 
         {/* Row 3: Tabs */}
         <div style={{ display: "flex", gap: 0 }}>
-          {["upload", "bits", "touchstones", "transcripts", "validation", "analytics", "graph", "settings"].map((tab) => (
+          {["upload", "bits", "tags", "touchstones", "transcripts", "validation", "analytics", "graph", "settings"].map((tab) => (
             <button
               key={tab}
               className={`tab-btn ${activeTab === tab ? "active" : ""}`}
               onClick={() => setActiveTab(tab)}
             >
-              {tab}
+              {tab === "upload" ? "sync" : tab}
             </button>
           ))}
         </div>
@@ -2705,33 +2741,37 @@ export default function ComedyParser() {
       )}
 
       <div style={{ padding: "24px 32px", paddingBottom: (streamingProgress || processing || huntProgress) ? 370 : debugMode ? "calc(40vh + 24px)" : 24 }}>
-        {/* UPLOAD TAB */}
+        {/* SYNC TAB */}
         {activeTab === "upload" && (
-          <UploadTab
+          <SyncTab
             transcripts={transcripts}
             topics={topics}
             processing={processing}
             selectedModel={selectedModel}
-            fileInput={fileInput}
-            handleFiles={handleFiles}
             parseAll={parseAll}
             parseUnparsed={parseUnparsed}
             setShouldStop={setShouldStop}
             abortControllerRef={abortControllerRef}
             onGoToMix={(tr) => { setMixTranscriptInit(tr); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
+            onSyncApply={handleSyncApply}
           />
         )}
 
         {/* BITS TAB */}
         {activeTab === "bits" && (
           <DatabaseTab
-            allTags={allTags}
-            filteredTopics={filteredTopics}
-            filterTag={filterTag}
             topics={topics}
-            setFilterTag={setFilterTag}
             setSelectedTopic={setSelectedTopic}
             getMatchesForTopic={getMatchesForTopic}
+            touchstones={touchstones}
+          />
+        )}
+
+        {/* TAGS TAB */}
+        {activeTab === "tags" && (
+          <TagsTab
+            topics={topics}
+            setSelectedTopic={setSelectedTopic}
             touchstones={touchstones}
           />
         )}
@@ -3411,6 +3451,8 @@ export default function ComedyParser() {
         getMatchesForTopic={getMatchesForTopic}
         onBaptize={handleBaptizeBit}
         onCommuneBit={handleCommuneBit}
+        onDeleteBit={handleDeleteBit}
+        onApproveGap={handleApproveGap}
         onRemoveFromTouchstone={async (bitId, touchstoneId) => {
           console.log("[RemoveFromTouchstone] Removing bit", bitId, "from touchstone", touchstoneId);
           update('touchstones', (prev) => {
@@ -3447,7 +3489,7 @@ export default function ComedyParser() {
               if (t.bitIds.includes(bitId)) return t;
               return {
                 ...t,
-                instances: [...t.instances, { bitId, sourceFile: bit.sourceFile, title: bit.title, instanceNumber: t.instances.length + 1, confidence: 1, relationship: "same_bit" }],
+                instances: [...t.instances, { bitId, sourceFile: bit.sourceFile, title: bit.title, instanceNumber: t.instances.length + 1, confidence: 1, relationship: "same_bit", communionStatus: "sainted" }],
                 bitIds: [...t.bitIds, bitId],
                 frequency: t.instances.length + 1,
                 sourceCount: new Set([...t.instances.map((i) => i.sourceFile), bit.sourceFile]).size,

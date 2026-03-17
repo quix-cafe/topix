@@ -11,7 +11,7 @@ import { uid } from "../utils/ollama";
  * - Multiple selected bits highlight overlapping regions
  * - "View" toggles expanded full text without leaving the page
  */
-export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOverlap, onDeleteBit, onScrollBoundary, onGenerateTitle, onConfirmRename, onAddPhantomBit, onReParseGap, onViewBitDetail, initialTranscript, initialBitId, initialGap, onConsumeInitialTranscript, approvedGaps, onApproveGap, onBack }) {
+export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplitBit, onTakeOverlap, onDeleteBit, onScrollBoundary, onGenerateTitle, onConfirmRename, onAddPhantomBit, onReParseGap, onViewBitDetail, initialTranscript, initialBitId, initialGap, onConsumeInitialTranscript, approvedGaps, onApproveGap, onBack }) {
   const [selectedTranscript, setSelectedTranscript] = useState(null);
 
   const [pendingScrollBitId, setPendingScrollBitId] = useState(null);
@@ -51,6 +51,19 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
   }, [topics, transcripts]);
 
   // Get bits for selected transcript, sorted by position
+  // Build map of bitId -> touchstone name for display
+  const bitTouchstoneMap = useMemo(() => {
+    const map = new Map();
+    const allTs = [...(touchstones?.confirmed || []), ...(touchstones?.possible || [])];
+    for (const ts of allTs) {
+      for (const id of ts.bitIds || []) {
+        if (!map.has(id)) map.set(id, []);
+        map.get(id).push({ name: ts.name, category: ts.category });
+      }
+    }
+    return map;
+  }, [touchstones]);
+
   const sortedBits = useMemo(() => {
     if (!selectedTranscript) return [];
     return topics
@@ -642,6 +655,31 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
                       <span style={{ fontWeight: 600, color: "#ddd", fontSize: 13 }}>
                         {bit.title}
                       </span>
+                      {onGenerateTitle && bit.fullText?.trim() && !renamePending[bit.id] && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRenamePending((prev) => ({ ...prev, [bit.id]: { loading: true, suggested: null } }));
+                            onGenerateTitle(bit.fullText).then((title) => {
+                              setRenamePending((prev) => ({ ...prev, [bit.id]: { loading: false, suggested: title || "" } }));
+                            }).catch((err) => {
+                              console.error("[Rename] Error:", err);
+                              setRenamePending((prev) => { const next = { ...prev }; delete next[bit.id]; return next; });
+                            });
+                          }}
+                          title="Auto-generate title from content"
+                          style={{
+                            background: "none", border: "1px solid #333", color: "#c4b5fd",
+                            borderRadius: 4, padding: "2px 6px", fontSize: 9, cursor: "pointer",
+                            whiteSpace: "nowrap", fontWeight: 600,
+                          }}
+                        >
+                          Rename
+                        </button>
+                      )}
+                      {renamePending[bit.id]?.loading && (
+                        <span style={{ fontSize: 10, color: "#555" }}>generating...</span>
+                      )}
                     </div>
                     {!isExpanded && bit.summary && (
                       <div style={{
@@ -651,10 +689,17 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
                         {bit.summary}
                       </div>
                     )}
-                    <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 10, color: "#555" }}>{charSpan} chars</span>
-                      {(bit.tags || []).slice(0, 3).map((tag) => (
-                        <span key={tag} style={{ fontSize: 10, color: "#666" }}>#{tag}</span>
+                    <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: "#74c0fc", fontFamily: "'JetBrains Mono', monospace" }}>{charSpan} chars</span>
+                      <span style={{ fontSize: 10, color: "#74c0fc", fontFamily: "'JetBrains Mono', monospace" }}>~{Math.max(1, Math.round(charSpan / 900))}min</span>
+                      {(bitTouchstoneMap.get(bit.id) || []).map((ts, i) => (
+                        <span key={i} style={{
+                          fontSize: 9, padding: "1px 6px", borderRadius: 3, fontWeight: 600,
+                          background: ts.category === "confirmed" ? "#51cf6618" : "#ffa94d18",
+                          color: ts.category === "confirmed" ? "#51cf66" : "#ffa94d",
+                        }}>
+                          {ts.name}
+                        </span>
                       ))}
                     </div>
                     {/* Rename confirm/edit/cancel */}
@@ -742,32 +787,6 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
                         ))}
                       </div>
                     )}
-                    {/* Autorename */}
-                    {onGenerateTitle && bit.fullText?.trim() && !renamePending[bit.id] && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setRenamePending((prev) => ({ ...prev, [bit.id]: { loading: true, suggested: null } }));
-                          onGenerateTitle(bit.fullText).then((title) => {
-                            setRenamePending((prev) => ({ ...prev, [bit.id]: { loading: false, suggested: title || "" } }));
-                          }).catch((err) => {
-                            console.error("[Rename] Error:", err);
-                            setRenamePending((prev) => { const next = { ...prev }; delete next[bit.id]; return next; });
-                          });
-                        }}
-                        title="Auto-generate title from content"
-                        style={{
-                          background: "none", border: "1px solid #333", color: "#c4b5fd",
-                          borderRadius: 4, padding: "4px 8px", fontSize: 10, cursor: "pointer",
-                          whiteSpace: "nowrap", fontWeight: 600,
-                        }}
-                      >
-                        Rename
-                      </button>
-                    )}
-                    {renamePending[bit.id]?.loading && (
-                      <span style={{ fontSize: 10, color: "#555", padding: "4px 8px" }}>generating...</span>
-                    )}
                     {isSelected && onDeleteBit && (
                       <button
                         onClick={(e) => {
@@ -811,30 +830,17 @@ export function MixPanel({ topics, transcripts, onJoinBits, onSplitBit, onTakeOv
                         }}
                         title="Open bit detail panel"
                         style={{
-                          background: "none",
-                          border: "1px solid #252538", color: "#ffa94d",
-                          borderRadius: 4, padding: "4px 8px", fontSize: 10, cursor: "pointer",
-                          whiteSpace: "nowrap",
+                          background: "#74c0fc12",
+                          border: "1px solid #74c0fc44", color: "#74c0fc",
+                          borderRadius: 4, padding: "12px 8px", fontSize: 10, cursor: "pointer",
+                          whiteSpace: "nowrap", fontWeight: 600,
+                          alignSelf: "stretch",
+                          display: "flex", alignItems: "center",
                         }}
                       >
                         Info
                       </button>
                     )}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleExpand(bit.id);
-                      }}
-                      title={isExpanded ? "Collapse" : "Expand full text"}
-                      style={{
-                        background: isExpanded ? "#252538" : "none",
-                        border: "1px solid #252538", color: isExpanded ? "#4ecdc4" : "#888",
-                        borderRadius: 4, padding: "4px 8px", fontSize: 10, cursor: "pointer",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {isExpanded ? "Collapse" : "View"}
-                    </button>
                   </div>
                 </div>
 

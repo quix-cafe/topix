@@ -45,13 +45,7 @@ export function TouchstonePanel({
       <div style={{ textAlign: "center", padding: 60, color: "#555" }}>
         <div style={{ fontSize: 32, marginBottom: 12 }}>{"🔄"}</div>
         <div style={{ fontSize: 14, color: "#888", marginBottom: 8 }}>No recurring touchstones detected yet.</div>
-        <div style={{ fontSize: 12, color: "#666", lineHeight: 1.6, maxWidth: 420, margin: "0 auto", marginBottom: 16 }}>
-          {(bits || []).length === 0
-            ? "Upload and parse transcripts to get started."
-            : transcriptCount === 1
-              ? `${(bits || []).length} bits from 1 transcript. Parse additional transcripts of the same material to find recurring jokes.`
-              : `${(bits || []).length} bits across ${transcriptCount} transcripts. ${matchCount > 0 ? `${matchCount} matches found (${sameBitCount} same-bit) but none met the clustering threshold.` : "No matches detected yet — bits may be too dissimilar or matching hasn't run."}`}
-        </div>
+
         {transcriptCount >= 2 && onHunt && (
           <HuntButton onHunt={onHunt} huntProgress={huntProgress} processing={processing} />
         )}
@@ -381,8 +375,8 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
             {touchstone.manualName && <span style={{ fontSize: 9, color: "#c4b5fd", marginLeft: 6, fontWeight: 400 }}>edited</span>}
           </div>
 
-          {/* Summary */}
-          {touchstone.summary && (
+          {/* Summary — skip stale instance-count summaries from old data */}
+          {touchstone.summary && !/^\d+ instances?\s/.test(touchstone.summary) && (
             <div style={{ fontSize: 11, color: "#888", lineHeight: 1.4, marginBottom: 4 }}>
               {touchstone.summary}
             </div>
@@ -397,12 +391,12 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
 
           {/* Ideal text preview */}
           {touchstone.idealText && (
-            <div style={{ marginTop: 4, padding: "6px 10px", background: "#0a0a14", borderRadius: 5, border: "1px solid #1a1a2a", fontSize: 11, color: "#999", lineHeight: 1.5, maxHeight: 52, overflow: "hidden", position: "relative" }}>
+            <div style={{ marginTop: 4, padding: "8px 10px", background: "#0a0a14", borderRadius: 5, border: "1px solid #1a1a2a", fontSize: 11, color: "#999", lineHeight: 1.5, maxHeight: 104, overflow: "hidden", position: "relative" }}>
               <span style={{ fontSize: 9, color: touchstone.manualIdealText ? "#c4b5fd" : "#74c0fc", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                 {touchstone.manualIdealText ? "Edited" : "Synth"}{" \u2014 "}
               </span>
-              {touchstone.idealText.slice(0, 180)}{touchstone.idealText.length > 180 ? "..." : ""}
-              <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 16, background: "linear-gradient(transparent, #12121e)" }} />
+              {touchstone.idealText.slice(0, 400)}{touchstone.idealText.length > 400 ? "..." : ""}
+              <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 20, background: "linear-gradient(transparent, #12121e)" }} />
             </div>
           )}
 
@@ -417,22 +411,19 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
         </div>
 
         {/* Right column: stats + actions */}
-        <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, minWidth: 100 }}>
+        <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, minWidth: 110 }}>
           <div style={{ background: matchColor, color: "#000", padding: "3px 10px", borderRadius: 5, fontWeight: 700, fontSize: 13 }}>
             {avgPct}%
           </div>
-          <div style={{ fontSize: 10, color: "#888", whiteSpace: "nowrap" }}>
-            {instanceCount}x &middot; {sourceCount} file{sourceCount !== 1 ? "s" : ""}
-          </div>
-          {avgDuration && <div style={{ fontSize: 10, color: "#666" }}>{formatDuration(avgDuration)}</div>}
+          {avgDuration && <div style={{ fontSize: 10, color: "#74c0fc" }}>{formatDuration(avgDuration)}</div>}
           <div style={{ fontSize: 10, color: "#666" }}>
             {sameBitCount > 0 && <span style={{ color: "#51cf66" }}>{sameBitCount} same</span>}
             {sameBitCount > 0 && evolvedCount > 0 && " \u00B7 "}
             {evolvedCount > 0 && <span style={{ color: "#ffa94d" }}>{evolvedCount} evolved</span>}
           </div>
 
-          {/* Action buttons */}
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end", marginTop: 2 }}>
+          {/* Action buttons — 2x2 grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: 2, width: "100%" }}>
             {onConfirm && (
               <button onClick={(e) => { e.stopPropagation(); onConfirm(touchstone.id); }}
                 style={cardBtn("#51cf6611", "#51cf6633", "#51cf66")}>Confirm</button>
@@ -449,12 +440,12 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
               <button onClick={(e) => { e.stopPropagation(); if (!processing && !touchstone.manualIdealText) onSynthesize(touchstone.id); }}
                 style={cardBtn("#74c0fc11", "#74c0fc33", "#74c0fc", { disabled: processing || touchstone.manualIdealText })}
                 title={touchstone.manualIdealText ? "Ideal text is manually edited" : ""}>
-                {touchstone.idealText ? "Re-synth" : "Synthesize"}
+                {touchstone.idealText ? "Re-synth" : "Synth"}
               </button>
             )}
             {onMerge && (
               <button onClick={(e) => { e.stopPropagation(); onMerge(touchstone.id); }}
-                style={cardBtn("#c4b5fd11", "#c4b5fd33", "#c4b5fd")}>Merge</button>
+                style={cardBtn("#ffa94d11", "#ffa94d33", "#ffa94d")}>Merge</button>
             )}
             {onRemove && (
               <button onClick={(e) => { e.stopPropagation(); onRemove(touchstone.id); }}
@@ -649,63 +640,53 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           <span style={{ fontSize: 11, color: touchstone.category === "confirmed" ? "#51cf66" : touchstone.category === "rejected" ? "#666" : "#ffa94d", fontWeight: 600, textTransform: "uppercase" }}>
             {touchstone.category === "confirmed" ? "Confirmed" : touchstone.category === "rejected" ? "Rejected" : "Possible"}
           </span>
+          {renamePending?.loading && <span style={{ fontSize: 11, color: "#555" }}>generating...</span>}
+        </div>
+
+        {/* Action buttons — separated from title */}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
           {onGenerateTitle && !renamePending && !editingTitle && (
             <button onClick={handleAutoRename} style={{ background: "none", border: "1px solid #333", color: "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
               {touchstone.manualName ? "AI Rename" : "Rename"}
             </button>
           )}
           {onConfirmTouchstone && (
-            <button
-              onClick={() => onConfirmTouchstone(touchstone.id)}
-              style={{ background: "#51cf6611", border: "1px solid #51cf6633", color: "#51cf66", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}
-            >
+            <button onClick={() => onConfirmTouchstone(touchstone.id)}
+              style={{ background: "#51cf6611", border: "1px solid #51cf6633", color: "#51cf66", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
               Confirm
             </button>
           )}
           {onRestoreTouchstone && (
-            <button
-              onClick={() => onRestoreTouchstone(touchstone.id)}
-              style={{ background: "#4ecdc411", border: "1px solid #4ecdc433", color: "#4ecdc4", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}
-            >
+            <button onClick={() => onRestoreTouchstone(touchstone.id)}
+              style={{ background: "#4ecdc411", border: "1px solid #4ecdc433", color: "#4ecdc4", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
               Restore
             </button>
           )}
-          {onRemoveTouchstone && (
-            <button
-              onClick={() => onRemoveTouchstone(touchstone.id)}
-              style={{ background: "#ff6b6b11", border: "1px solid #ff6b6b33", color: "#ff6b6b", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}
-            >
-              Reject
-            </button>
-          )}
-          {onMergeTouchstone && mergeTargets && mergeTargets.length > 0 && (
-            <button
-              onClick={() => { setMergeOpen(!mergeOpen); setMergeSearch(""); setMergeResult(null); }}
-              style={{ background: mergeOpen ? "#c4b5fd22" : "none", border: "1px solid #c4b5fd44", color: "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}
-            >
-              {mergeOpen ? "Cancel merge" : "Merge into..."}
-            </button>
-          )}
           {onCommuneTouchstone && (
-            <button
-              onClick={() => onCommuneTouchstone(touchstone.id)}
-              disabled={processing}
-              style={{ background: processing ? "none" : "#c4b5fd11", border: "1px solid #c4b5fd33", color: processing ? "#555" : "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: processing ? "default" : "pointer", fontWeight: 600 }}
-            >
+            <button onClick={() => onCommuneTouchstone(touchstone.id)} disabled={processing}
+              style={{ background: processing ? "none" : "#c4b5fd11", border: "1px solid #c4b5fd33", color: processing ? "#555" : "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: processing ? "default" : "pointer", fontWeight: 600 }}>
               Commune
             </button>
           )}
           {onSynthesizeTouchstone && (
-            <button
-              onClick={() => onSynthesizeTouchstone(touchstone.id)}
-              disabled={processing || touchstone.manualIdealText}
+            <button onClick={() => onSynthesizeTouchstone(touchstone.id)} disabled={processing || touchstone.manualIdealText}
               title={touchstone.manualIdealText ? "Ideal text is manually edited — unlock it first" : ""}
-              style={{ background: processing || touchstone.manualIdealText ? "none" : "#74c0fc11", border: "1px solid #74c0fc33", color: processing || touchstone.manualIdealText ? "#555" : "#74c0fc", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: processing || touchstone.manualIdealText ? "default" : "pointer", fontWeight: 600 }}
-            >
+              style={{ background: processing || touchstone.manualIdealText ? "none" : "#74c0fc11", border: "1px solid #74c0fc33", color: processing || touchstone.manualIdealText ? "#555" : "#74c0fc", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: processing || touchstone.manualIdealText ? "default" : "pointer", fontWeight: 600 }}>
               {touchstone.manualIdealText ? "Synthesize (locked)" : touchstone.idealText ? "Re-synthesize" : "Synthesize"}
             </button>
           )}
-          {renamePending?.loading && <span style={{ fontSize: 11, color: "#555" }}>generating...</span>}
+          {onMergeTouchstone && mergeTargets && mergeTargets.length > 0 && (
+            <button onClick={() => { setMergeOpen(!mergeOpen); setMergeSearch(""); setMergeResult(null); }}
+              style={{ background: mergeOpen ? "#c4b5fd22" : "none", border: "1px solid #ffa94d44", color: "#ffa94d", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              {mergeOpen ? "Cancel merge" : "Merge into..."}
+            </button>
+          )}
+          {onRemoveTouchstone && (
+            <button onClick={() => onRemoveTouchstone(touchstone.id)}
+              style={{ background: "#ff6b6b11", border: "1px solid #ff6b6b33", color: "#ff6b6b", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              Reject
+            </button>
+          )}
         </div>
 
         {/* Merge picker */}
@@ -775,7 +756,9 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           </div>
         )}
 
-        <p style={{ fontSize: 13, color: "#999", lineHeight: 1.6 }}>{touchstone.summary}</p>
+        {touchstone.summary && !/^\d+ instances?\s/.test(touchstone.summary) && (
+          <p style={{ fontSize: 13, color: "#999", lineHeight: 1.6 }}>{touchstone.summary}</p>
+        )}
       </div>
 
       {/* Ideal Text */}
@@ -853,11 +836,6 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
-        <StatBox label="Match %" value={`${avgPct}%`} color={pctColor(avgPct)} />
-        <StatBox label="Occurrences" value={instances.length} color="#ff6b6b" />
-        <StatBox label="Transcripts" value={new Set(instances.map((i) => i.sourceFile)).size} color="#4ecdc4" />
-      </div>
 
       {/* Match details & reasoning */}
       <div className="card" style={{ cursor: "default", marginBottom: 16 }}>

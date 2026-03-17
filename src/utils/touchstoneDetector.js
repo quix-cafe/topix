@@ -464,27 +464,12 @@ function generateTouchstoneName(cluster, commonWords) {
  * Generate a summary for the touchstone
  */
 function generateTouchstoneSummary(cluster, matches) {
-  const sourceFiles = [...new Set(cluster.map((b) => b.sourceFile))];
-  const sameBitCount = matches.filter((m) => m.relationship === "same_bit").length;
-  const evolvedCount = matches.filter((m) => m.relationship === "evolved").length;
-
-  let parts = [];
-  parts.push(`${cluster.length} instance${cluster.length > 1 ? "s" : ""}`);
-
-  if (sourceFiles.length > 1) {
-    parts.push(`across ${sourceFiles.length} transcripts`);
-  } else {
-    parts.push(`in "${sourceFiles[0]}"`);
-  }
-
-  if (sameBitCount > 0) {
-    parts.push(`${sameBitCount} confirmed same-bit match${sameBitCount > 1 ? "es" : ""}`);
-  }
-  if (evolvedCount > 0) {
-    parts.push(`${evolvedCount} evolved version${evolvedCount > 1 ? "s" : ""}`);
-  }
-
-  return parts.join(" — ");
+  // Use the top match reason as the summary if available
+  const reasons = matches
+    .map((m) => m.reason)
+    .filter(Boolean);
+  if (reasons.length > 0) return reasons[0];
+  return "";
 }
 
 /**

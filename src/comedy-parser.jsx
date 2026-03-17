@@ -120,6 +120,8 @@ export default function ComedyParser() {
   const huntControllerRef = useRef(null);
   const matchBitLiveRef = useRef(null);
   const revalidateMatchesRef = useRef(null);
+  const revalidateTimerRef = useRef(null);
+  const revalidatePendingBitsRef = useRef(new Set());
   const embeddingStore = useRef(new EmbeddingStore()).current;
   const [mixTranscriptInit, setMixTranscriptInit] = useState(null);
   const [mixBitInit, setMixBitInit] = useState(null);
@@ -466,6 +468,26 @@ export default function ComedyParser() {
   }, []);
   revalidateMatchesRef.current = revalidateMatchesForBits;
 
+  // Debounced revalidation — collects changed bit IDs and fires 30s after last change
+  // Skips if processing is active (e.g. embedding, hunting) to avoid Ollama contention
+  const debouncedRevalidate = useCallback((bitIds) => {
+    for (const id of bitIds) revalidatePendingBitsRef.current.add(id);
+    if (revalidateTimerRef.current) clearTimeout(revalidateTimerRef.current);
+    revalidateTimerRef.current = setTimeout(() => {
+      const pending = [...revalidatePendingBitsRef.current];
+      revalidatePendingBitsRef.current.clear();
+      revalidateTimerRef.current = null;
+      if (pending.length === 0) return;
+      const s = stateRef.current;
+      if (s.processing) {
+        console.log("[Revalidate] Skipping — processing is active, will retry in 30s");
+        debouncedRevalidate(pending);
+        return;
+      }
+      revalidateMatchesRef.current?.(pending, s.topics, s.matches);
+    }, 30000);
+  }, []);
+
   // Handle split bit operation
   const handleSplitBit = useCallback(async (bitId, newBits) => {
     const s = stateRef.current;
@@ -563,9 +585,9 @@ export default function ComedyParser() {
       console.error("Error saving boundary change:", err);
     }
 
-    // Re-validate all matches involving this bit (fullText changed)
-    revalidateMatchesRef.current?.([bitId], updatedTopics, s.matches);
-  }, []);
+    // Re-validate all matches involving this bit (debounced)
+    debouncedRevalidate([bitId]);
+  }, [debouncedRevalidate]);
 
   // Handle "take" overlap — one bit claims the overlapping text, shrinking conflicting bits
   const handleTakeOverlap = useCallback(async (takerId, conflictingUpdates) => {
@@ -580,8 +602,8 @@ export default function ComedyParser() {
       console.error("Error saving take overlap:", err);
     }
 
-    revalidateMatchesRef.current?.(shrunkIds, updatedTopics, s.matches);
-  }, []);
+    debouncedRevalidate(shrunkIds);
+  }, [debouncedRevalidate]);
 
   const handleScrollBoundary = useCallback(async (bitId, nextBitId, direction) => {
     const s = stateRef.current;
@@ -597,8 +619,8 @@ export default function ComedyParser() {
       console.error("Error saving boundary scroll:", err);
     }
 
-    revalidateMatchesRef.current?.(changedBitIds, updatedTopics, s.matches);
-  }, []);
+    debouncedRevalidate(changedBitIds);
+  }, [debouncedRevalidate]);
 
   const handleGenerateTitle = useCallback(async (fullText) => {
     const model = stateRef.current.selectedModel;
@@ -1076,6 +1098,7 @@ export default function ComedyParser() {
       update('touchstones', (prev) => {
         const updateIn = (list) => list.map((t) => {
           if (t.id !== touchstoneId) return t;
+          if (t.manualIdealText) return t; // Don't overwrite manually edited ideal text
           return { ...t, idealText: result.idealText, idealTextNotes: result.notes || '' };
         });
         return { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };
@@ -1404,8 +1427,8 @@ export default function ComedyParser() {
     const embModel = stateRef.current.embeddingModel;
     try {
       set('status', `Embedding ${s.topics.length} bits...`);
-      await embeddingStore.ensureEmbeddings(s.topics, embModel, ({ done, total }) => {
-        set('status', `Embedding ${total} bits... (${done}/${total})`);
+      await embeddingStore.ensureEmbeddings(s.topics, embModel, ({ done, total, status }) => {
+        set('status', status);
         set('embeddingStatus', { cached: done, total });
       });
       useEmbeddings = true;
@@ -1526,8 +1549,8 @@ export default function ComedyParser() {
     try {
       const allBits = [...trBits, ...otherBits];
       set('status', `Embedding ${allBits.length} bits...`);
-      await embeddingStore.ensureEmbeddings(allBits, embModel, ({ done, total }) => {
-        set('status', `Embedding ${total} bits... (${done}/${total})`);
+      await embeddingStore.ensureEmbeddings(allBits, embModel, ({ done, total, status }) => {
+        set('status', status);
         set('embeddingStatus', { cached: done, total });
       });
       useEmbeddings = true;
@@ -2606,9 +2629,9 @@ export default function ComedyParser() {
                 onClick={async () => {
                   try {
                     set('status', `Embedding ${topics.length} bits...`);
-                    await embeddingStore.ensureEmbeddings(topics, embeddingModel, ({ done, total }) => {
+                    await embeddingStore.ensureEmbeddings(topics, embeddingModel, ({ done, total, status }) => {
                       set('embeddingStatus', { cached: done, total });
-                      set('status', `Embedding ${total} bits... (${done}/${total})`);
+                      set('status', status);
                     });
                     set('embeddingStatus', { cached: embeddingStore.size, total: topics.length });
                     set('status', `Embedded ${topics.length} bits.`);
@@ -3172,6 +3195,15 @@ export default function ComedyParser() {
                     if (edits.userReasons !== undefined) updated.userReasons = edits.userReasons;
                     if (edits.rejectedReasons !== undefined) updated.rejectedReasons = edits.rejectedReasons;
                     if (edits.reasons !== undefined) updated.matchInfo = { ...updated.matchInfo, reasons: edits.reasons };
+                    if (edits.idealText !== undefined) updated.idealText = edits.idealText;
+                    if (edits.manualIdealText !== undefined) updated.manualIdealText = edits.manualIdealText;
+                    if (edits.idealTextNotes !== undefined) updated.idealTextNotes = edits.idealTextNotes;
+                    if (edits.name !== undefined) {
+                      updated.name = edits.name;
+                      const key = [...updated.bitIds].sort().join(",");
+                      touchstoneNameCache.current.set(key, edits.name);
+                    }
+                    if (edits.manualName !== undefined) updated.manualName = edits.manualName;
                     return updated;
                   });
                   return { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };

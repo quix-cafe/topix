@@ -177,7 +177,7 @@ export async function runParseLoop({
 
     console.log(`\n=== ${logPrefix.toUpperCase()} PASS ${pass} (freeze streak: ${consecutiveFreezes}/${maxConsecutiveFreezes}) ===`);
     console.log(`[${logPrefix} ${pass}] Processing ${textToProcess.length} chars (${textToProcessLength}KB), ${coveredRanges.length} ranges covered`);
-    onStatus(`Pass ${pass}: Processing ${textToProcessLength}KB with ${selectedModel}...`);
+    onStatus(`${transcript?.name ? transcript.name + " — " : ""}Pass ${pass}: Processing ${textToProcessLength}KB with ${selectedModel}...`);
 
     const result = await processRemainingText(transcript, textToProcess, pass, controller, segments);
 

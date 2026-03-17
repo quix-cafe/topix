@@ -11,7 +11,10 @@
       "Bash(chmod:*)",
       "Bash(node -c:*)",
       "Bash(npx --yes acorn:*)",
-      "Bash(npx vite:*)"
+      "Bash(npx vite:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }

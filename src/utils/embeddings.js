@@ -30,11 +30,15 @@ export async function embedText(text, model = "mxbai-embed-large") {
 
 /**
  * Generate embeddings for multiple texts in batches
+ * @param {function} onBatchProgress - callback({batchDone, batchTotal}) called after each batch
  */
-export async function embedBatch(texts, model = "mxbai-embed-large") {
+export async function embedBatch(texts, model = "mxbai-embed-large", onBatchProgress) {
   const results = [];
+  const totalBatches = Math.ceil(texts.length / BATCH_SIZE);
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    onBatchProgress?.({ batchDone: batchNum - 1, batchTotal: totalBatches, textsDone: i, textsTotal: texts.length });
     const res = await fetch("http://localhost:11434/api/embed", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -51,6 +55,7 @@ export async function embedBatch(texts, model = "mxbai-embed-large") {
     for (const emb of data.embeddings) {
       results.push(new Float32Array(emb));
     }
+    onBatchProgress?.({ batchDone: batchNum, batchTotal: totalBatches, textsDone: Math.min(i + BATCH_SIZE, texts.length), textsTotal: texts.length });
   }
   return results;
 }
@@ -173,7 +178,7 @@ export class EmbeddingStore {
    * Compute missing/stale embeddings for a set of bits.
    * @param {Array} bits - bits to embed
    * @param {string} model - embedding model name
-   * @param {function} onProgress - callback({done, total})
+   * @param {function} onProgress - callback({done, total, status})
    */
   async ensureEmbeddings(bits, model, onProgress) {
     // Find bits that need (re-)embedding
@@ -185,15 +190,24 @@ export class EmbeddingStore {
       return false;
     });
 
+    const cached = bits.length - toEmbed.length;
+
     if (toEmbed.length === 0) {
-      onProgress?.({ done: bits.length, total: bits.length });
+      onProgress?.({ done: bits.length, total: bits.length, status: `All ${bits.length} bits already embedded` });
       return;
     }
 
-    console.log(`[Embeddings] Computing ${toEmbed.length} embeddings (${bits.length - toEmbed.length} cached)`);
+    console.log(`[Embeddings] Computing ${toEmbed.length} embeddings (${cached} cached) using ${model}`);
 
     const texts = toEmbed.map(bitToEmbedText);
-    const vectors = await embedBatch(texts, model);
+    const vectors = await embedBatch(texts, model, ({ textsDone, textsTotal }) => {
+      const totalDone = cached + textsDone;
+      onProgress?.({
+        done: totalDone,
+        total: bits.length,
+        status: `Embedding with ${model}: ${totalDone}/${bits.length} bits (${cached} cached, ${textsDone}/${textsTotal} computing...)`,
+      });
+    });
 
     for (let i = 0; i < toEmbed.length; i++) {
       const bit = toEmbed[i];
@@ -210,9 +224,9 @@ export class EmbeddingStore {
       saveEmbeddingToDB(record).catch(err =>
         console.warn(`[Embeddings] DB save failed for ${bit.id}:`, err.message)
       );
-
-      onProgress?.({ done: bits.length - toEmbed.length + i + 1, total: bits.length });
     }
+
+    onProgress?.({ done: bits.length, total: bits.length, status: `Embedded ${bits.length} bits (${cached} were cached, ${toEmbed.length} computed)` });
   }
 
   /**

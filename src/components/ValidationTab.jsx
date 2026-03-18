@@ -9,6 +9,8 @@ export function ValidationTab({
   transcripts,
   touchstones,
   matches,
+  filter,
+  onFilterChange,
   onUpdateBitPosition,
   onGoToMix,
   onSelectBit,
@@ -19,7 +21,7 @@ export function ValidationTab({
   const [expandedIssue, setExpandedIssue] = useState(null);
   const [autoFixing, setAutoFixing] = useState(null);
   const [revalidating, setRevalidating] = useState(null); // bitId being revalidated
-  const [filter, setFilter] = useState("all"); // "all", "overlap", "mismatch", "missing", "bounds", "gap", "join", "overmatch"
+  const setFilter = onFilterChange;
 
   // Build transcript map
   const transcriptMap = useMemo(() => {

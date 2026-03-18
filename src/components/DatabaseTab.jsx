@@ -9,16 +9,19 @@ export function DatabaseTab({
   const [shuffleKey, setShuffleKey] = useState(0);
   const [search, setSearch] = useState("");
 
-  // Collect all bit IDs that belong to any touchstone
-  const touchstoneBitIds = useMemo(() => {
-    const ids = new Set();
+  // Map bit IDs to their touchstone names
+  const bitToTouchstone = useMemo(() => {
+    const map = new Map();
     for (const cat of ["confirmed", "possible"]) {
       for (const ts of touchstones?.[cat] || []) {
-        for (const id of ts.bitIds || []) ids.add(id);
+        for (const id of ts.bitIds || []) {
+          map.set(id, ts.name || ts.manualName || "unnamed");
+        }
       }
     }
-    return ids;
+    return map;
   }, [touchstones]);
+  const touchstoneBitIds = useMemo(() => new Set(bitToTouchstone.keys()), [bitToTouchstone]);
 
   // Search results — when search is active, show all matching bits
   const searchResults = useMemo(() => {
@@ -107,16 +110,25 @@ export function DatabaseTab({
       {bitsToShow.map((topic) => (
         <div key={topic.id} className="card" onClick={() => setSelectedTopic(topic)}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
               <span style={{ fontWeight: 700, color: "#eee", fontSize: 15 }}>{topic.title}</span>
+              {bitToTouchstone.has(topic.id) && (
+                <span style={{
+                  fontSize: 9, padding: "1px 5px", borderRadius: 4,
+                  background: "#da77f218", color: "#da77f2", border: "1px solid #da77f233",
+                  flexShrink: 0, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>
+                  {bitToTouchstone.get(topic.id)}
+                </span>
+              )}
               <span style={{
-                marginLeft: 8,
                 fontSize: 10,
                 padding: "2px 6px",
                 borderRadius: 4,
                 background: "#1a1a2a",
                 color: "#888",
                 fontFamily: "'JetBrains Mono', monospace",
+                flexShrink: 0,
               }}>
                 {topic.sourceFile}
               </span>

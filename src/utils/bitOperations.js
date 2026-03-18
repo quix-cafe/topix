@@ -22,13 +22,17 @@ export function updateTouchstoneBitIds(touchstones, oldIds, newIds, newBits) {
     const finalInstances = [...keptInstances, ...newInstances];
     const finalBitIds = [...keptBitIds, ...newIds];
 
+    // Invalidate name if 25%+ of bits were affected by split/join
+    const affectedCount = ts.bitIds.filter((id) => oldSet.has(id)).length;
+    const significantChange = ts.bitIds.length > 0 && (affectedCount / ts.bitIds.length) >= 0.25;
     return {
       ...ts,
       instances: finalInstances,
       bitIds: finalBitIds,
       frequency: finalInstances.length,
       sourceCount: new Set(finalInstances.map((i) => i.sourceFile)).size,
-      autoNamed: false, // trigger re-name since content changed
+      autoNamed: significantChange ? false : ts.autoNamed,
+      lastNamedBitCount: significantChange ? undefined : ts.lastNamedBitCount,
     };
   });
   return {

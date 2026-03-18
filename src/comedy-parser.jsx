@@ -129,6 +129,7 @@ export default function ComedyParser() {
   const [nowPlaying, setNowPlaying] = useState(null); // { url, title, hash }
   const [audioIsPlaying, setAudioIsPlaying] = useState(false);
   const miniPlayerRef = useRef(null);
+  const [validationFilter, setValidationFilter] = useState("all");
   const [approvedGaps, setApprovedGaps] = useState(() => {
     try { return JSON.parse(localStorage.getItem("topix-approved-gaps") || "[]"); } catch { return []; }
   });
@@ -307,17 +308,20 @@ export default function ComedyParser() {
       });
       set('touchstones', named);
 
-      // Find touchstones that still need LLM naming (not cached, not already in-flight)
-      // Skip confirmed touchstones (only rename on manual refresh) and manually-named ones
-      // Skip touchstones that were already auto-named (persisted across reloads)
+      // Find touchstones that need LLM naming:
+      // - Never named yet (not autoNamed, not cached, not manualName)
+      // - OR significantly changed: bit count grew 25%+ since last naming
       const toName = named.possible.filter(ts => {
         if (ts.manualName) return false;
-        if (ts.autoNamed) return false;
-        const cached = findCachedName(ts.bitIds);
-        if (cached) return false;
         const key = keyOf(ts);
         if (namingInFlight.current.has(key)) return false;
-        return true;
+        if (!ts.autoNamed && !findCachedName(ts.bitIds)) return true;
+        // Check for significant change: 25%+ growth since last naming
+        if (ts.autoNamed && ts.lastNamedBitCount) {
+          const growth = (ts.bitIds.length - ts.lastNamedBitCount) / ts.lastNamedBitCount;
+          if (growth >= 0.25) return true;
+        }
+        return false;
       });
 
       if (toName.length > 0) {
@@ -380,12 +384,12 @@ export default function ComedyParser() {
                   if (t.manualName || t.category === "confirmed") return t;
                   // Match by exact key or by high bitId overlap
                   const tKey = keyOf(t);
-                  if (tKey === tsKey) return { ...t, name, autoNamed: true };
+                  if (tKey === tsKey) return { ...t, name, autoNamed: true, lastNamedBitCount: t.bitIds.length };
                   // Also check overlap in case cluster shifted
                   const tSet = new Set(t.bitIds);
                   const overlap = ts.bitIds.filter(id => tSet.has(id)).length;
                   if (overlap >= Math.ceil(ts.bitIds.length * 0.5) && !findCachedName(t.bitIds)) {
-                    return { ...t, name, autoNamed: true };
+                    return { ...t, name, autoNamed: true, lastNamedBitCount: t.bitIds.length };
                   }
                   return t;
                 });
@@ -393,7 +397,7 @@ export default function ComedyParser() {
               });
               console.log(`[Touchstone] Auto-named "${ts.name}" → "${name}" (core: ${coreIds.length}/${ts.bitIds.length} bits)`);
             } catch (err) {
-              if (err.name === "AbortError") break;
+              if (err.name === "AbortError") { set('status', null); break; }
               console.warn(`[Touchstone] Auto-name failed:`, err.message);
             } finally {
               namingInFlight.current.delete(tsKey);
@@ -1404,7 +1408,7 @@ export default function ComedyParser() {
         target.bitIds = [...target.bitIds, ...newBitIds];
         target.instances = [...target.instances, ...newInstances];
         target.frequency = target.instances.length;
-        if (!target.manualName) target.autoNamed = false; // trigger re-name
+        // Keep existing name — only re-name via manual refresh
       }
 
       absorbedPossibles.add(possible.id);
@@ -1483,7 +1487,6 @@ export default function ComedyParser() {
           .filter(n => n.score >= 0.65)
           .filter(n => crossIds.has(n.bitId))
           .filter(n => !existingPairs.has([bit.id, n.bitId].sort().join(':')))
-          .slice(0, 5)
           .map(n => bitsById.get(n.bitId))
           .filter(Boolean);
       } else {
@@ -1492,13 +1495,14 @@ export default function ComedyParser() {
             const key = [bit.id, r.bit.id].sort().join(':');
             return !existingPairs.has(key);
           })
-          .slice(0, 5)
           .map(r => r.bit);
       }
 
-      if (candidates.length > 0) {
-        batches.push({ source: bit, candidates });
-        for (const c of candidates) {
+      // Batch candidates in groups of 5
+      for (let i = 0; i < candidates.length; i += 5) {
+        const chunk = candidates.slice(i, i + 5);
+        batches.push({ source: bit, candidates: chunk });
+        for (const c of chunk) {
           existingPairs.add([bit.id, c.id].sort().join(':'));
         }
       }
@@ -1598,7 +1602,6 @@ export default function ComedyParser() {
         candidates = neighbors
           .filter(n => n.score >= 0.65)
           .filter(n => !existingPairs.has([bit.id, n.bitId].sort().join(':')))
-          .slice(0, 5)
           .map(n => bitsById.get(n.bitId))
           .filter(Boolean);
       } else {
@@ -1607,13 +1610,14 @@ export default function ComedyParser() {
             const key = [bit.id, r.bit.id].sort().join(':');
             return !existingPairs.has(key);
           })
-          .slice(0, 5)
           .map(r => r.bit);
       }
 
-      if (candidates.length > 0) {
-        batches.push({ source: bit, candidates });
-        for (const c of candidates) {
+      // Batch candidates in groups of 5
+      for (let i = 0; i < candidates.length; i += 5) {
+        const chunk = candidates.slice(i, i + 5);
+        batches.push({ source: bit, candidates: chunk });
+        for (const c of chunk) {
           existingPairs.add([bit.id, c.id].sort().join(':'));
         }
       }
@@ -2382,6 +2386,7 @@ export default function ComedyParser() {
         instanceNumber: 1,
         confidence: 1,
         relationship: "same_bit",
+        communionStatus: "sainted",
       }],
       firstAppearance: { transcriptId: bit.transcriptId, bitId, sourceFile: bit.sourceFile },
       frequency: 1,
@@ -2811,7 +2816,7 @@ export default function ComedyParser() {
               className={`tab-btn ${activeTab === tab ? "active" : ""}`}
               onClick={() => setActiveTab(tab)}
             >
-              {tab}
+              {tab === "settings" ? "\u2699" : tab}
             </button>
           ))}
         </div>
@@ -3408,6 +3413,8 @@ export default function ComedyParser() {
             transcripts={transcripts}
             touchstones={touchstones}
             matches={matches}
+            filter={validationFilter}
+            onFilterChange={setValidationFilter}
             onUpdateBitPosition={handleBoundaryChange}
             onGoToMix={(tr, bitId, gapInfo) => { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setMixGapInit(gapInfo || null); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
             onSelectBit={setSelectedTopic}
@@ -3571,6 +3578,7 @@ export default function ComedyParser() {
         handleJoinBits={handleJoinBits}
         getMatchesForTopic={getMatchesForTopic}
         onBaptize={handleBaptizeBit}
+        onRename={handleConfirmRename}
         onCommuneBit={handleCommuneBit}
         onDeleteBit={handleDeleteBit}
         onApproveGap={handleApproveGap}
@@ -3615,7 +3623,7 @@ export default function ComedyParser() {
                 bitIds: [...t.bitIds, bitId],
                 frequency: t.instances.length + 1,
                 sourceCount: new Set([...t.instances.map((i) => i.sourceFile), bit.sourceFile]).size,
-                autoNamed: t.category === "confirmed" ? t.autoNamed : false, // re-name possible touchstones on new bit
+                autoNamed: t.autoNamed, // keep existing name — only re-name via manual refresh
               };
             });
             return { confirmed: addTo(prev.confirmed || []), possible: addTo(prev.possible || []), rejected: addTo(prev.rejected || []) };
@@ -3634,13 +3642,21 @@ export default function ComedyParser() {
         <div style={{
           position: "fixed", bottom: 20, right: 20, zIndex: 9999,
           background: "#1a1a2e", border: "1px solid #2a2a40", borderRadius: 12,
-          padding: "12px 16px", minWidth: 300, maxWidth: 400,
+          padding: "12px 16px", width: 480,
           boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <span style={{ fontSize: 12, color: "#ddd", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {nowPlaying.title}
             </span>
+            <button
+              onClick={() => { if (miniPlayerRef.current) miniPlayerRef.current.currentTime = Math.max(0, miniPlayerRef.current.currentTime - 10); }}
+              style={{ background: "#2a2a40", border: "1px solid #3a3a55", borderRadius: 6, color: "#aaa", fontSize: 11, padding: "2px 6px", cursor: "pointer", flexShrink: 0 }}
+            >-10s</button>
+            <button
+              onClick={() => { if (miniPlayerRef.current) miniPlayerRef.current.currentTime = Math.min(miniPlayerRef.current.duration || 0, miniPlayerRef.current.currentTime + 10); }}
+              style={{ background: "#2a2a40", border: "1px solid #3a3a55", borderRadius: 6, color: "#aaa", fontSize: 11, padding: "2px 6px", cursor: "pointer", flexShrink: 0 }}
+            >+10s</button>
             {activeTab !== "play" && (
               <span
                 onClick={() => setActiveTab("play")}

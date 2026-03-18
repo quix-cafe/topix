@@ -25,6 +25,7 @@ export function DetailPanel({
   onAddToTouchstone,
   onRemoveFromTouchstone,
   onBaptize,
+  onRename,
   onCommuneBit,
   onDeleteBit,
   onApproveGap,
@@ -35,6 +36,8 @@ export function DetailPanel({
   const [addedFeedback, setAddedFeedback] = useState(null);
   const [baptizing, setBaptizing] = useState(false);
   const [communing, setCommuning] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
 
   if (!selectedTopic) return null;
 
@@ -52,37 +55,49 @@ export function DetailPanel({
   const topicTouchstones = getBitTouchstones(selectedTopic.id, allTouchstones);
 
   return (
-    <div className="detail-panel">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
-        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
-          <h2 style={{
-            fontFamily: "'Playfair Display', serif",
-            fontSize: 20,
-            fontWeight: 700,
-            color: "#eee",
-            flex: 1,
-          }}>
-            {selectedTopic.title}
-          </h2>
-          {onBaptize && selectedTopic.fullText?.trim() && !baptizing && (
-            <button
-              onClick={async () => {
-                setBaptizing(true);
-                try { await onBaptize(selectedTopic.id); } finally { setBaptizing(false); }
+    <div className="detail-panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "0 0 12px", borderBottom: "1px solid #1a1a2a", flexShrink: 0, position: "sticky", top: 0, background: "inherit", zIndex: 1 }}>
+        <div style={{ flex: 1 }}>
+          {renaming ? (
+            <input
+              type="text"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && renameValue.trim()) {
+                  onRename?.(selectedTopic.id, renameValue.trim());
+                  setRenaming(false);
+                } else if (e.key === "Escape") {
+                  setRenaming(false);
+                }
               }}
-              title="Generate new title"
+              onBlur={() => {
+                if (renameValue.trim() && renameValue.trim() !== selectedTopic.title) {
+                  onRename?.(selectedTopic.id, renameValue.trim());
+                }
+                setRenaming(false);
+              }}
+              autoFocus
               style={{
-                background: "none", border: "1px solid #333", color: "#888",
-                borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", flexShrink: 0,
+                fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 700, color: "#eee",
+                background: "#0d0d16", border: "1px solid #2a2a40", borderRadius: 6,
+                padding: "4px 8px", width: "100%", boxSizing: "border-box",
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "#da77f2"; e.currentTarget.style.borderColor = "#da77f244"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = "#888"; e.currentTarget.style.borderColor = "#333"; }}
+            />
+          ) : (
+            <h2
+              onClick={() => { if (onRename) { setRenameValue(selectedTopic.title || ""); setRenaming(true); } }}
+              style={{
+                fontFamily: "'Playfair Display', serif",
+                fontSize: 20,
+                fontWeight: 700,
+                color: "#eee",
+                cursor: onRename ? "text" : undefined,
+              }}
+              title={onRename ? "Click to rename" : undefined}
             >
-              Rename
-            </button>
-          )}
-          {baptizing && (
-            <span style={{ fontSize: 10, color: "#da77f2", flexShrink: 0 }}>Renaming...</span>
+              {selectedTopic.title}
+            </h2>
           )}
         </div>
         <button
@@ -99,22 +114,19 @@ export function DetailPanel({
           ×
         </button>
       </div>
+      <div style={{ flex: 1, overflowY: "auto", paddingTop: 16 }}>
 
       {/* Edit buttons - only show when not in editing mode and transcript is available */}
       {!adjustingBit && editingMode !== "split" && editingMode !== "join" && selectedTopic.textPosition && resolvedTranscript && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
           <button
             onClick={() => setAdjustingBit(selectedTopic)}
-            style={{ padding: "6px 10px", background: "#ffa94d18", color: "#ffa94d", border: "1px solid #ffa94d44", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
+            style={{ padding: "4px 8px", background: "#ffa94d18", color: "#ffa94d", border: "1px solid #ffa94d44", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
           >Adjust</button>
           <button
             onClick={() => setEditingMode("split")}
-            style={{ padding: "6px 10px", background: "#74c0fc18", color: "#74c0fc", border: "1px solid #74c0fc44", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
+            style={{ padding: "4px 8px", background: "#74c0fc18", color: "#74c0fc", border: "1px solid #74c0fc44", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
           >Split</button>
-          <button
-            onClick={() => setEditingMode("join")}
-            style={{ padding: "6px 10px", background: "#51cf6618", color: "#51cf66", border: "1px solid #51cf6644", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
-          >Join</button>
           {onGoToMix && (
             <button
               onClick={() => {
@@ -123,7 +135,7 @@ export function DetailPanel({
                 );
                 if (tr) onGoToMix(tr, selectedTopic.id);
               }}
-              style={{ padding: "6px 10px", background: "#4ecdc418", color: "#4ecdc4", border: "1px solid #4ecdc444", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
+              style={{ padding: "4px 8px", background: "#4ecdc418", color: "#4ecdc4", border: "1px solid #4ecdc444", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
             >Mix</button>
           )}
           {onBaptize && selectedTopic.fullText?.trim() && (
@@ -133,7 +145,7 @@ export function DetailPanel({
                 try { await onBaptize(selectedTopic.id); } finally { setBaptizing(false); }
               }}
               disabled={baptizing}
-              style={{ padding: "6px 10px", background: baptizing ? "#33333380" : "#da77f218", color: baptizing ? "#888" : "#da77f2", border: `1px solid ${baptizing ? "#33333380" : "#da77f244"}`, borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: baptizing ? "not-allowed" : "pointer" }}
+              style={{ padding: "4px 8px", background: baptizing ? "#33333380" : "#da77f218", color: baptizing ? "#888" : "#da77f2", border: `1px solid ${baptizing ? "#33333380" : "#da77f244"}`, borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: baptizing ? "not-allowed" : "pointer" }}
             >{baptizing ? "Baptizing..." : "Baptize"}</button>
           )}
           {onCommuneBit && selectedTopic.fullText?.trim() && getMatchesForTopic(selectedTopic.id).length > 0 && (
@@ -143,7 +155,7 @@ export function DetailPanel({
                 try { await onCommuneBit(selectedTopic.id); } finally { setCommuning(false); }
               }}
               disabled={communing}
-              style={{ padding: "6px 10px", background: communing ? "#33333380" : "#74c0fc18", color: communing ? "#888" : "#74c0fc", border: `1px solid ${communing ? "#33333380" : "#74c0fc44"}`, borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: communing ? "not-allowed" : "pointer" }}
+              style={{ padding: "4px 8px", background: communing ? "#33333380" : "#339af018", color: communing ? "#888" : "#339af0", border: `1px solid ${communing ? "#33333380" : "#339af044"}`, borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: communing ? "not-allowed" : "pointer" }}
             >{communing ? "Communing..." : `Commune (${getMatchesForTopic(selectedTopic.id).length})`}</button>
           )}
           {onDeleteBit && (
@@ -158,7 +170,7 @@ export function DetailPanel({
                 onDeleteBit(selectedTopic.id);
                 setSelectedTopic(null);
               }}
-              style={{ padding: "6px 10px", background: "#ff6b6b18", color: "#ff6b6b", border: "1px solid #ff6b6b44", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
+              style={{ padding: "4px 8px", background: "#ff6b6b18", color: "#ff6b6b", border: "1px solid #ff6b6b44", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}
             >Delete</button>
           )}
         </div>
@@ -225,38 +237,61 @@ export function DetailPanel({
         />
       )}
 
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-          <span
-            className="tag-pill"
-            style={{ background: "#1a1a2a", color: "#888", border: "1px solid #252538", cursor: onGoToMix ? "pointer" : undefined }}
-            onClick={() => {
-              if (!onGoToMix) return;
-              const tr = (transcripts || []).find(
-                (t) => t.id === selectedTopic.transcriptId || t.name === selectedTopic.sourceFile
-              );
-              if (tr) onGoToMix(tr, selectedTopic.id);
-            }}
-            title={onGoToMix ? "Open in Mix view" : undefined}
-          >
-            {selectedTopic.sourceFile}
-          </span>
+      {/* Source filename */}
+      <div style={{ marginBottom: 4, fontSize: 11 }}>
+        {(() => {
+          const src = selectedTopic.sourceFile || "";
+          const ratingMatch = src.match(/^\[(.{5})\]\s*/);
+          const durMatch = src.match(/\{(\d{2}:\d{2})\}/);
+          const extMatch = src.match(/\.[^.]+$/);
+          const rating = ratingMatch ? ratingMatch[1] : null;
+          const dur = durMatch ? durMatch[1] : null;
+          let titlePart = src;
+          if (ratingMatch) titlePart = titlePart.slice(ratingMatch[0].length);
+          if (durMatch) titlePart = titlePart.slice(0, titlePart.indexOf(durMatch[0])).trim();
+          else if (extMatch) titlePart = titlePart.slice(0, titlePart.lastIndexOf(extMatch[0])).trim();
 
-        </div>
-      </div>
+          const ratingColors = rating?.includes('+') ? { bg: "#51cf6618", fg: "#51cf66" }
+            : rating?.includes('x') ? { bg: "#ff6b6b18", fg: "#ff6b6b" }
+            : { bg: "#88888818", fg: "#888" };
 
-      {/* Position info */}
-      {selectedTopic.textPosition && (
-        <div style={{ marginBottom: 16, padding: "10px", background: "#1a1a2a", borderRadius: "8px", fontSize: "11px" }}>
-          <div style={{ color: "#666", marginBottom: 4 }}>Position</div>
-          <div style={{ color: "#4ecdc4", fontFamily: "'JetBrains Mono', monospace", fontSize: "10px" }}>
-            {selectedTopic.textPosition.startChar} - {selectedTopic.textPosition.endChar}
-            <span style={{ color: "#888", marginLeft: 8 }}>
-              ({selectedTopic.textPosition.endChar - selectedTopic.textPosition.startChar} chars)
+          return (
+            <span
+              style={{ cursor: onGoToMix ? "pointer" : undefined, fontFamily: "'JetBrains Mono', monospace" }}
+              onClick={() => {
+                if (!onGoToMix) return;
+                const tr = (transcripts || []).find((t) => t.id === selectedTopic.transcriptId || t.name === selectedTopic.sourceFile);
+                if (tr) onGoToMix(tr, selectedTopic.id);
+              }}
+              title={onGoToMix ? "Open in Mix view" : undefined}
+            >
+              {rating && <span style={{ background: ratingColors.bg, color: ratingColors.fg, padding: "1px 4px", borderRadius: 3, fontWeight: 700, fontSize: 10 }}>{rating}</span>}
+              <span style={{ color: "#aaa", marginLeft: rating ? 4 : 0 }}>{titlePart}</span>
+              {dur && <span style={{ color: "#74c0fc", marginLeft: 4, fontSize: 10 }}>{dur}</span>}
             </span>
-          </div>
-        </div>
-      )}
+          );
+        })()}
+      </div>
+      {/* Position + duration */}
+      <div style={{ marginBottom: 16, display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "#555", fontFamily: "'JetBrains Mono', monospace" }}>
+        {selectedTopic.textPosition && (
+          <span>
+            chars {selectedTopic.textPosition.startChar}-{selectedTopic.textPosition.endChar}
+            ({selectedTopic.textPosition.endChar - selectedTopic.textPosition.startChar}ch)
+          </span>
+        )}
+        {(() => {
+          const words = (selectedTopic.fullText || "").split(/\s+/).filter(Boolean).length;
+          if (words < 5) return null;
+          const secs = Math.round((words / 200) * 60);
+          const mm = String(Math.floor(secs / 60)).padStart(2, "0");
+          const ss = String(secs % 60).padStart(2, "0");
+          return <span style={{ color: "#4ecdc4" }}>~{mm}:{ss}</span>;
+        })()}
+        {estimatedDelivery && (
+          <span style={{ color: "#4ecdc4" }}>~{estimatedDelivery}s delivery</span>
+        )}
+      </div>
 
       {/* Touchstone info — existing touchstones this bit belongs to */}
       {topicTouchstones.length > 0 && (
@@ -306,27 +341,7 @@ export function DetailPanel({
         </div>
       )}
 
-      {/* Create Touchstone from this bit */}
-      {onCreateTouchstone && (
-        <div style={{ marginBottom: 16 }}>
-          <button
-            onClick={() => {
-              const name = selectedTopic.title || "Untitled";
-              onCreateTouchstone(name, selectedTopic.id);
-            }}
-            style={{
-              width: "100%", padding: "10px", background: "#51cf6610", color: "#51cf66",
-              border: "1px solid #51cf6633", borderRadius: 8, fontWeight: 600, fontSize: 12, cursor: "pointer",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "#51cf6620"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "#51cf6610"; }}
-          >
-            Create Touchstone
-          </button>
-        </div>
-      )}
-
-      {/* Possible touchstones — ones this bit could belong to but doesn't yet */}
+      {/* Add to Touchstone / Create Touchstone buttons */}
       {(() => {
         const currentTsIds = new Set(topicTouchstones.map((ts) => ts.id));
         const possibleTs = allTouchstones.filter((ts) => {
@@ -334,20 +349,37 @@ export function DetailPanel({
           if (ts.bitIds.includes(selectedTopic.id)) return false;
           return true;
         });
-        if (possibleTs.length === 0 && !onAddToTouchstone) return null;
 
         return (
           <div style={{ marginBottom: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1 }}>
-                Add to Touchstone
-              </div>
-              {possibleTs.length > 0 && (
+            <div style={{ display: "flex", gap: 8, marginBottom: addToTouchstoneOpen ? 8 : 0 }}>
+              {possibleTs.length > 0 && onAddToTouchstone && (
                 <button
                   onClick={() => { setAddToTouchstoneOpen(!addToTouchstoneOpen); setTouchstoneSearch(""); }}
-                  style={{ background: "none", border: "1px solid #333", color: addToTouchstoneOpen ? "#4ecdc4" : "#888", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}
+                  style={{
+                    flex: 1, padding: "8px", background: addToTouchstoneOpen ? "#4ecdc418" : "#4ecdc410", color: "#4ecdc4",
+                    border: "1px solid #4ecdc433", borderRadius: 8, fontWeight: 600, fontSize: 11, cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#4ecdc420"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = addToTouchstoneOpen ? "#4ecdc418" : "#4ecdc410"; }}
                 >
-                  {addToTouchstoneOpen ? "Cancel" : `Browse (${possibleTs.length})`}
+                  {addToTouchstoneOpen ? "Cancel" : `Add to Touchstone (${possibleTs.length})`}
+                </button>
+              )}
+              {onCreateTouchstone && (
+                <button
+                  onClick={() => {
+                    const name = selectedTopic.title || "Untitled";
+                    onCreateTouchstone(name, selectedTopic.id);
+                  }}
+                  style={{
+                    flex: 1, padding: "8px", background: "#51cf6610", color: "#51cf66",
+                    border: "1px solid #51cf6633", borderRadius: 8, fontWeight: 600, fontSize: 11, cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#51cf6620"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "#51cf6610"; }}
+                >
+                  Create Touchstone
                 </button>
               )}
             </div>
@@ -359,7 +391,7 @@ export function DetailPanel({
                   onChange={(e) => setTouchstoneSearch(e.target.value)}
                   placeholder="Search touchstones..."
                   autoFocus
-                  style={{ width: "100%", padding: "6px 10px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#ddd", fontSize: 11, fontFamily: "inherit", marginBottom: 6, boxSizing: "border-box" }}
+                  style={{ width: "100%", padding: "4px 8px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#ddd", fontSize: 11, fontFamily: "inherit", marginBottom: 6, boxSizing: "border-box" }}
                 />
                 <div style={{ maxHeight: 180, overflowY: "auto" }}>
                   {possibleTs
@@ -486,6 +518,8 @@ export function DetailPanel({
           ))}
         </div>
       )}
+      <div style={{ minHeight: 350, flexShrink: 0, pointerEvents: "none" }}>&nbsp;</div>
+      </div>
     </div>
   );
 }

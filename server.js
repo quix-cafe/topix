@@ -382,21 +382,72 @@ const server = http.createServer(async (req, res) => {
 
         json(res, 200, { success: true, filename: newFilename, hash: newHash });
 
-        // Fire-and-forget: run transcribe.py to generate new transcript for trimmed audio
-        const transcribeScript = path.join(AUDIO_DIR, "transcribe.py");
-        if (existsSync(transcribeScript)) {
-          console.log(`[Trim] Spawning transcribe.py for ${newFilename}`);
-          const child = spawn("python3", [transcribeScript], {
-            cwd: AUDIO_DIR,
-            stdio: "ignore",
-            detached: true,
-          });
-          child.unref();
-        }
+        // Transcription is triggered by the client via POST /api/transcribe (SSE)
       } catch (e) {
         await fs.unlink(tempOutput).catch(() => {});
         json(res, 500, { error: e.message });
       }
+      return;
+    }
+
+    // Run transcribe.py (SSE stream)
+    if (req.url === "/api/transcribe" && req.method === "POST") {
+      const transcribeScript = path.join(AUDIO_DIR, "transcribe.py");
+      if (!existsSync(transcribeScript)) {
+        json(res, 404, { error: "transcribe.py not found" });
+        return;
+      }
+      console.log("[Transcribe] Manually spawning transcribe.py (SSE)");
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+      });
+
+      const child = spawn("python3", ["-u", transcribeScript], {
+        cwd: AUDIO_DIR,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      const sendChunk = (text) => {
+        // Split on \r and \n, send each meaningful segment
+        const segments = text.split(/[\r\n]+/);
+        for (const seg of segments) {
+          const trimmed = seg.trim();
+          if (trimmed) {
+            res.write(`data: ${JSON.stringify({ line: trimmed })}\n\n`);
+          }
+        }
+      };
+
+      child.stdout.on("data", (d) => {
+        process.stdout.write(`[transcribe.py] ${d}`);
+        sendChunk(d.toString());
+      });
+
+      child.stderr.on("data", (d) => {
+        process.stderr.write(`[transcribe.py] ${d}`);
+        sendChunk(d.toString());
+      });
+
+      child.on("error", (err) => {
+        console.error(`[transcribe.py] Failed: ${err.message}`);
+        res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+        res.write("data: {\"done\":true}\n\n");
+        res.end();
+      });
+
+      child.on("close", (code) => {
+        console.log(`[transcribe.py] Exited with code ${code}`);
+        res.write(`data: ${JSON.stringify({ done: true, code })}\n\n`);
+        res.end();
+      });
+
+      req.on("close", () => {
+        // Client disconnected — kill the process
+        if (!child.killed) child.kill();
+      });
       return;
     }
 

@@ -162,6 +162,7 @@ export function assembleAndMergeTouchstones({
       name: (existing.manualName || existing.autoNamed) ? existing.name : ts.name,
       manualName: existing.manualName,
       autoNamed: existing.autoNamed,
+      lastNamedBitCount: existing.lastNamedBitCount,
       corrections: existing.corrections,
       userReasons: existing.userReasons,
       rejectedReasons: existing.rejectedReasons,
@@ -286,7 +287,8 @@ export function assembleAndMergeTouchstones({
       bitIds: [...existing.bitIds, ...newBitIds],
       instances: [...existing.instances, ...newInstances],
       frequency: existing.instances.length + newInstances.length,
-      autoNamed: false,
+      autoNamed: existing.autoNamed,
+      lastNamedBitCount: existing.lastNamedBitCount,
     };
   });
 

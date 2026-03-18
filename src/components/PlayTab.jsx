@@ -16,7 +16,7 @@ const SORT_OPTIONS = [
   { key: "duration", label: "Duration" },
 ];
 
-const QUICK_RATINGS = ["+++++", "++++_", "+++__", "++___", "+____", "_____", "xxxxx"];
+const RATING_SCALE = ["xxxxx", "xxxx_", "xxx__", "xx___", "x____", "_____", "+____", "++___", "+++__", "++++_", "+++++"];
 
 function playReducer(state, action) {
   switch (action.type) {
@@ -209,6 +209,60 @@ export function PlayTab({
 
   // Track hashes currently awaiting transcription
   const [transcribingHashes, setTranscribingHashes] = useState(new Set());
+  const [transcribeLog, setTranscribeLog] = useState(null); // null=hidden, string[]=lines
+  const [transcribeRunning, setTranscribeRunning] = useState(false);
+  const transcribeRunningRef = useRef(false);
+  const transcribeLogRef = useRef(null);
+  useEffect(() => {
+    if (transcribeLogRef.current) transcribeLogRef.current.scrollTop = transcribeLogRef.current.scrollHeight;
+  }, [transcribeLog]);
+
+  const startTranscribe = useCallback(async () => {
+    if (transcribeRunningRef.current) return;
+    transcribeRunningRef.current = true;
+    setTranscribeLog([]);
+    setTranscribeRunning(true);
+    try {
+      const res = await fetch(`${SERVER_URL}/api/transcribe`, { method: "POST" });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const part of parts) {
+          const line = part.replace(/^data: /, "");
+          if (!line) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (msg.done) {
+              transcribeRunningRef.current = false;
+              setTranscribeRunning(false);
+              fetchFiles();
+            } else if (msg.line) {
+              setTranscribeLog((prev) => {
+                        const lines = prev || [];
+                        // Spinner/progress lines (start with braille spinner or contain ━ progress bar) replace the last line
+                        const isProgress = /^[\u2800-\u28FF]/.test(msg.line) || msg.line.includes('\u2501');
+                        const lastIsProgress = lines.length > 0 && (/^[\u2800-\u28FF]/.test(lines[lines.length - 1]) || lines[lines.length - 1].includes('\u2501'));
+                        if (isProgress && lastIsProgress) {
+                          return [...lines.slice(0, -1), msg.line];
+                        }
+                        return [...lines, msg.line];
+                      });
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      setTranscribeLog((prev) => [...(prev || []), `Error: ${err.message}`]);
+      transcribeRunningRef.current = false;
+      setTranscribeRunning(false);
+    }
+  }, [fetchFiles]);
   const pollRef = useRef(null);
 
   // Poll for transcript arrival on transcribing files
@@ -300,9 +354,10 @@ export function PlayTab({
       // Auto-sync: propagate renames/deletes/adds to Topix
       await autoSync(freshFiles);
 
-      // If we trimmed, start polling for the new transcript
+      // If we trimmed, trigger transcription with live terminal
       if (didTrim) {
         setTranscribingHashes((prev) => new Set([...prev, currentHash]));
+        startTranscribe();
       }
 
       selectFile(currentHash);
@@ -311,7 +366,7 @@ export function PlayTab({
     } finally {
       set("saving", false);
     }
-  }, [selectedDetail, selectedHash, editRating, editTitle, editTrimStart, editTrimEnd, saving, files, autoSync, selectFile]);
+  }, [selectedDetail, selectedHash, editRating, editTitle, editTrimStart, editTrimEnd, saving, files, autoSync, selectFile, startTranscribe]);
 
   // Delete file
   const handleDelete = useCallback(async () => {
@@ -456,7 +511,7 @@ export function PlayTab({
         </div>
 
         {/* Filters */}
-        <div style={{ padding: "10px 20px 0", display: "flex", flexWrap: "wrap", gap: 4 }}>
+        <div style={{ padding: "10px 20px 0", display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
           {FILTERS.map((f) => (
             <button
               key={f.key}
@@ -471,6 +526,18 @@ export function PlayTab({
               {f.label}
             </button>
           ))}
+          <button
+            disabled={transcribeRunning}
+            onClick={startTranscribe}
+            style={{
+              padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: "pointer",
+              border: "1px solid #2a4a2a", background: transcribeRunning ? "#2a4a2a" : "#1a2e1a",
+              color: transcribeRunning ? "#4a8a4a" : "#6bc46b", marginLeft: 8,
+              opacity: transcribeRunning ? 0.7 : 1,
+            }}
+          >
+            {transcribeRunning ? "Transcribing..." : "Transcribe"}
+          </button>
         </div>
 
         {/* Sort */}
@@ -501,6 +568,35 @@ export function PlayTab({
             {displayFiles.length} file{displayFiles.length !== 1 ? "s" : ""}
           </span>
         </div>
+
+        {/* Transcribe terminal */}
+        {transcribeLog !== null && (
+          <div style={{
+            margin: "10px 20px 0", background: "#0a0a14", border: "1px solid #1e1e30",
+            borderRadius: 8, overflow: "hidden",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", padding: "6px 10px", background: "#12121f", borderBottom: "1px solid #1e1e30" }}>
+              <span style={{ fontSize: 11, color: transcribeRunning ? "#6bc46b" : "#888", fontWeight: 600, flex: 1 }}>
+                {transcribeRunning ? "Transcribing..." : "Transcription complete"}
+              </span>
+              <span
+                onClick={() => { setTranscribeLog(null); }}
+                style={{ fontSize: 12, color: "#666", cursor: "pointer", padding: "0 4px" }}
+              >x</span>
+            </div>
+            <div
+              ref={transcribeLogRef}
+              style={{
+                padding: "8px 10px", maxHeight: 150, overflowY: "auto",
+                fontFamily: "monospace", fontSize: 11, color: "#aaa", lineHeight: 1.5,
+              }}
+            >
+              {(transcribeLog || []).map((line, i) => (
+                <div key={i} style={{ wordBreak: "break-word", overflowWrap: "break-word", whiteSpace: "pre-wrap", color: line.startsWith("Error") ? "#ff6b6b" : "#aaa" }}>{line}</div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Sync bar */}
         {syncSummary && (
@@ -628,107 +724,81 @@ export function PlayTab({
             Select a recording
           </div>
         ) : (
-          <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
-            {/* Header */}
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "#eee", marginBottom: 4, fontFamily: "'Playfair Display', serif" }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: 20 }}>
+            {/* Header: title + duration */}
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#eee", fontFamily: "'Playfair Display', serif", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {parseFilenameClient(selectedDetail.audio_filename)?.title || selectedDetail.audio_filename}
               </div>
-              <div style={{ fontSize: 12, color: "#555", fontFamily: "'JetBrains Mono', monospace" }}>
+              <span style={{ fontSize: 12, color: "#555", fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>
                 {selectedDetail.duration_formatted}
-              </div>
+              </span>
             </div>
 
-
-            {/* Rating */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 6 }}>
-                Rating
-              </label>
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            {/* Rating slider */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{
+                  fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, letterSpacing: 2,
+                  color: ratingColor(editRating).fg, background: ratingColor(editRating).bg,
+                  padding: "3px 8px", borderRadius: 4, flexShrink: 0,
+                }}>
+                  {editRating}
+                </span>
                 <input
-                  type="text"
-                  value={editRating}
-                  onChange={(e) => setEditRating(e.target.value.slice(0, 5))}
-                  maxLength={5}
-                  style={{
-                    width: 80, padding: "6px 8px", background: "#12121f", border: "1px solid #1e1e30",
-                    borderRadius: 6, color: "#ddd", fontSize: 13, fontFamily: "'JetBrains Mono', monospace",
-                    textAlign: "center", letterSpacing: 2,
-                  }}
+                  type="range"
+                  min={0}
+                  max={RATING_SCALE.length - 1}
+                  value={RATING_SCALE.indexOf(editRating) >= 0 ? RATING_SCALE.indexOf(editRating) : 5}
+                  onChange={(e) => setEditRating(RATING_SCALE[parseInt(e.target.value)])}
+                  style={{ flex: 1, accentColor: "#666" }}
                 />
-                {QUICK_RATINGS.map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => setEditRating(r)}
-                    style={{
-                      padding: "4px 6px", fontSize: 9, fontFamily: "'JetBrains Mono', monospace",
-                      background: editRating === r ? ratingColor(r).bg : "#12121f",
-                      color: editRating === r ? ratingColor(r).fg : "#555",
-                      border: `1px solid ${editRating === r ? ratingColor(r).fg + "44" : "#1e1e30"}`,
-                      borderRadius: 4, cursor: "pointer", letterSpacing: 1,
-                    }}
-                  >
-                    {r}
-                  </button>
-                ))}
               </div>
             </div>
 
-            {/* Title */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 6 }}>
-                Title
-              </label>
+            {/* Title input */}
+            <input
+              type="text"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              placeholder="Title"
+              style={{
+                width: "100%", padding: "8px 12px", background: "#12121f", border: "1px solid #1e1e30",
+                borderRadius: 6, color: "#ddd", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box",
+                marginBottom: 12,
+              }}
+            />
+
+            {/* Trim inputs */}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
               <input
                 type="text"
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
+                value={editTrimStart}
+                onChange={(e) => setEditTrimStart(e.target.value)}
+                placeholder="00:00"
                 style={{
-                  width: "100%", padding: "8px 12px", background: "#12121f", border: "1px solid #1e1e30",
-                  borderRadius: 6, color: "#ddd", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box",
+                  width: 70, padding: "6px 8px", background: "#12121f", border: "1px solid #1e1e30",
+                  borderRadius: 6, color: "#ddd", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", textAlign: "center",
                 }}
               />
-            </div>
-
-            {/* Trim */}
-            <div style={{ marginBottom: 20 }}>
-              <label style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 6 }}>
-                Trim
-              </label>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <input
-                  type="text"
-                  value={editTrimStart}
-                  onChange={(e) => setEditTrimStart(e.target.value)}
-                  placeholder="00:00"
-                  style={{
-                    width: 70, padding: "6px 8px", background: "#12121f", border: "1px solid #1e1e30",
-                    borderRadius: 6, color: "#ddd", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", textAlign: "center",
-                  }}
-                />
-                <span style={{ color: "#444" }}>to</span>
-                <input
-                  type="text"
-                  value={editTrimEnd}
-                  onChange={(e) => setEditTrimEnd(e.target.value)}
-                  placeholder={selectedDetail.duration_formatted || ""}
-                  style={{
-                    width: 70, padding: "6px 8px", background: "#12121f", border: "1px solid #1e1e30",
-                    borderRadius: 6, color: "#ddd", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", textAlign: "center",
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* Save / Delete buttons */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+              <span style={{ color: "#444", fontSize: 12 }}>to</span>
+              <input
+                type="text"
+                value={editTrimEnd}
+                onChange={(e) => setEditTrimEnd(e.target.value)}
+                placeholder={selectedDetail.duration_formatted || ""}
+                style={{
+                  width: 70, padding: "6px 8px", background: "#12121f", border: "1px solid #1e1e30",
+                  borderRadius: 6, color: "#ddd", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", textAlign: "center",
+                }}
+              />
+              <div style={{ flex: 1 }} />
               <button
                 onClick={handleSave}
                 disabled={saving}
                 style={{
-                  flex: 1, padding: "10px", background: saving ? "#333" : "#6c5ce7", color: "#fff",
-                  border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: saving ? "not-allowed" : "pointer",
+                  padding: "8px 20px", background: saving ? "#333" : "#6c5ce7", color: "#fff",
+                  border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: saving ? "not-allowed" : "pointer",
                 }}
               >
                 {saving ? "Saving..." : "Save"}
@@ -736,8 +806,8 @@ export function PlayTab({
               <button
                 onClick={handleDelete}
                 style={{
-                  padding: "10px 16px", background: "#ff6b6b18", color: "#ff6b6b",
-                  border: "1px solid #ff6b6b44", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                  padding: "8px 12px", background: "#ff6b6b18", color: "#ff6b6b",
+                  border: "1px solid #ff6b6b44", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
                 }}
               >
                 Delete
@@ -745,50 +815,45 @@ export function PlayTab({
             </div>
 
             {/* Topix section */}
-            <div style={{ borderTop: "1px solid #1a1a2a", paddingTop: 16 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
-                Topix
+            {(() => {
+              const bitCount = topics.filter((t) => t.sourceFile === selectedDetail.transcript_filename).length;
+              if (bitCount > 0) {
+                return (
+                  <div
+                    onClick={() => {
+                      const tr = transcripts.find((t) => t.name === selectedDetail.transcript_filename);
+                      if (tr && onGoToMix) onGoToMix(tr);
+                    }}
+                    style={{
+                      padding: "8px 12px", background: "#4ecdc410", border: "1px solid #4ecdc433",
+                      borderRadius: 8, cursor: "pointer", fontSize: 12, color: "#4ecdc4", marginBottom: 12, flexShrink: 0,
+                    }}
+                  >
+                    {bitCount} bits extracted &rarr; Mix
+                  </div>
+                );
+              } else if (selectedDetail.has_transcript !== false) {
+                return (
+                  <div style={{ fontSize: 12, color: "#555", marginBottom: 12, flexShrink: 0 }}>
+                    Not parsed yet
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
+            {/* Transcript text — scrollable */}
+            {selectedDetail.text && (
+              <div style={{
+                flex: 1, minHeight: 0, overflowY: "auto",
+                fontSize: 12, color: "#888", lineHeight: 1.7,
+                fontFamily: "'JetBrains Mono', monospace",
+                background: "#12121f", padding: 12, borderRadius: 8,
+                border: "1px solid #1e1e30", whiteSpace: "pre-wrap",
+              }}>
+                {selectedDetail.text}
               </div>
-
-              {(() => {
-                const bitCount = topics.filter((t) => t.sourceFile === selectedDetail.transcript_filename).length;
-                if (bitCount > 0) {
-                  return (
-                    <div
-                      onClick={() => {
-                        const tr = transcripts.find((t) => t.name === selectedDetail.transcript_filename);
-                        if (tr && onGoToMix) onGoToMix(tr);
-                      }}
-                      style={{
-                        padding: "10px 12px", background: "#4ecdc410", border: "1px solid #4ecdc433",
-                        borderRadius: 8, cursor: "pointer", fontSize: 12, color: "#4ecdc4", marginBottom: 12,
-                      }}
-                    >
-                      {bitCount} bits extracted &rarr; Mix
-                    </div>
-                  );
-                } else if (selectedDetail.has_transcript !== false) {
-                  return (
-                    <div style={{ fontSize: 12, color: "#555", marginBottom: 12 }}>
-                      Not parsed yet
-                    </div>
-                  );
-                }
-                return null;
-              })()}
-
-              {/* Transcript text */}
-              {selectedDetail.text && (
-                <div style={{
-                  fontSize: 12, color: "#888", lineHeight: 1.7,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  background: "#12121f", padding: 12, borderRadius: 8,
-                  border: "1px solid #1e1e30", whiteSpace: "pre-wrap",
-                }}>
-                  {selectedDetail.text}
-                </div>
-              )}
-            </div>
+            )}
           </div>
         )}
       </div>

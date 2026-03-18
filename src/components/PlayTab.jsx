@@ -6,7 +6,6 @@ const FILTERS = [
   { key: "all", label: "All" },
   { key: "unrated", label: "Unrated" },
   { key: "rated", label: "Rated" },
-  { key: "no-transcript", label: "No Transcript" },
   { key: "parsed", label: "Parsed" },
   { key: "unparsed", label: "Unparsed" },
 ];
@@ -43,6 +42,8 @@ export function PlayTab({
   onSyncApply,
   playInitFile,
   onConsumePlayInit,
+  onNowPlaying,
+  nowPlaying,
 }) {
   const [state, dispatch] = useReducer(playReducer, {
     files: [],
@@ -59,7 +60,7 @@ export function PlayTab({
   const set = (field, value) => dispatch({ type: "SET", field, value });
 
   // Sort state — separate useState to avoid closure issues
-  const [sortBy, setSortBy] = useState("duration");
+  const [sortBy, setSortBy] = useState("name");
   const [sortAsc, setSortAsc] = useState(false);
 
   // Editing state for right panel
@@ -68,7 +69,7 @@ export function PlayTab({
   const [editTrimStart, setEditTrimStart] = useState("00:00");
   const [editTrimEnd, setEditTrimEnd] = useState("");
   const [applying, setApplying] = useState(false);
-  const audioRef = useRef(null);
+
 
   // Fetch file list
   const fetchFiles = useCallback(async () => {
@@ -83,7 +84,7 @@ export function PlayTab({
     }
   }, []);
 
-  // Compute sync diff silently
+  // Compute sync diff — returns the diff object (or null)
   const computeSyncDiff = useCallback(async (playFiles) => {
     const withTranscript = playFiles.filter((e) => e.has_transcript);
     const playByHash = new Map(withTranscript.map((e) => [e.hash, e]));
@@ -129,22 +130,46 @@ export function PlayTab({
     }
 
     const hasChanges = toAdd.length > 0 || toRename.length > 0 || toDelete.length > 0 || toLink.length > 0;
-    if (hasChanges) {
-      set("syncDiff", { toAdd, toRename, toDelete, toLink, unchanged, total: withTranscript.length });
-    } else {
-      set("syncDiff", null);
-    }
+    const diff = hasChanges ? { toAdd, toRename, toDelete, toLink, unchanged, total: withTranscript.length } : null;
+    set("syncDiff", diff);
+    return diff;
   }, [transcripts]);
+
+  // Auto-apply sync: fetch transcript text for new entries, then call onSyncApply
+  const autoSync = useCallback(async (playFiles) => {
+    const diff = await computeSyncDiff(playFiles);
+    if (!diff) return;
+    try {
+      const addEntries = [];
+      for (const entry of diff.toAdd) {
+        const res = await fetch(`${SERVER_URL}/api/transcripts/${entry.hash}`);
+        if (!res.ok) continue;
+        const data = await res.json();
+        addEntries.push({ hash: entry.hash, name: entry.transcript_filename, text: data.text });
+      }
+      await onSyncApply({
+        toAdd: addEntries,
+        toRename: diff.toRename,
+        toDelete: diff.toDelete,
+        toLink: diff.toLink || [],
+      });
+      set("syncDiff", null);
+    } catch (err) {
+      console.error("[PlayTab] Auto-sync failed:", err);
+    }
+  }, [computeSyncDiff, onSyncApply]);
 
   // On mount: fetch files + compute sync
   useEffect(() => {
     fetchFiles().then(() => {});
   }, [fetchFiles]);
 
-  // After files load, compute sync diff
+  // After files load, auto-sync (only on file list changes, not on transcripts changes)
+  const autoSyncRef = useRef(autoSync);
+  autoSyncRef.current = autoSync;
   useEffect(() => {
-    if (files.length > 0) computeSyncDiff(files);
-  }, [files, computeSyncDiff]);
+    if (files.length > 0) autoSyncRef.current(files);
+  }, [files]);
 
 
   // Select a file
@@ -162,10 +187,17 @@ export function PlayTab({
       setEditTitle(parsed?.title || "");
       setEditTrimStart("00:00");
       setEditTrimEnd(data.duration_formatted || "");
+
+      // Set nowPlaying (won't auto-play, just loads the player)
+      onNowPlaying?.({
+        url: `${SERVER_URL}/api/audio/${encodeURIComponent(data.audio_filename)}`,
+        title: parsed?.title || data.audio_filename,
+        hash,
+      });
     } catch (err) {
       console.error("Failed to fetch file detail:", err);
     }
-  }, []);
+  }, [onNowPlaying]);
 
   // Auto-select file from external navigation (e.g. Transcripts tab)
   useEffect(() => {
@@ -174,6 +206,46 @@ export function PlayTab({
     if (match) selectFile(match.hash);
     onConsumePlayInit?.();
   }, [playInitFile, files, selectFile, onConsumePlayInit]);
+
+  // Track hashes currently awaiting transcription
+  const [transcribingHashes, setTranscribingHashes] = useState(new Set());
+  const pollRef = useRef(null);
+
+  // Poll for transcript arrival on transcribing files
+  useEffect(() => {
+    if (transcribingHashes.size === 0) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      return;
+    }
+    if (pollRef.current) return; // already polling
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${SERVER_URL}/api/transcripts`);
+        if (!res.ok) return;
+        const data = await res.json();
+        dispatch({ type: "SET", field: "files", value: data });
+
+        // Check which transcribing hashes now have transcripts
+        const arrived = new Set();
+        for (const hash of transcribingHashes) {
+          const f = data.find((e) => e.hash === hash);
+          if (f && f.has_transcript) arrived.add(hash);
+        }
+        if (arrived.size > 0) {
+          setTranscribingHashes((prev) => {
+            const next = new Set(prev);
+            for (const h of arrived) next.delete(h);
+            return next;
+          });
+          // Auto-sync to pick up the new transcript
+          await autoSync(data);
+        }
+      } catch (err) {
+        // Silently retry
+      }
+    }, 10000); // poll every 10s
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  }, [transcribingHashes, autoSync]);
 
   // Save changes (rate, rename, trim)
   const handleSave = useCallback(async () => {
@@ -184,6 +256,7 @@ export function PlayTab({
     const currentRating = parsed?.rating || "_____";
     const currentTitle = parsed?.title || "";
     let currentHash = selectedHash;
+    let didTrim = false;
 
     try {
       // Rate if changed
@@ -213,22 +286,32 @@ export function PlayTab({
           body: JSON.stringify({ start: editTrimStart, end: editTrimEnd }),
         });
         const trimData = await trimRes.json();
-        if (trimData.hash) currentHash = trimData.hash;
+        if (trimData.hash) {
+          currentHash = trimData.hash;
+          didTrim = true;
+        }
       }
 
-      // Refresh file list and re-select
-      await fetchFiles();
-      if (currentHash !== selectedHash) {
-        selectFile(currentHash);
-      } else {
-        selectFile(currentHash);
+      // Refresh file list
+      const res = await fetch(`${SERVER_URL}/api/transcripts`);
+      const freshFiles = res.ok ? await res.json() : files;
+      dispatch({ type: "SET", field: "files", value: freshFiles });
+
+      // Auto-sync: propagate renames/deletes/adds to Topix
+      await autoSync(freshFiles);
+
+      // If we trimmed, start polling for the new transcript
+      if (didTrim) {
+        setTranscribingHashes((prev) => new Set([...prev, currentHash]));
       }
+
+      selectFile(currentHash);
     } catch (err) {
       console.error("Save failed:", err);
     } finally {
       set("saving", false);
     }
-  }, [selectedDetail, selectedHash, editRating, editTitle, editTrimStart, editTrimEnd, saving, fetchFiles, selectFile]);
+  }, [selectedDetail, selectedHash, editRating, editTitle, editTrimStart, editTrimEnd, saving, files, autoSync, selectFile]);
 
   // Delete file
   const handleDelete = useCallback(async () => {
@@ -276,7 +359,11 @@ export function PlayTab({
   // Enriched + filtered + sorted file list
   const displayFiles = useMemo(() => {
     let list = files.map((f) => {
-      const bitCount = topics.filter((t) => t.sourceFile === f.transcript_filename).length;
+      // Match by filename or by playHash (filename may have changed after rename/trim)
+      const matchedTr = transcripts.find((t) => t.name === f.transcript_filename || t.playHash === f.hash);
+      const bitCount = matchedTr
+        ? topics.filter((t) => t.sourceFile === matchedTr.name || t.transcriptId === matchedTr.id).length
+        : 0;
       const parsed = parseFilenameClient(f.audio_filename);
       const rating = f.rating || parsed?.rating || "_____";
       // Parse duration from formatted string if duration_seconds missing
@@ -483,9 +570,21 @@ export function PlayTab({
                   }}>
                     {f.bitCount}
                   </span>
-                ) : f.has_transcript && (() => {
-                  const tr = transcripts.find((t) => t.name === f.transcript_filename);
-                  return tr ? (
+                ) : (() => {
+                  // No bits — show transcribing / sync / parse depending on state
+                  if (!f.has_transcript || transcribingHashes.has(f.hash)) {
+                    return (
+                      <span style={{
+                        fontSize: 9, padding: "1px 6px", borderRadius: 10, flexShrink: 0,
+                        color: "#da77f2", border: "1px solid #da77f233",
+                        animation: "pulse 2s ease-in-out infinite",
+                      }}>
+                        transcribing
+                      </span>
+                    );
+                  }
+                  const tr = transcripts.find((t) => t.name === f.transcript_filename || t.playHash === f.hash);
+                  if (tr) return (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -500,7 +599,16 @@ export function PlayTab({
                     >
                       parse
                     </button>
-                  ) : null;
+                  );
+                  // Has transcript on disk but not synced to Topix yet
+                  return (
+                    <span style={{
+                      fontSize: 9, padding: "1px 6px", borderRadius: 10, flexShrink: 0,
+                      color: "#555", border: "1px solid #252538",
+                    }}>
+                      sync
+                    </span>
+                  );
                 })()}
 
                 {/* Duration */}
@@ -531,16 +639,6 @@ export function PlayTab({
               </div>
             </div>
 
-            {/* Audio player */}
-            <div style={{ marginBottom: 20 }}>
-              <audio
-                ref={audioRef}
-                key={selectedHash}
-                controls
-                src={`${SERVER_URL}/api/audio/${encodeURIComponent(selectedDetail.audio_filename)}`}
-                style={{ width: "100%", height: 36 }}
-              />
-            </div>
 
             {/* Rating */}
             <div style={{ marginBottom: 16 }}>

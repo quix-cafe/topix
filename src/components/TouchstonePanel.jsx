@@ -137,51 +137,50 @@ export function TouchstonePanel({
 
   return (
     <div>
-      {onHunt && (
-        <HuntButton onHunt={onHunt} huntProgress={huntProgress} processing={processing} />
-      )}
-
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        {onRectifyOverlaps && possible.length > 0 && (
-          <button
-            onClick={onRectifyOverlaps}
-            disabled={processing}
-            style={{
-              padding: "5px 12px",
-              background: processing ? "#33333a" : "#1e1e30",
-              color: processing ? "#666" : "#ffa94d",
-              border: "1px solid #ffa94d40",
-              borderRadius: 6,
-              fontWeight: 600,
-              fontSize: 11,
-              cursor: processing ? "default" : "pointer",
-            }}
-          >
-            Rectify Overlaps
+      {/* Hunt / Rectify / Commune — single row */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        {onHunt && (
+          <button onClick={onHunt} disabled={processing} style={{
+            padding: "6px 14px", background: processing ? "#33333a" : "#4ecdc4", color: processing ? "#888" : "#000",
+            border: "none", borderRadius: 6, fontWeight: 700, fontSize: 12, cursor: processing ? "default" : "pointer",
+          }}>
+            {processing && huntProgress && huntProgress.current < huntProgress.total
+              ? `Hunting... ${huntProgress.current}/${huntProgress.total}`
+              : "Hunt"}
           </button>
         )}
-
+        {onRectifyOverlaps && possible.length > 0 && (
+          <button onClick={onRectifyOverlaps} disabled={processing} style={{
+            padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#ffa94d",
+            border: "1px solid #ffa94d40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
+          }}>
+            Rectify
+          </button>
+        )}
         {onMassTouchstoneCommunion && (confirmed.length + possible.length + rejected.length) > 0 && (
-          <button
-            onClick={onMassTouchstoneCommunion}
-            disabled={processing}
-            style={{
-              padding: "5px 12px",
-              background: processing ? "#33333a" : "#1e1e30",
-              color: processing ? "#666" : "#c4b5fd",
-              border: "1px solid #c4b5fd40",
-              borderRadius: 6,
-              fontWeight: 600,
-              fontSize: 11,
-              cursor: processing ? "default" : "pointer",
-            }}
-          >
-            {processing ? "Communing..." : `Mass Communion (${confirmed.length + possible.length + rejected.length})`}
+          <button onClick={onMassTouchstoneCommunion} disabled={processing} style={{
+            padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#c4b5fd",
+            border: "1px solid #c4b5fd40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
+          }}>
+            {processing ? "Communing..." : `Commune (${confirmed.length + possible.length + rejected.length})`}
           </button>
         )}
       </div>
 
-      {/* Stats bar + create touchstone */}
+      {/* Hunt progress bar */}
+      {huntProgress && huntProgress.total > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ background: "#0a0a14", borderRadius: 4, height: 6, overflow: "hidden", marginBottom: 4 }}>
+            <div style={{ height: "100%", borderRadius: 4, transition: "width 0.3s", width: `${(huntProgress.current / huntProgress.total) * 100}%`, background: huntProgress.current === huntProgress.total ? "#51cf66" : "#4ecdc4" }} />
+          </div>
+          <div style={{ fontSize: 11, color: "#888", display: "flex", justifyContent: "space-between" }}>
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{huntProgress.status}</span>
+            {huntProgress.found > 0 && <span style={{ color: "#4ecdc4", fontWeight: 600, marginLeft: 8, flexShrink: 0 }}>{huntProgress.found} found</span>}
+          </div>
+        </div>
+      )}
+
+      {/* Stats bar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#888", padding: "10px 14px", background: "#0d0d16", borderRadius: 8, flex: 1 }}>
           <span>{confirmed.length + possible.length} touchstone{confirmed.length + possible.length !== 1 ? "s" : ""}</span>
@@ -191,9 +190,6 @@ export function TouchstonePanel({
           <span>{(bits || []).length} total bits</span>
         </div>
       </div>
-
-      {/* Create new touchstone from bit */}
-      {onCreateTouchstone && <CreateTouchstoneFromBit bits={bits} onSelect={(bit) => { setCreatingFrom(bit); setNewTouchstoneName(bit.title); }} />}
 
       {/* Search filter */}
       <div style={{ marginBottom: 16, position: "relative" }}>

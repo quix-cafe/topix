@@ -8,15 +8,18 @@ export function ValidationTab({
   topics,
   transcripts,
   touchstones,
+  matches,
   onUpdateBitPosition,
   onGoToMix,
   onSelectBit,
   approvedGaps,
   onApproveGap,
+  onRevalidateBits,
 }) {
   const [expandedIssue, setExpandedIssue] = useState(null);
   const [autoFixing, setAutoFixing] = useState(null);
-  const [filter, setFilter] = useState("all"); // "all", "overlap", "mismatch", "missing", "bounds", "gap", "join"
+  const [revalidating, setRevalidating] = useState(null); // bitId being revalidated
+  const [filter, setFilter] = useState("all"); // "all", "overlap", "mismatch", "missing", "bounds", "gap", "join", "overmatch"
 
   // Build transcript map
   const transcriptMap = useMemo(() => {
@@ -166,9 +169,74 @@ export function ValidationTab({
     return suggestions;
   }, [topics, transcripts, touchstones]);
 
+  // Detect bits with an exceptionally high number of matches ("overmatched")
+  const overmatchIssues = useMemo(() => {
+    if (!matches || matches.length === 0) return [];
+
+    // Count matches per bit
+    const matchCount = new Map();
+    for (const m of matches) {
+      matchCount.set(m.sourceId, (matchCount.get(m.sourceId) || 0) + 1);
+      matchCount.set(m.targetId, (matchCount.get(m.targetId) || 0) + 1);
+    }
+
+    // Compute stats for threshold: mean + 2*stddev, minimum 6
+    const counts = [...matchCount.values()];
+    if (counts.length === 0) return [];
+    const mean = counts.reduce((a, b) => a + b, 0) / counts.length;
+    const variance = counts.reduce((a, b) => a + (b - mean) ** 2, 0) / counts.length;
+    const stddev = Math.sqrt(variance);
+    const threshold = Math.max(6, Math.ceil(mean + 2 * stddev));
+
+    const issues = [];
+    for (const [bitId, count] of matchCount) {
+      if (count < threshold) continue;
+      const bit = topics.find((t) => t.id === bitId);
+      if (!bit) continue;
+
+      // Find which touchstones this bit is in
+      const allTs = [...(touchstones?.confirmed || []), ...(touchstones?.possible || [])];
+      const inTouchstones = allTs.filter((ts) => (ts.bitIds || []).includes(bitId));
+      const tsNames = inTouchstones.map((ts) => ts.name || ts.manualName || "unnamed");
+
+      // Get the matched partners for detail display (deduplicate)
+      const partnerMatches = matches.filter((m) => m.sourceId === bitId || m.targetId === bitId);
+      const seenPartners = new Set();
+      const partnerBits = [];
+      for (const m of partnerMatches) {
+        const pid = m.sourceId === bitId ? m.targetId : m.sourceId;
+        if (seenPartners.has(pid)) continue;
+        seenPartners.add(pid);
+        const pb = topics.find((t) => t.id === pid);
+        if (pb) partnerBits.push({ ...pb, _matchReason: m.reason, _matchPct: m.matchPercentage || 0, _matchRel: m.relationship });
+      }
+      partnerBits.sort((a, b) => b._matchPct - a._matchPct);
+
+      // Count unique source files among partners (spread across many = more suspicious)
+      const partnerSources = new Set(partnerBits.map((b) => b.sourceFile));
+
+      issues.push({
+        bitId: bit.id,
+        bitTitle: `"${bit.title}" — ${count} matches`,
+        source: bit.sourceFile,
+        error: `${count} matches (threshold: ${threshold}) across ${partnerSources.size} transcript${partnerSources.size !== 1 ? "s" : ""}${tsNames.length > 0 ? `. In touchstone${tsNames.length > 1 ? "s" : ""}: ${tsNames.join(", ")}` : ""}`,
+        severity: count,
+        type: "overmatch",
+        matchCount: count,
+        threshold,
+        partnerBits: partnerBits.slice(0, 8), // cap display at 8
+        totalPartners: partnerBits.length,
+        touchstoneNames: tsNames,
+      });
+    }
+
+    issues.sort((a, b) => b.matchCount - a.matchCount);
+    return issues;
+  }, [topics, matches, touchstones]);
+
   // Categorize issues (excluding trivial ones <= 10 chars)
   const categorized = useMemo(() => {
-    const cats = { overlap: [], mismatch: [], missing: [], bounds: [], gap: [], join: [] };
+    const cats = { overlap: [], mismatch: [], missing: [], bounds: [], gap: [], join: [], overmatch: [] };
     (validation.issues || []).filter((issue) => (issue.severity || 0) > 10).forEach((issue) => {
       if (issue.error.includes("Overlaps with")) cats.overlap.push(issue);
       else if (issue.error.includes("mismatch") || issue.error.includes("similarity")) cats.mismatch.push(issue);
@@ -177,14 +245,15 @@ export function ValidationTab({
     });
     cats.gap = gapIssues.filter((g) => !g.approved);
     cats.join = joinSuggestions;
+    cats.overmatch = overmatchIssues;
     return cats;
-  }, [validation, gapIssues, joinSuggestions]);
+  }, [validation, gapIssues, joinSuggestions, overmatchIssues]);
 
   const allIssues = useMemo(() => {
     const base = (validation.issues || []).filter((issue) => (issue.severity || 0) > 10);
     const unapprovedGaps = gapIssues.filter((g) => !g.approved);
-    return [...base, ...unapprovedGaps, ...joinSuggestions];
-  }, [validation, gapIssues, joinSuggestions]);
+    return [...base, ...unapprovedGaps, ...joinSuggestions, ...overmatchIssues];
+  }, [validation, gapIssues, joinSuggestions, overmatchIssues]);
 
   const filteredIssues = (filter === "all"
     ? allIssues
@@ -215,9 +284,11 @@ export function ValidationTab({
     bounds: { bg: "#74c0fc", label: "Bounds Error" },
     gap: { bg: "#c4b5fd", label: "Gap" },
     join: { bg: "#4ecdc4", label: "Join" },
+    overmatch: { bg: "#da77f2", label: "Overmatched" },
   };
 
   const getIssueCategory = (issue) => {
+    if (issue.type === "overmatch") return "overmatch";
     if (issue.type === "join") return "join";
     if (issue.type === "gap") return "gap";
     if (issue.error.includes("Overlaps with")) return "overlap";
@@ -404,7 +475,7 @@ export function ValidationTab({
             </div>
 
             {/* Expanded detail */}
-            {isExpanded && (bit || category === "gap" || category === "join") && (
+            {isExpanded && (bit || category === "gap" || category === "join" || category === "overmatch") && (
               <div style={{
                 padding: "0 16px 16px",
                 borderTop: "1px solid #1e1e30",
@@ -544,8 +615,92 @@ export function ValidationTab({
                   </div>
                 )}
 
+                {/* Overmatch detail */}
+                {category === "overmatch" && issue.partnerBits && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ color: "#666", fontSize: 11, marginBottom: 6 }}>
+                      Matched with {issue.totalPartners} bits{issue.touchstoneNames?.length > 0 && (
+                        <span> — in touchstone{issue.touchstoneNames.length > 1 ? "s" : ""}: <span style={{ color: "#da77f2" }}>{issue.touchstoneNames.join(", ")}</span></span>
+                      )}
+                    </div>
+                    {issue.partnerBits.map((pb) => (
+                      <div
+                        key={pb.id}
+                        style={{
+                          background: "#0a0a14",
+                          padding: "6px 12px",
+                          borderRadius: 4,
+                          marginBottom: 3,
+                          fontSize: 11,
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{
+                            fontSize: 9, padding: "1px 4px", borderRadius: 3, flexShrink: 0, fontWeight: 600,
+                            background: pb._matchRel === "same_bit" ? "#51cf6618" : "#ffa94d18",
+                            color: pb._matchRel === "same_bit" ? "#51cf66" : "#ffa94d",
+                          }}>
+                            {pb._matchPct}%
+                          </span>
+                          <span style={{ color: "#888", fontSize: 10, flexShrink: 0 }}>
+                            {pb.sourceFile?.replace(/\.\w+$/, "").slice(0, 20)}
+                          </span>
+                          <span style={{ color: "#ddd", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {pb.title}
+                          </span>
+                          <span
+                            onClick={() => onSelectBit(pb)}
+                            style={{ color: "#74c0fc", cursor: "pointer", fontSize: 10, flexShrink: 0 }}
+                          >
+                            detail
+                          </span>
+                        </div>
+                        {pb._matchReason && (
+                          <div style={{ color: "#777", fontSize: 10, marginTop: 3, paddingLeft: 2, lineHeight: 1.4 }}>
+                            {pb._matchReason}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {issue.totalPartners > issue.partnerBits.length && (
+                      <div style={{ fontSize: 10, color: "#555", marginTop: 2 }}>
+                        ...and {issue.totalPartners - issue.partnerBits.length} more
+                      </div>
+                    )}
+                    <div style={{ color: "#888", fontSize: 10, marginTop: 6 }}>
+                      This bit has far more matches than average (threshold: {issue.threshold}).
+                      This often means the matches are surface-level similarities rather than genuine repetitions of the same joke.
+                      Re-matching will re-evaluate each connection with the LLM.
+                    </div>
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                  {category === "overmatch" && onRevalidateBits && (
+                    <button
+                      onClick={() => {
+                        setRevalidating(issue.bitId);
+                        onRevalidateBits([issue.bitId]);
+                        // Clear after a delay (revalidation is async, we can't easily track completion here)
+                        setTimeout(() => setRevalidating(null), 5000);
+                      }}
+                      disabled={revalidating === issue.bitId}
+                      style={{
+                        padding: "6px 12px",
+                        background: revalidating === issue.bitId ? "#33333a" : "#da77f218",
+                        border: "1px solid #da77f244",
+                        color: revalidating === issue.bitId ? "#666" : "#da77f2",
+                        borderRadius: "4px",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: revalidating === issue.bitId ? "default" : "pointer",
+                      }}
+                    >
+                      {revalidating === issue.bitId ? "Re-matching..." : `Re-match ${issue.matchCount} connections`}
+                    </button>
+                  )}
+
                   {canAutoFix && (
                     <button
                       onClick={() => handleAutoFix(issue)}

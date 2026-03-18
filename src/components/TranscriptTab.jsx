@@ -1,6 +1,31 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { MixPanel } from "./MixPanel";
 
+function parseFilenameClient(filename) {
+  const ratingMatch = filename.match(/^\[(.{5})\]\s*/);
+  const durationMatch = filename.match(/\s*\{(\d+):(\d+)\}/);
+  const rating = ratingMatch ? ratingMatch[1] : null;
+  const title = filename
+    .replace(/^\[.{5}\]\s*/, "")
+    .replace(/\s*\{\d+:\d+\}/, "")
+    .replace(/\.\w+$/, "") // strip extension
+    .trim();
+  const duration = durationMatch
+    ? `${String(parseInt(durationMatch[1])).padStart(2, "0")}:${String(parseInt(durationMatch[2])).padStart(2, "0")}`
+    : null;
+  return { rating, title, duration };
+}
+
+function ratingColor(rating) {
+  if (!rating) return { bg: "#1a1a2a", fg: "#555" };
+  const plusCount = (rating.match(/\+/g) || []).length;
+  if (rating === "xxxxx") return { bg: "#ff6b6b18", fg: "#ff6b6b" };
+  if (plusCount >= 4) return { bg: "#51cf6618", fg: "#51cf66" };
+  if (plusCount >= 2) return { bg: "#ffa94d18", fg: "#ffa94d" };
+  if (plusCount >= 1) return { bg: "#74c0fc18", fg: "#74c0fc" };
+  return { bg: "#1a1a2a", fg: "#555" };
+}
+
 export function TranscriptTab({
   transcripts,
   topics,
@@ -94,8 +119,9 @@ export function TranscriptTab({
 
       const bitsInTouchstone = bitsParsed.filter(b => touchstoneBitIds.has(b.id)).length;
       const touchstonePct = bitsParsed.length > 0 ? Math.round((bitsInTouchstone / bitsParsed.length) * 100) : 0;
+      const parsed = parseFilenameClient(tr.name);
 
-      return { tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, bitsInTouchstone };
+      return { tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, bitsInTouchstone, parsed };
     });
   }, [transcripts, topics, touchstoneBitIds]);
 
@@ -282,7 +308,7 @@ export function TranscriptTab({
             </tr>
           </thead>
           <tbody>
-            {sortedRows.map(({ tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, bitsInTouchstone }) => {
+            {sortedRows.map(({ tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, bitsInTouchstone, parsed }) => {
               const isSelected = selectedTranscript?.id === tr.id;
 
               return (
@@ -297,11 +323,31 @@ export function TranscriptTab({
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#161628"; }}
                     onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
                   >
-                    <td style={{ padding: "10px 6px", color: "#ddd", fontWeight: 500, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    <td
                       onClick={() => setSelectedTranscript(isSelected ? null : tr)}
                       title={tr.name}
+                      style={{ padding: "10px 6px", cursor: "pointer", overflow: "hidden", whiteSpace: "nowrap" }}
                     >
-                      {tr.name}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, overflow: "hidden" }}>
+                        {parsed.rating && (
+                          <span style={{
+                            fontFamily: "'JetBrains Mono', monospace", fontSize: 10, padding: "1px 5px",
+                            borderRadius: 3, flexShrink: 0, letterSpacing: 1,
+                            background: ratingColor(parsed.rating).bg,
+                            color: ratingColor(parsed.rating).fg,
+                          }}>
+                            {parsed.rating}
+                          </span>
+                        )}
+                        <span style={{ color: "#ddd", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>
+                          {parsed.title || tr.name.replace(/\.\w+$/, "")}
+                        </span>
+                        {parsed.duration && (
+                          <span style={{ fontSize: 10, color: "#555", fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>
+                            {parsed.duration}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td style={{ padding: "10px 6px", textAlign: "center", color: "#999", fontSize: 11 }}>
                       {wordCount.toLocaleString()}w

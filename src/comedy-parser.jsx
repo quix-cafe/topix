@@ -17,7 +17,7 @@ import {
   saveSingleTopic,
 } from "./utils/database";
 import { findSimilarBits, findDuplicateBit, advancedSearch } from "./utils/similaritySearch";
-import { EmbeddingStore, embedText } from "./utils/embeddings";
+import { EmbeddingStore, embedText, setEmbedPaused, isEmbedPaused } from "./utils/embeddings";
 import { SYSTEM_PARSE, SYSTEM_PARSE_V2, SYSTEM_MATCH, SYSTEM_MATCH_PAIR, SYSTEM_HUNT_BATCH, SYSTEM_TOUCHSTONE_VERIFY, SYSTEM_TOUCHSTONE_COMMUNE, SYSTEM_SYNTHESIZE_TOUCHSTONE } from "./utils/prompts";
 import { absorbOrMerge } from "./utils/autoDedup";
 import { OpQueue } from "./utils/opQueue";
@@ -126,6 +126,9 @@ export default function ComedyParser() {
   const [mixGapInit, setMixGapInit] = useState(null);
   const [touchstoneInit, setTouchstoneInit] = useState(null);
   const [playInitFile, setPlayInitFile] = useState(null);
+  const [nowPlaying, setNowPlaying] = useState(null); // { url, title, hash }
+  const [audioIsPlaying, setAudioIsPlaying] = useState(false);
+  const miniPlayerRef = useRef(null);
   const [approvedGaps, setApprovedGaps] = useState(() => {
     try { return JSON.parse(localStorage.getItem("topix-approved-gaps") || "[]"); } catch { return []; }
   });
@@ -183,9 +186,40 @@ export default function ComedyParser() {
     try {
       const saved = await loadVaultState();
       if (saved.topics && saved.topics.length > 0) {
+        // Dedup transcripts on load — remove duplicates from prior sync bug
+        let transcripts = saved.transcripts || [];
+        let topics = saved.topics;
+        const seenNames = new Map();
+        const dupeIds = new Set();
+        for (const tr of transcripts) {
+          const prev = seenNames.get(tr.name);
+          if (prev) {
+            if (tr.playHash && !prev.playHash) {
+              dupeIds.add(prev.id);
+              seenNames.set(tr.name, tr);
+            } else {
+              dupeIds.add(tr.id);
+            }
+          } else {
+            seenNames.set(tr.name, tr);
+          }
+        }
+        if (dupeIds.size > 0) {
+          console.log(`[Load] Removing ${dupeIds.size} duplicate transcripts`);
+          const keptByName = new Map([...seenNames].map(([name, tr]) => [name, tr]));
+          topics = topics.map((t) => {
+            if (dupeIds.has(t.transcriptId)) {
+              const kept = keptByName.get(t.sourceFile);
+              return kept ? { ...t, transcriptId: kept.id } : t;
+            }
+            return t;
+          });
+          transcripts = transcripts.filter((t) => !dupeIds.has(t.id));
+        }
+
         dispatch({ type: 'MERGE', payload: {
-          topics: saved.topics,
-          transcripts: saved.transcripts || [],
+          topics,
+          transcripts,
           matches: saved.matches || [],
           touchstones: saved.touchstones || { confirmed: [], possible: [] },
           rootBits: saved.rootBits || [],
@@ -791,8 +825,15 @@ export default function ComedyParser() {
       bitIdsWithMatches.add(m.sourceId);
       bitIdsWithMatches.add(m.targetId);
     }
-    // Only include bits that still exist
-    const bitsToCommune = s.topics.filter((t) => bitIdsWithMatches.has(t.id) && t.fullText?.trim());
+    // Only include bits that still exist, sorted by most matches first
+    const matchCountMap = new Map();
+    for (const m of s.matches) {
+      matchCountMap.set(m.sourceId, (matchCountMap.get(m.sourceId) || 0) + 1);
+      matchCountMap.set(m.targetId, (matchCountMap.get(m.targetId) || 0) + 1);
+    }
+    const bitsToCommune = s.topics
+      .filter((t) => bitIdsWithMatches.has(t.id) && t.fullText?.trim())
+      .sort((a, b) => (matchCountMap.get(b.id) || 0) - (matchCountMap.get(a.id) || 0));
     if (bitsToCommune.length === 0) {
       set('status', 'No bits with connections to commune.');
       return;
@@ -832,9 +873,7 @@ export default function ComedyParser() {
 
       const bitsById = new Map(stateRef.current.topics.map((t) => [t.id, t]));
       const model = stateRef.current.selectedModel;
-
-      const toRemove = new Set();
-      const toUpdate = [];
+      let dirtyThisBit = false;
 
       for (let i = 0; i < bitMatches.length; i++) {
         if (stateRef.current.shouldStop) break;
@@ -843,7 +882,10 @@ export default function ComedyParser() {
         const otherId = match.sourceId === bit.id ? match.targetId : match.sourceId;
         const other = bitsById.get(otherId);
         if (!other) {
-          toRemove.add(match.id);
+          update('matches', (prev) => prev.filter((m) => m.id !== match.id));
+          totalRemoved++;
+          dirtyThisBit = true;
+          totalVerified++;
           continue;
         }
 
@@ -853,45 +895,38 @@ export default function ComedyParser() {
           const matchData = Array.isArray(result) ? result[0] : result;
 
           if (!matchData || typeof matchData.match_percentage !== "number") {
-            toRemove.add(match.id);
-            continue;
-          }
+            update('matches', (prev) => prev.filter((m) => m.id !== match.id));
+            totalRemoved++;
+            dirtyThisBit = true;
+          } else {
+            const mp = Math.round(matchData.match_percentage);
+            const rel = matchData.relationship || "none";
 
-          const mp = Math.round(matchData.match_percentage);
-          const rel = matchData.relationship || "none";
-
-          if (mp < 70 || (rel !== "same_bit" && rel !== "evolved")) {
-            console.log(`[MassCommunion] Removing "${bit.title}" ↔ "${other.title}": ${mp}% ${rel} (was ${match.matchPercentage}% ${match.relationship})`);
-            toRemove.add(match.id);
-          } else if (mp !== match.matchPercentage || rel !== match.relationship) {
-            console.log(`[MassCommunion] Updated "${bit.title}" ↔ "${other.title}": ${match.matchPercentage}%→${mp}% ${match.relationship}→${rel}`);
-            toUpdate.push({ matchId: match.id, newPercentage: mp, newRelationship: rel, newReason: matchData.reason || match.reason });
+            if (mp < 70 || (rel !== "same_bit" && rel !== "evolved")) {
+              console.log(`[MassCommunion] Removing "${bit.title}" ↔ "${other.title}": ${mp}% ${rel} (was ${match.matchPercentage}% ${match.relationship})`);
+              update('matches', (prev) => prev.filter((m) => m.id !== match.id));
+              totalRemoved++;
+              dirtyThisBit = true;
+            } else if (mp !== match.matchPercentage || rel !== match.relationship) {
+              console.log(`[MassCommunion] Updated "${bit.title}" ↔ "${other.title}": ${match.matchPercentage}%→${mp}% ${match.relationship}→${rel}`);
+              update('matches', (prev) => prev.map((m) =>
+                m.id === match.id
+                  ? { ...m, matchPercentage: mp, confidence: mp / 100, relationship: rel, reason: matchData.reason || match.reason }
+                  : m
+              ));
+              totalUpdated++;
+              dirtyThisBit = true;
+            }
           }
         } catch (err) {
           if (err.name === "AbortError") break;
           console.warn(`[MassCommunion] LLM error for "${other.title}":`, err.message);
         }
+        totalVerified++;
       }
 
-      totalVerified += bitMatches.length;
-
-      if (toRemove.size > 0 || toUpdate.length > 0) {
-        totalRemoved += toRemove.size;
-        totalUpdated += toUpdate.length;
-
-        update('matches', (prev) => {
-          let updated = prev.filter((m) => !toRemove.has(m.id));
-          for (const u of toUpdate) {
-            updated = updated.map((m) =>
-              m.id === u.matchId
-                ? { ...m, matchPercentage: u.newPercentage, confidence: u.newPercentage / 100, relationship: u.newRelationship, reason: u.newReason }
-                : m
-            );
-          }
-          return updated;
-        });
-
-        // Persist after each bit
+      // Persist after each bit (only if something changed)
+      if (dirtyThisBit) {
         const s2 = stateRef.current;
         await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones, rootBits: s2.rootBits }).catch(console.error);
       }
@@ -1716,13 +1751,21 @@ export default function ComedyParser() {
           const matchData = Array.isArray(result) ? result[0] : result;
           if (matchData && typeof matchData.match_percentage === "number") {
             const mp = Math.round(matchData.match_percentage);
+            const rel = matchData.relationship || "none";
+
+            // Only keep matches with meaningful similarity
+            if (mp < 35 || (rel !== "same_bit" && rel !== "evolved")) {
+              console.log(`[MatchPair] Skipping "${newBit.title}" vs "${candidate.title}": ${mp}% ${rel} (below threshold)`);
+              continue;
+            }
+
             const newMatch = {
               id: uid(),
               sourceId: newBit.id,
               targetId: candidate.id,
               confidence: mp / 100,
               matchPercentage: mp,
-              relationship: matchData.relationship || "none",
+              relationship: rel,
               reason: matchData.reason || "",
               timestamp: Date.now(),
             };
@@ -2131,7 +2174,7 @@ export default function ComedyParser() {
   }, [transcripts, topics, shouldStop, selectedModel, matchBitLive, processRemainingText]);
 
   const parseUnparsed = useCallback(() => {
-    const unparsed = transcripts.filter((tr) => !topics.some((t) => t.transcriptId === tr.id));
+    const unparsed = transcripts.filter((tr) => !topics.some((t) => t.sourceFile === tr.name || t.transcriptId === tr.id));
     if (unparsed.length === 0) {
       set('status', "All transcripts already parsed.");
       return;
@@ -2218,6 +2261,37 @@ export default function ComedyParser() {
     let updatedTopics = [...s.topics];
     let updatedMatches = [...s.matches];
     let updatedTouchstones = { ...s.touchstones };
+
+    // 0. Dedup — remove duplicate transcripts (same name), keep the one with playHash if possible
+    const seenNames = new Map();
+    const dupeIds = new Set();
+    for (const tr of updatedTranscripts) {
+      const prev = seenNames.get(tr.name);
+      if (prev) {
+        // Keep whichever has playHash, or the first one
+        if (tr.playHash && !prev.playHash) {
+          dupeIds.add(prev.id);
+          seenNames.set(tr.name, tr);
+        } else {
+          dupeIds.add(tr.id);
+        }
+      } else {
+        seenNames.set(tr.name, tr);
+      }
+    }
+    if (dupeIds.size > 0) {
+      console.log(`[Sync] Removing ${dupeIds.size} duplicate transcripts`);
+      // Reassign bits from dupes to the kept transcript
+      const keptByName = new Map([...seenNames].map(([name, tr]) => [name, tr]));
+      updatedTopics = updatedTopics.map((t) => {
+        if (dupeIds.has(t.transcriptId)) {
+          const kept = keptByName.get(t.sourceFile);
+          return kept ? { ...t, transcriptId: kept.id } : t;
+        }
+        return t;
+      });
+      updatedTranscripts = updatedTranscripts.filter((t) => !dupeIds.has(t.id));
+    }
 
     // 1. Deletes — cascade remove transcript + bits + matches
     for (const tr of toDelete) {
@@ -2785,6 +2859,8 @@ export default function ComedyParser() {
             onSyncApply={handleSyncApply}
             playInitFile={playInitFile}
             onConsumePlayInit={() => setPlayInitFile(null)}
+            onNowPlaying={setNowPlaying}
+            nowPlaying={nowPlaying}
           />
         )}
 
@@ -2848,26 +2924,27 @@ export default function ComedyParser() {
                     )}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    {matches.length > 0 && (
-                      <button
-                        onClick={handleMassCommunion}
-                        disabled={processing}
-                        style={{
-                          padding: "6px 14px",
-                          background: processing ? "#33333380" : "#74c0fc18",
-                          color: processing ? "#888" : "#74c0fc",
-                          border: `1px solid ${processing ? "#33333380" : "#74c0fc44"}`,
-                          borderRadius: "6px",
-                          fontWeight: 600,
-                          fontSize: "11px",
-                          fontFamily: "'JetBrains Mono', monospace",
-                          cursor: processing ? "not-allowed" : "pointer",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {processing ? "Communing..." : `Mass Communion (${matches.length} connections)`}
-                      </button>
-                    )}
+                    <button
+                      onClick={() => {
+                        const next = !isEmbedPaused();
+                        setEmbedPaused(next);
+                        // Force re-render
+                        set('status', next ? 'Embedding paused — graph settling' : 'Embedding resumed');
+                      }}
+                      style={{
+                        padding: "6px 14px",
+                        background: isEmbedPaused() ? "#ffa94d18" : "#1e1e30",
+                        color: isEmbedPaused() ? "#ffa94d" : "#666",
+                        border: `1px solid ${isEmbedPaused() ? "#ffa94d44" : "#2a2a40"}`,
+                        borderRadius: "6px",
+                        fontWeight: 600,
+                        fontSize: "11px",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {isEmbedPaused() ? "Unfreeze" : "Freeze"}
+                    </button>
                   </div>
                 </div>
                 <NetworkGraph topics={topics} matches={matches} />
@@ -3330,11 +3407,16 @@ export default function ComedyParser() {
             topics={topics}
             transcripts={transcripts}
             touchstones={touchstones}
+            matches={matches}
             onUpdateBitPosition={handleBoundaryChange}
             onGoToMix={(tr, bitId, gapInfo) => { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setMixGapInit(gapInfo || null); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
             onSelectBit={setSelectedTopic}
             approvedGaps={approvedGaps}
             onApproveGap={handleApproveGap}
+            onRevalidateBits={(bitIds) => {
+              const s = stateRef.current;
+              revalidateMatchesRef.current?.(bitIds, s.topics, s.matches);
+            }}
           />
         )}
 
@@ -3380,6 +3462,37 @@ export default function ComedyParser() {
                   </select>
                 </div>
               )}
+            </div>
+
+            {/* Match Maintenance */}
+            <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, marginBottom: 20, marginTop: 32, color: "#eee" }}>Match Maintenance</h2>
+            <div className="card" style={{ cursor: "default" }}>
+              <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>
+                Mass Communion re-evaluates every stored match via the LLM, removing false positives. Processes the most-matched bits first.
+              </p>
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                <button
+                  onClick={handleMassCommunion}
+                  disabled={processing || matches.length === 0}
+                  style={{
+                    padding: "8px 18px",
+                    background: processing ? "#33333a" : "#74c0fc18",
+                    color: processing ? "#666" : "#74c0fc",
+                    border: `1px solid ${processing ? "#33333a" : "#74c0fc44"}`,
+                    borderRadius: 6,
+                    fontWeight: 700,
+                    fontSize: 12,
+                    cursor: processing || matches.length === 0 ? "default" : "pointer",
+                  }}
+                >
+                  {processing ? "Running..." : `Mass Communion (${matches.length} matches)`}
+                </button>
+                <span style={{ fontSize: 11, color: "#555" }}>
+                  {topics.filter((t) => {
+                    return matches.some((m) => m.sourceId === t.id || m.targetId === t.id);
+                  }).length} bits with connections
+                </span>
+              </div>
             </div>
 
             {/* Data Management */}
@@ -3516,6 +3629,44 @@ export default function ComedyParser() {
           }, 100);
         }}
       />
+      {/* Mini audio player — visible on play tab when file selected, persists on other tabs only while playing */}
+      {nowPlaying && (activeTab === "play" || audioIsPlaying) && (
+        <div style={{
+          position: "fixed", bottom: 20, right: 20, zIndex: 9999,
+          background: "#1a1a2e", border: "1px solid #2a2a40", borderRadius: 12,
+          padding: "12px 16px", minWidth: 300, maxWidth: 400,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 12, color: "#ddd", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {nowPlaying.title}
+            </span>
+            {activeTab !== "play" && (
+              <span
+                onClick={() => setActiveTab("play")}
+                style={{ fontSize: 10, color: "#74c0fc", cursor: "pointer", flexShrink: 0 }}
+              >
+                open
+              </span>
+            )}
+            <span
+              onClick={() => { if (miniPlayerRef.current) miniPlayerRef.current.pause(); setNowPlaying(null); setAudioIsPlaying(false); }}
+              style={{ fontSize: 14, color: "#666", cursor: "pointer", flexShrink: 0, lineHeight: 1 }}
+            >
+              x
+            </span>
+          </div>
+          <audio
+            ref={miniPlayerRef}
+            controls
+            src={nowPlaying.url}
+            style={{ width: "100%", height: 32 }}
+            onPlay={() => setAudioIsPlaying(true)}
+            onPause={() => setAudioIsPlaying(false)}
+            onEnded={() => { setAudioIsPlaying(false); setNowPlaying(null); }}
+          />
+        </div>
+      )}
     </div>
   );
 }

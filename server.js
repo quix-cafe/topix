@@ -6,7 +6,7 @@
  */
 
 import http from "http";
-import { exec, execFile } from "child_process";
+import { exec, execFile, spawn } from "child_process";
 import { promisify } from "util";
 import fs from "node:fs/promises";
 import { existsSync, createReadStream, statSync } from "node:fs";
@@ -381,6 +381,18 @@ const server = http.createServer(async (req, res) => {
         });
 
         json(res, 200, { success: true, filename: newFilename, hash: newHash });
+
+        // Fire-and-forget: run transcribe.py to generate new transcript for trimmed audio
+        const transcribeScript = path.join(AUDIO_DIR, "transcribe.py");
+        if (existsSync(transcribeScript)) {
+          console.log(`[Trim] Spawning transcribe.py for ${newFilename}`);
+          const child = spawn("python3", [transcribeScript], {
+            cwd: AUDIO_DIR,
+            stdio: "ignore",
+            detached: true,
+          });
+          child.unref();
+        }
       } catch (e) {
         await fs.unlink(tempOutput).catch(() => {});
         json(res, 500, { error: e.message });

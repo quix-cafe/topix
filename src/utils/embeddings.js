@@ -12,6 +12,17 @@ const BATCH_SIZE = 50;
 // Serializes all embedding API calls to prevent Ollama contention.
 const _embedQueue = [];
 let _embedRunning = false;
+let _embedPaused = false;
+
+/** Pause or resume the embedding queue. While paused, queued work waits. */
+export function setEmbedPaused(paused) {
+  _embedPaused = paused;
+  if (!paused) _drainEmbedQueue(); // resume draining
+}
+
+export function isEmbedPaused() {
+  return _embedPaused;
+}
 
 function enqueueEmbed(fn) {
   return new Promise((resolve, reject) => {
@@ -21,9 +32,10 @@ function enqueueEmbed(fn) {
 }
 
 async function _drainEmbedQueue() {
-  if (_embedRunning || _embedQueue.length === 0) return;
+  if (_embedRunning || _embedPaused || _embedQueue.length === 0) return;
   _embedRunning = true;
   while (_embedQueue.length > 0) {
+    if (_embedPaused) break;
     const { fn, resolve, reject } = _embedQueue.shift();
     try {
       resolve(await fn());

@@ -51,9 +51,6 @@ export function DetailPanel({
     : [...(touchstones?.confirmed || []), ...(touchstones?.possible || []), ...(touchstones?.rejected || [])];
   const topicTouchstones = getBitTouchstones(selectedTopic.id, allTouchstones);
 
-  // Estimated delivery from bitFlow
-  const estimatedDelivery = selectedTopic.bitFlow?.analysis?.estimatedDeliveryTime;
-
   return (
     <div className="detail-panel">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
@@ -244,11 +241,7 @@ export function DetailPanel({
           >
             {selectedTopic.sourceFile}
           </span>
-          {estimatedDelivery && (
-            <span style={{ fontSize: 10, color: "#4ecdc4" }}>
-              ~{estimatedDelivery}s delivery
-            </span>
-          )}
+
         </div>
       </div>
 

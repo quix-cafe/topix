@@ -272,12 +272,38 @@ export async function saveVaultState(vaultData) {
   const storeNames = [STORES.transcripts, STORES.topics, STORES.matches, STORES.touchstones, STORES.rootBits, STORES.metadata];
   const tx = db.transaction(storeNames, "readwrite");
 
-  // Sync each data store within the same transaction
-  await syncStoreInTx(tx.objectStore(STORES.transcripts), vaultData.transcripts || []);
-  await syncStoreInTx(tx.objectStore(STORES.topics), vaultData.topics || []);
-  await syncStoreInTx(tx.objectStore(STORES.matches), vaultData.matches || []);
-  await syncStoreInTx(tx.objectStore(STORES.touchstones), flattenTouchstones(vaultData.touchstones || {}));
-  await syncStoreInTx(tx.objectStore(STORES.rootBits), vaultData.rootBits || []);
+  const flatTouchstones = flattenTouchstones(vaultData.touchstones || {});
+
+  // Gather all store references and data pairs
+  const pairs = [
+    [tx.objectStore(STORES.transcripts), vaultData.transcripts || []],
+    [tx.objectStore(STORES.topics), vaultData.topics || []],
+    [tx.objectStore(STORES.matches), vaultData.matches || []],
+    [tx.objectStore(STORES.touchstones), flatTouchstones],
+    [tx.objectStore(STORES.rootBits), vaultData.rootBits || []],
+  ];
+
+  // Fetch all existing keys in parallel (single await keeps transaction alive)
+  const allKeys = await Promise.all(
+    pairs.map(([store]) => new Promise((resolve, reject) => {
+      const req = store.getAllKeys();
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => resolve(req.result || []);
+    }))
+  );
+
+  // Now do all deletes and puts synchronously (no awaits = transaction stays active)
+  const ts = Date.now();
+  for (let i = 0; i < pairs.length; i++) {
+    const [store, records] = pairs[i];
+    const newIds = new Set(records.map((r) => r.id));
+    for (const key of allKeys[i]) {
+      if (!newIds.has(key)) store.delete(key);
+    }
+    for (const record of records) {
+      store.put({ ...record, timestamp: ts });
+    }
+  }
 
   // Save metadata in same transaction
   tx.objectStore(STORES.metadata).put({
@@ -286,7 +312,7 @@ export async function saveVaultState(vaultData) {
     stats: {
       totalBits: vaultData.topics?.length || 0,
       totalMatches: vaultData.matches?.length || 0,
-      totalTouchstones: flattenTouchstones(vaultData.touchstones || {}).length,
+      totalTouchstones: flatTouchstones.length,
       totalRootBits: vaultData.rootBits?.length || 0,
     },
   });

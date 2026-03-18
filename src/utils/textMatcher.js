@@ -31,6 +31,30 @@ function stripForComparison(text) {
 }
 
 /**
+ * Map a position in normalized text back to the original text.
+ * normalizeWhitespace collapses runs of whitespace into single spaces and trims,
+ * so we walk both strings in parallel to find the original index.
+ */
+function mapNormPosToOriginal(originalText, normPos) {
+  let normIdx = 0;
+  let origIdx = 0;
+  // Skip leading whitespace (trim)
+  while (origIdx < originalText.length && /\s/.test(originalText[origIdx])) origIdx++;
+
+  while (normIdx < normPos && origIdx < originalText.length) {
+    if (/\s/.test(originalText[origIdx])) {
+      // Consume entire whitespace run in original (maps to single space in normalized)
+      while (origIdx < originalText.length && /\s/.test(originalText[origIdx])) origIdx++;
+      normIdx++; // the single space in normalized
+    } else {
+      origIdx++;
+      normIdx++;
+    }
+  }
+  return origIdx;
+}
+
+/**
  * Strategy 1: Exact match after whitespace/quote normalization
  */
 function exactNormalized(originalText, searchText) {
@@ -40,9 +64,13 @@ function exactNormalized(originalText, searchText) {
   const idx = normOrig.indexOf(normSearch);
   if (idx === -1) return null;
 
+  // Map normalized positions back to original text positions
+  const startChar = mapNormPosToOriginal(originalText, idx);
+  const endChar = mapNormPosToOriginal(originalText, idx + normSearch.length);
+
   return {
-    startChar: idx,
-    endChar: idx + normSearch.length,
+    startChar,
+    endChar,
     confidence: 1.0,
     strategy: "exact-normalized",
   };

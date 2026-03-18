@@ -8,24 +8,52 @@ import { getDB } from "./database.js";
 const EMBEDDINGS_STORE = "embeddings";
 const BATCH_SIZE = 50;
 
+// ─── Embedding queue ─────────────────────────────────────────────────
+// Serializes all embedding API calls to prevent Ollama contention.
+const _embedQueue = [];
+let _embedRunning = false;
+
+function enqueueEmbed(fn) {
+  return new Promise((resolve, reject) => {
+    _embedQueue.push({ fn, resolve, reject });
+    _drainEmbedQueue();
+  });
+}
+
+async function _drainEmbedQueue() {
+  if (_embedRunning || _embedQueue.length === 0) return;
+  _embedRunning = true;
+  while (_embedQueue.length > 0) {
+    const { fn, resolve, reject } = _embedQueue.shift();
+    try {
+      resolve(await fn());
+    } catch (e) {
+      reject(e);
+    }
+  }
+  _embedRunning = false;
+}
+
 /**
  * Generate embedding for a single text
  */
 export async function embedText(text, model = "mxbai-embed-large") {
-  const res = await fetch("http://localhost:11434/api/embed", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, input: text }),
+  return enqueueEmbed(async () => {
+    const res = await fetch("http://localhost:11434/api/embed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, input: text }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Embedding API error ${res.status}: ${err}`);
+    }
+    const data = await res.json();
+    if (!data.embeddings || !data.embeddings[0]) {
+      throw new Error("No embedding returned");
+    }
+    return new Float32Array(data.embeddings[0]);
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Embedding API error ${res.status}: ${err}`);
-  }
-  const data = await res.json();
-  if (!data.embeddings || !data.embeddings[0]) {
-    throw new Error("No embedding returned");
-  }
-  return new Float32Array(data.embeddings[0]);
 }
 
 /**
@@ -33,31 +61,33 @@ export async function embedText(text, model = "mxbai-embed-large") {
  * @param {function} onBatchProgress - callback({batchDone, batchTotal}) called after each batch
  */
 export async function embedBatch(texts, model = "mxbai-embed-large", onBatchProgress) {
-  const results = [];
-  const totalBatches = Math.ceil(texts.length / BATCH_SIZE);
-  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const batch = texts.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    onBatchProgress?.({ batchDone: batchNum - 1, batchTotal: totalBatches, textsDone: i, textsTotal: texts.length });
-    const res = await fetch("http://localhost:11434/api/embed", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, input: batch }),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Embedding API error ${res.status}: ${err}`);
+  return enqueueEmbed(async () => {
+    const results = [];
+    const totalBatches = Math.ceil(texts.length / BATCH_SIZE);
+    for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+      const batch = texts.slice(i, i + BATCH_SIZE);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      onBatchProgress?.({ batchDone: batchNum - 1, batchTotal: totalBatches, textsDone: i, textsTotal: texts.length });
+      const res = await fetch("http://localhost:11434/api/embed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, input: batch }),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Embedding API error ${res.status}: ${err}`);
+      }
+      const data = await res.json();
+      if (!data.embeddings) {
+        throw new Error("No embeddings returned");
+      }
+      for (const emb of data.embeddings) {
+        results.push(new Float32Array(emb));
+      }
+      onBatchProgress?.({ batchDone: batchNum, batchTotal: totalBatches, textsDone: Math.min(i + BATCH_SIZE, texts.length), textsTotal: texts.length });
     }
-    const data = await res.json();
-    if (!data.embeddings) {
-      throw new Error("No embeddings returned");
-    }
-    for (const emb of data.embeddings) {
-      results.push(new Float32Array(emb));
-    }
-    onBatchProgress?.({ batchDone: batchNum, batchTotal: totalBatches, textsDone: Math.min(i + BATCH_SIZE, texts.length), textsTotal: texts.length });
-  }
-  return results;
+    return results;
+  });
 }
 
 /**

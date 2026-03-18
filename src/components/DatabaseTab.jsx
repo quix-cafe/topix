@@ -7,6 +7,7 @@ export function DatabaseTab({
   touchstones,
 }) {
   const [shuffleKey, setShuffleKey] = useState(0);
+  const [search, setSearch] = useState("");
 
   // Collect all bit IDs that belong to any touchstone
   const touchstoneBitIds = useMemo(() => {
@@ -18,6 +19,18 @@ export function DatabaseTab({
     }
     return ids;
   }, [touchstones]);
+
+  // Search results — when search is active, show all matching bits
+  const searchResults = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return null;
+    return topics.filter((t) =>
+      (t.title || "").toLowerCase().includes(q) ||
+      (t.summary || "").toLowerCase().includes(q) ||
+      (t.fullText || "").toLowerCase().includes(q) ||
+      (t.sourceFile || "").toLowerCase().includes(q)
+    );
+  }, [topics, search]);
 
   // Get bits NOT in any touchstone, then shuffle and take 20
   const displayedBits = useMemo(() => {
@@ -47,22 +60,51 @@ export function DatabaseTab({
     );
   }
 
+  const bitsToShow = searchResults || displayedBits;
+
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <span style={{ fontSize: 13, color: "#888" }}>
-          {orphanCount} bits not in any touchstone — showing 20 random
-        </span>
-        <button
-          className="btn btn-secondary"
-          onClick={reshuffle}
-          style={{ background: "#1a1a2a", color: "#bbb", border: "1px solid #333", fontSize: 12 }}
-        >
-          Reshuffle
-        </button>
+      {/* Search box */}
+      <div style={{ marginBottom: 16, position: "relative" }}>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search bits by title, summary, text, or source..."
+          style={{
+            width: "100%", padding: "10px 14px", paddingRight: 32, background: "#0d0d16", border: "1px solid #1e1e30",
+            borderRadius: 8, color: "#ddd", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box",
+          }}
+        />
+        {search && (
+          <button
+            onClick={() => setSearch("")}
+            style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#666", fontSize: 14, cursor: "pointer", lineHeight: 1 }}
+          >
+            x
+          </button>
+        )}
       </div>
 
-      {displayedBits.map((topic) => (
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <span style={{ fontSize: 13, color: "#888" }}>
+          {searchResults
+            ? `${searchResults.length} result${searchResults.length !== 1 ? "s" : ""} for "${search.trim()}"`
+            : `${orphanCount} bits not in any touchstone \u2014 showing 20 random`
+          }
+        </span>
+        {!searchResults && (
+          <button
+            className="btn btn-secondary"
+            onClick={reshuffle}
+            style={{ background: "#1a1a2a", color: "#bbb", border: "1px solid #333", fontSize: 12 }}
+          >
+            Reshuffle
+          </button>
+        )}
+      </div>
+
+      {bitsToShow.map((topic) => (
         <div key={topic.id} className="card" onClick={() => setSelectedTopic(topic)}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>

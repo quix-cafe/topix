@@ -28,6 +28,7 @@ export function DetailPanel({
   onCommuneBit,
   onDeleteBit,
   onApproveGap,
+  onCreateTouchstone,
 }) {
   const [addToTouchstoneOpen, setAddToTouchstoneOpen] = useState(false);
   const [touchstoneSearch, setTouchstoneSearch] = useState("");
@@ -56,15 +57,37 @@ export function DetailPanel({
   return (
     <div className="detail-panel">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
-        <h2 style={{
-          fontFamily: "'Playfair Display', serif",
-          fontSize: 20,
-          fontWeight: 700,
-          color: "#eee",
-          flex: 1,
-        }}>
-          {selectedTopic.title}
-        </h2>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+          <h2 style={{
+            fontFamily: "'Playfair Display', serif",
+            fontSize: 20,
+            fontWeight: 700,
+            color: "#eee",
+            flex: 1,
+          }}>
+            {selectedTopic.title}
+          </h2>
+          {onBaptize && selectedTopic.fullText?.trim() && !baptizing && (
+            <button
+              onClick={async () => {
+                setBaptizing(true);
+                try { await onBaptize(selectedTopic.id); } finally { setBaptizing(false); }
+              }}
+              title="Generate new title"
+              style={{
+                background: "none", border: "1px solid #333", color: "#888",
+                borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", flexShrink: 0,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "#da77f2"; e.currentTarget.style.borderColor = "#da77f244"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = "#888"; e.currentTarget.style.borderColor = "#333"; }}
+            >
+              Rename
+            </button>
+          )}
+          {baptizing && (
+            <span style={{ fontSize: 10, color: "#da77f2", flexShrink: 0 }}>Renaming...</span>
+          )}
+        </div>
         <button
           onClick={() => setSelectedTopic(null)}
           style={{
@@ -287,6 +310,26 @@ export function DetailPanel({
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Create Touchstone from this bit */}
+      {onCreateTouchstone && (
+        <div style={{ marginBottom: 16 }}>
+          <button
+            onClick={() => {
+              const name = selectedTopic.title || "Untitled";
+              onCreateTouchstone(name, selectedTopic.id);
+            }}
+            style={{
+              width: "100%", padding: "10px", background: "#51cf6610", color: "#51cf66",
+              border: "1px solid #51cf6633", borderRadius: 8, fontWeight: 600, fontSize: 12, cursor: "pointer",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "#51cf6620"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "#51cf6610"; }}
+          >
+            Create Touchstone
+          </button>
         </div>
       )}
 

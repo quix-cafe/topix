@@ -16,6 +16,7 @@ export function TouchstonePanel({
   const [selectedTouchstoneId, setSelectedTouchstoneId] = useState(null);
   const [autoOpenMerge, setAutoOpenMerge] = useState(false);
   const [creatingFrom, setCreatingFrom] = useState(null); // bit to seed new touchstone
+  const [touchstoneFilter, setTouchstoneFilter] = useState("");
   const [newTouchstoneName, setNewTouchstoneName] = useState("");
 
   // Navigate to a specific touchstone from external (e.g. DetailPanel)
@@ -194,38 +195,72 @@ export function TouchstonePanel({
       {/* Create new touchstone from bit */}
       {onCreateTouchstone && <CreateTouchstoneFromBit bits={bits} onSelect={(bit) => { setCreatingFrom(bit); setNewTouchstoneName(bit.title); }} />}
 
-      {confirmed.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 600, color: "#51cf66", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
-            Confirmed Touchstones ({confirmed.length})
-          </h3>
-          {confirmed.map((touchstone) => (
-            <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
-          ))}
-        </div>
-      )}
+      {/* Search filter */}
+      <div style={{ marginBottom: 16, position: "relative" }}>
+        <input
+          type="text"
+          value={touchstoneFilter}
+          onChange={(e) => setTouchstoneFilter(e.target.value)}
+          placeholder="Filter touchstones..."
+          style={{
+            width: "100%", padding: "8px 12px", paddingRight: 32, background: "#0d0d16", border: "1px solid #1e1e30",
+            borderRadius: 8, color: "#ddd", fontSize: 12, fontFamily: "inherit", boxSizing: "border-box",
+          }}
+        />
+        {touchstoneFilter && (
+          <button
+            onClick={() => setTouchstoneFilter("")}
+            style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#666", fontSize: 14, cursor: "pointer", lineHeight: 1 }}
+          >
+            x
+          </button>
+        )}
+      </div>
 
-      {possible.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 600, color: "#ffa94d", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
-            Possible Matches ({possible.length})
-          </h3>
-          {possible.map((touchstone) => (
-            <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onConfirm={onConfirmTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
-          ))}
-        </div>
-      )}
+      {(() => {
+        const q = touchstoneFilter.trim().toLowerCase();
+        const filterList = (list) => q ? list.filter((t) => t.name.toLowerCase().includes(q)) : list;
+        const fConfirmed = filterList(confirmed);
+        const fPossible = filterList(possible);
+        const fRejected = filterList(rejected);
 
-      {rejected.length > 0 && (
-        <div>
-          <h3 style={{ fontSize: 13, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
-            Rejected ({rejected.length})
-          </h3>
-          {rejected.map((touchstone) => (
-            <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRestore={onRestoreTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
-          ))}
-        </div>
-      )}
+        return (
+          <>
+            {fConfirmed.length > 0 && (
+              <div style={{ marginBottom: 24 }}>
+                <h3 style={{ fontSize: 13, fontWeight: 600, color: "#51cf66", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
+                  Confirmed Touchstones ({fConfirmed.length})
+                </h3>
+                {fConfirmed.map((touchstone) => (
+                  <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                ))}
+              </div>
+            )}
+
+            {fPossible.length > 0 && (
+              <div style={{ marginBottom: 24 }}>
+                <h3 style={{ fontSize: 13, fontWeight: 600, color: "#ffa94d", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
+                  Possible Matches ({fPossible.length})
+                </h3>
+                {fPossible.map((touchstone) => (
+                  <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onConfirm={onConfirmTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                ))}
+              </div>
+            )}
+
+            {fRejected.length > 0 && (
+              <div>
+                <h3 style={{ fontSize: 13, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
+                  Rejected ({fRejected.length})
+                </h3>
+                {fRejected.map((touchstone) => (
+                  <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRestore={onRestoreTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                ))}
+              </div>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }

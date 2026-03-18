@@ -13,6 +13,33 @@ import {
 export { tryParsePartialJSON, tryParsePartialBits, extractCompleteJsonObjects, extractRawJsonObjects } from "./jsonParser.js";
 export { calculateCharPosition, extractTextByPosition, adjustBoundary, findWordBoundary, getLineColumn, getLineBoundaries } from "./positionTracker.js";
 
+// ─── Global generation queue ─────────────────────────────────────────
+// Ollama can only run one generation at a time on a single GPU.
+// This queue serializes all LLM calls (chat + stream) to prevent contention.
+const _genQueue = [];
+let _genRunning = false;
+
+function enqueueGeneration(fn) {
+  return new Promise((resolve, reject) => {
+    _genQueue.push({ fn, resolve, reject });
+    _drainGenQueue();
+  });
+}
+
+async function _drainGenQueue() {
+  if (_genRunning || _genQueue.length === 0) return;
+  _genRunning = true;
+  while (_genQueue.length > 0) {
+    const { fn, resolve, reject } = _genQueue.shift();
+    try {
+      resolve(await fn());
+    } catch (e) {
+      reject(e);
+    }
+  }
+  _genRunning = false;
+}
+
 // ─── JSON repair for truncated responses ────────────────────────────
 /**
  * Try to repair a truncated JSON object by closing open strings, arrays, and braces.
@@ -195,27 +222,29 @@ async function callOllamaOnce(system, userMsg, onStatus, model, debugCallback, e
 }
 
 export async function callOllama(system, userMsg, onStatus, model = "qwen3.5:9b", debugCallback = null, externalSignal = null) {
-  onStatus?.("Calling " + model + " via Ollama...");
+  return enqueueGeneration(async () => {
+    onStatus?.("Calling " + model + " via Ollama...");
 
-  try {
-    return await callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal);
-  } catch (e) {
-    // Don't retry user-initiated aborts
-    if (e.name === "AbortError") throw e;
-
-    // Retry once on transient errors (connection, 503, parse failures)
-    const isTransient = e.message?.includes("fetch") ||
-      e.message?.includes("503") ||
-      e.message?.includes("Failed to parse") ||
-      e.message?.includes("network");
-    if (isTransient) {
-      console.warn(`[callOllama] Retrying after transient error: ${e.message}`);
-      onStatus?.("Retrying " + model + "...");
-      await new Promise(r => setTimeout(r, 2000));
+    try {
       return await callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal);
+    } catch (e) {
+      // Don't retry user-initiated aborts
+      if (e.name === "AbortError") throw e;
+
+      // Retry once on transient errors (connection, 503, parse failures)
+      const isTransient = e.message?.includes("fetch") ||
+        e.message?.includes("503") ||
+        e.message?.includes("Failed to parse") ||
+        e.message?.includes("network");
+      if (isTransient) {
+        console.warn(`[callOllama] Retrying after transient error: ${e.message}`);
+        onStatus?.("Retrying " + model + "...");
+        await new Promise(r => setTimeout(r, 2000));
+        return await callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal);
+      }
+      throw e;
     }
-    throw e;
-  }
+  });
 }
 
 // ─── Health check and restart helpers ────────────────────────────────
@@ -280,6 +309,10 @@ export async function requestOllamaRestart() {
  * @returns {Promise<Array>} Final parsed JSON result
  */
 export async function callOllamaStream(system, userMsg, callbacks = {}, model = "qwen3.5:9b", abortController = null, timeoutMs = 30000) {
+  return enqueueGeneration(() => _callOllamaStreamInner(system, userMsg, callbacks, model, abortController, timeoutMs));
+}
+
+async function _callOllamaStreamInner(system, userMsg, callbacks = {}, model = "qwen3.5:9b", abortController = null, timeoutMs = 30000) {
   const { onChunk, onBitFound, onTagProgress, onComplete, onError, onFrozen, onDebug } = callbacks;
 
   const messages = [

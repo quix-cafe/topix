@@ -6,6 +6,7 @@ export function TagsTab({
   touchstones,
 }) {
   const [selectedTags, setSelectedTags] = useState(new Set());
+  const [tagSearch, setTagSearch] = useState("");
 
   // Build tag counts, filter to > 3 instances
   const tagCounts = useMemo(() => {
@@ -18,6 +19,13 @@ export function TagsTab({
       .filter(([, count]) => count > 3)
       .sort((a, b) => b[1] - a[1]);
   }, [topics]);
+
+  // Filter tag list by search
+  const filteredTagCounts = useMemo(() => {
+    const q = tagSearch.trim().toLowerCase();
+    if (!q) return tagCounts;
+    return tagCounts.filter(([tag]) => tag.includes(q));
+  }, [tagCounts, tagSearch]);
 
   // Build touchstone lookup
   const bitTouchstoneMap = useMemo(() => {
@@ -32,15 +40,15 @@ export function TagsTab({
     return map;
   }, [touchstones]);
 
-  // Filter bits to those matching ALL selected tags
+  // Filter bits to those matching ANY selected tag (OR logic)
   const filteredBits = useMemo(() => {
     if (selectedTags.size === 0) return [];
     return topics.filter((t) => {
       const bitTags = new Set((t.tags || []).map((tag) => tag.trim().replace(/\s+/g, "-").toLowerCase()));
       for (const st of selectedTags) {
-        if (!bitTags.has(st)) return false;
+        if (bitTags.has(st)) return true;
       }
-      return true;
+      return false;
     }).sort((a, b) => {
       if (a.sourceFile !== b.sourceFile) return (a.sourceFile || "").localeCompare(b.sourceFile || "");
       return (a.textPosition?.startChar || 0) - (b.textPosition?.startChar || 0);
@@ -64,8 +72,49 @@ export function TagsTab({
         </div>
       ) : (
         <>
-          <div style={{ marginBottom: 16, display: "flex", flexWrap: "wrap", gap: 4 }}>
-            {tagCounts.map(([tag, count]) => {
+          {/* Tag search filter */}
+          <div style={{ marginBottom: 10, position: "relative" }}>
+            <input
+              type="text"
+              value={tagSearch}
+              onChange={(e) => setTagSearch(e.target.value)}
+              placeholder="Filter tags..."
+              style={{
+                width: "100%", padding: "8px 12px", paddingRight: 32, background: "#0d0d16", border: "1px solid #1e1e30",
+                borderRadius: 8, color: "#ddd", fontSize: 12, fontFamily: "inherit", boxSizing: "border-box",
+              }}
+            />
+            {tagSearch && (
+              <button
+                onClick={() => setTagSearch("")}
+                style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#666", fontSize: 14, cursor: "pointer", lineHeight: 1 }}
+              >
+                x
+              </button>
+            )}
+          </div>
+
+          {/* Clear + tag count */}
+          {selectedTags.size > 0 && (
+            <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "#888" }}>
+                {selectedTags.size} tag{selectedTags.size !== 1 ? "s" : ""} selected
+              </span>
+              <button
+                onClick={() => setSelectedTags(new Set())}
+                style={{
+                  padding: "3px 10px", background: "#ff6b6b18", color: "#ff6b6b", border: "1px solid #ff6b6b33",
+                  borderRadius: 6, fontSize: 11, cursor: "pointer",
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          )}
+
+          {/* Scrollable tag container */}
+          <div style={{ marginBottom: 16, maxHeight: 180, overflowY: "auto", display: "flex", flexWrap: "wrap", gap: 4, padding: "4px 0" }}>
+            {filteredTagCounts.map(([tag, count]) => {
               const active = selectedTags.has(tag);
               return (
                 <span
@@ -95,7 +144,7 @@ export function TagsTab({
             <>
               <div style={{ fontSize: 13, color: "#888", marginBottom: 12 }}>
                 {filteredBits.length} bit{filteredBits.length !== 1 ? "s" : ""} matching{" "}
-                {[...selectedTags].map((t) => `#${t}`).join(" + ")}
+                {[...selectedTags].map((t) => `#${t}`).join(" | ")}
               </div>
               {filteredBits.map((topic) => (
                 <div key={topic.id} className="card" onClick={() => setSelectedTopic(topic)}>

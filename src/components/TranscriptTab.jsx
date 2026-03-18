@@ -8,6 +8,11 @@ export function TranscriptTab({
   selectedTranscript,
   selectedTopic,
   processing,
+  selectedModel,
+  parseAll,
+  parseUnparsed,
+  setShouldStop,
+  abortControllerRef,
   setSelectedTranscript,
   setSelectedTopic,
   reParseTranscript,
@@ -31,6 +36,7 @@ export function TranscriptTab({
   onConsumeMixInit,
   approvedGaps,
   onApproveGap,
+  onGoToPlay,
 }) {
   const [sortCol, setSortCol] = useState("file");
   const [sortDir, setSortDir] = useState("asc");
@@ -171,8 +177,55 @@ export function TranscriptTab({
 
   return (
     <div>
+      {/* Parse controls */}
+      {(() => {
+        const unparsedCount = transcripts.filter(
+          (tr) => !topics.some((t) => t.sourceFile === tr.name || t.transcriptId === tr.id)
+        ).length;
+        return (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+            {parseAll && (
+              <button
+                className="btn btn-primary"
+                onClick={() => parseAll()}
+                disabled={processing}
+                style={{ padding: "6px 14px", fontSize: 11 }}
+              >
+                {processing ? "Parsing..." : `Parse All with ${selectedModel}`}
+              </button>
+            )}
+            {parseUnparsed && unparsedCount > 0 && unparsedCount < transcripts.length && (
+              <button
+                onClick={parseUnparsed}
+                disabled={processing}
+                style={{
+                  padding: "6px 14px", background: "#4ecdc4", color: "#000", border: "none",
+                  borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: processing ? "not-allowed" : "pointer",
+                }}
+              >
+                {processing ? "..." : `Process ${unparsedCount} Unparsed`}
+              </button>
+            )}
+            {processing && setShouldStop && (
+              <button
+                onClick={() => {
+                  setShouldStop(true);
+                  if (abortControllerRef?.current) abortControllerRef.current.abort();
+                }}
+                style={{
+                  padding: "6px 14px", background: "#ff6b6b", color: "#fff", border: "none",
+                  borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                Stop
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Search bar */}
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 12, position: "relative" }}>
         <input
           type="text"
           value={searchFilter}
@@ -181,6 +234,7 @@ export function TranscriptTab({
           style={{
             width: "100%",
             padding: "8px 12px",
+            paddingRight: 32,
             background: "#0a0a14",
             border: "1px solid #252538",
             borderRadius: 6,
@@ -190,6 +244,14 @@ export function TranscriptTab({
             boxSizing: "border-box",
           }}
         />
+        {searchFilter && (
+          <button
+            onClick={() => setSearchFilter("")}
+            style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#666", fontSize: 14, cursor: "pointer", lineHeight: 1 }}
+          >
+            x
+          </button>
+        )}
       </div>
 
       <div style={{ marginBottom: 24 }}>
@@ -313,6 +375,20 @@ export function TranscriptTab({
                   {isSelected && (
                     <tr>
                       <td colSpan={7} style={{ padding: "0 4px 12px", background: "#0e0e1a", borderBottom: "1px solid #1a1a2a" }}>
+                        {onGoToPlay && (
+                          <div style={{ padding: "8px 8px 4px", display: "flex", justifyContent: "flex-end" }}>
+                            <button
+                              onClick={() => onGoToPlay(tr)}
+                              style={{
+                                padding: "4px 12px", background: "#6c5ce718", color: "#a78bfa",
+                                border: "1px solid #6c5ce733", borderRadius: 6, fontSize: 11,
+                                fontWeight: 600, cursor: "pointer",
+                              }}
+                            >
+                              View in Play
+                            </button>
+                          </div>
+                        )}
                         <MixPanel
                           topics={topics}
                           transcripts={transcripts}

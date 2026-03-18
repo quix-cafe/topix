@@ -29,7 +29,7 @@ import { generateObsidianVault } from "./utils/obsidianExport";
 import { NetworkGraph } from "./components/NetworkGraph";
 import { DebugPanel } from "./components/DebugPanel";
 import { StreamingProgressPanel } from "./components/StreamingProgressPanel";
-import { SyncTab } from "./components/SyncTab";
+import { PlayTab } from "./components/PlayTab";
 import { DatabaseTab } from "./components/DatabaseTab";
 import { TagsTab } from "./components/TagsTab";
 import { TranscriptTab } from "./components/TranscriptTab";
@@ -44,7 +44,7 @@ const initialState = {
   matches: [],
   status: "",
   processing: false,
-  activeTab: "upload",
+  activeTab: "play",
   selectedTopic: null,
   streamingProgress: null,
   foundBits: [],
@@ -125,6 +125,7 @@ export default function ComedyParser() {
   const [mixBitInit, setMixBitInit] = useState(null);
   const [mixGapInit, setMixGapInit] = useState(null);
   const [touchstoneInit, setTouchstoneInit] = useState(null);
+  const [playInitFile, setPlayInitFile] = useState(null);
   const [approvedGaps, setApprovedGaps] = useState(() => {
     try { return JSON.parse(localStorage.getItem("topix-approved-gaps") || "[]"); } catch { return []; }
   });
@@ -477,11 +478,7 @@ export default function ComedyParser() {
       revalidateTimerRef.current = null;
       if (pending.length === 0) return;
       const s = stateRef.current;
-      if (s.processing) {
-        console.log("[Revalidate] Skipping — processing is active, will retry in 30s");
-        debouncedRevalidate(pending);
-        return;
-      }
+      // LLM calls go through the generation queue, so no need to check s.processing
       revalidateMatchesRef.current?.(pending, s.topics, s.matches);
     }, 30000);
   }, []);
@@ -2296,6 +2293,38 @@ export default function ComedyParser() {
     set('status', `Sync complete: ${parts.join(", ")}`);
   }, []);
 
+  const handleCreateTouchstoneFromBit = useCallback((name, bitId) => {
+    const bit = stateRef.current.topics.find((t) => t.id === bitId);
+    if (!bit) return;
+    const newTouchstone = {
+      id: `touchstone-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      name,
+      summary: `1 instance — in "${bit.sourceFile}"`,
+      bitIds: [bitId],
+      instances: [{
+        bitId,
+        sourceFile: bit.sourceFile,
+        title: bit.title,
+        instanceNumber: 1,
+        confidence: 1,
+        relationship: "same_bit",
+      }],
+      firstAppearance: { transcriptId: bit.transcriptId, bitId, sourceFile: bit.sourceFile },
+      frequency: 1,
+      crossTranscript: false,
+      sourceCount: 1,
+      tags: bit.tags || [],
+      commonWords: [],
+      matchInfo: { totalMatches: 0, sameBitCount: 0, evolvedCount: 0, relatedCount: 0, callbackCount: 0, avgConfidence: 0, avgMatchPercentage: 0, reasons: [] },
+      category: "confirmed",
+    };
+    update('touchstones', (prev) => ({
+      confirmed: [...(prev.confirmed || []), newTouchstone],
+      possible: prev.possible || [],
+      rejected: prev.rejected || [],
+    }));
+  }, []);
+
   // Clear processed data but keep transcript list
   const clearProcessedData = useCallback(async () => {
     if (!window.confirm("Clear all bits, matches, and touchstones? Transcripts will be kept but reset to unparsed.")) {
@@ -2702,13 +2731,13 @@ export default function ComedyParser() {
 
         {/* Row 3: Tabs */}
         <div style={{ display: "flex", gap: 0 }}>
-          {["upload", "bits", "tags", "touchstones", "transcripts", "validation", "analytics", "graph", "settings"].map((tab) => (
+          {["play", "transcripts", "bits", "tags", "touchstones", "validation", "analytics", "graph", "settings"].map((tab) => (
             <button
               key={tab}
               className={`tab-btn ${activeTab === tab ? "active" : ""}`}
               onClick={() => setActiveTab(tab)}
             >
-              {tab === "upload" ? "sync" : tab}
+              {tab}
             </button>
           ))}
         </div>
@@ -2740,10 +2769,10 @@ export default function ComedyParser() {
         </div>
       )}
 
-      <div style={{ padding: "24px 32px", paddingBottom: (streamingProgress || processing || huntProgress) ? 370 : debugMode ? "calc(40vh + 24px)" : 24 }}>
-        {/* SYNC TAB */}
-        {activeTab === "upload" && (
-          <SyncTab
+      <div style={{ padding: activeTab === "play" ? "24px 32px 0" : "24px 32px", paddingBottom: activeTab === "play" ? 0 : (streamingProgress || processing || huntProgress) ? 370 : debugMode ? "calc(40vh + 24px)" : 24 }}>
+        {/* PLAY TAB */}
+        {activeTab === "play" && (
+          <PlayTab
             transcripts={transcripts}
             topics={topics}
             processing={processing}
@@ -2754,6 +2783,8 @@ export default function ComedyParser() {
             abortControllerRef={abortControllerRef}
             onGoToMix={(tr) => { setMixTranscriptInit(tr); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
             onSyncApply={handleSyncApply}
+            playInitFile={playInitFile}
+            onConsumePlayInit={() => setPlayInitFile(null)}
           />
         )}
 
@@ -2921,37 +2952,7 @@ export default function ComedyParser() {
                   return { confirmed: removeFrom(prev.confirmed || []), possible: removeFrom(prev.possible || []), rejected: removeFrom(prev.rejected || []) };
                 });
               }}
-              onCreateTouchstone={(name, bitId) => {
-                const bit = topics.find((t) => t.id === bitId);
-                if (!bit) return;
-                const newTouchstone = {
-                  id: `touchstone-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                  name,
-                  summary: `1 instance — in "${bit.sourceFile}"`,
-                  bitIds: [bitId],
-                  instances: [{
-                    bitId,
-                    sourceFile: bit.sourceFile,
-                    title: bit.title,
-                    instanceNumber: 1,
-                    confidence: 1,
-                    relationship: "same_bit",
-                  }],
-                  firstAppearance: { transcriptId: bit.transcriptId, bitId, sourceFile: bit.sourceFile },
-                  frequency: 1,
-                  crossTranscript: false,
-                  sourceCount: 1,
-                  tags: bit.tags || [],
-                  commonWords: [],
-                  matchInfo: { totalMatches: 0, sameBitCount: 0, evolvedCount: 0, relatedCount: 0, callbackCount: 0, avgConfidence: 0, avgMatchPercentage: 0, reasons: [] },
-                  category: "confirmed",
-                };
-                update('touchstones', (prev) => ({
-                  confirmed: [...(prev.confirmed || []), newTouchstone],
-                  possible: prev.possible || [],
-                  rejected: prev.rejected || [],
-                }));
-              }}
+              onCreateTouchstone={handleCreateTouchstoneFromBit}
               onUpdateInstanceRelationship={(touchstoneId, bitId, newRelationship) => {
                 update('touchstones', (prev) => {
                   const updateIn = (list) => list.map((t) => {
@@ -3292,6 +3293,11 @@ export default function ComedyParser() {
             selectedTranscript={selectedTranscript}
             selectedTopic={selectedTopic}
             processing={processing}
+            selectedModel={selectedModel}
+            parseAll={parseAll}
+            parseUnparsed={parseUnparsed}
+            setShouldStop={setShouldStop}
+            abortControllerRef={abortControllerRef}
             setSelectedTranscript={setSelectedTranscript}
             setSelectedTopic={setSelectedTopic}
             reParseTranscript={reParseTranscript}
@@ -3314,6 +3320,7 @@ export default function ComedyParser() {
             onConsumeMixInit={() => { setMixTranscriptInit(null); setMixBitInit(null); setMixGapInit(null); }}
             approvedGaps={approvedGaps}
             onApproveGap={handleApproveGap}
+            onGoToPlay={(tr) => { setPlayInitFile(tr.name); setActiveTab("play"); }}
           />
         )}
 
@@ -3322,6 +3329,7 @@ export default function ComedyParser() {
           <ValidationTab
             topics={topics}
             transcripts={transcripts}
+            touchstones={touchstones}
             onUpdateBitPosition={handleBoundaryChange}
             onGoToMix={(tr, bitId, gapInfo) => { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setMixGapInit(gapInfo || null); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
             onSelectBit={setSelectedTopic}
@@ -3479,6 +3487,7 @@ export default function ComedyParser() {
             } catch (err) { console.error("Error saving after remove-from-touchstone:", err); }
           }, 100);
         }}
+        onCreateTouchstone={handleCreateTouchstoneFromBit}
         onAddToTouchstone={async (bitId, touchstoneId) => {
           const bit = topics.find((t) => t.id === bitId);
           if (!bit) { console.warn("[AddToTouchstone] bit not found:", bitId); return; }

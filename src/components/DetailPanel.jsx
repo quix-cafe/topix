@@ -3,6 +3,7 @@ import { BoundaryAdjuster } from "./BoundaryAdjuster";
 import { BitEditor } from "./BitEditor";
 import { BitJoiner } from "./BitJoiner";
 import { getBitTouchstones } from "../utils/touchstoneDetector";
+import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
 export function DetailPanel({
   selectedTopic,
@@ -53,6 +54,9 @@ export function DetailPanel({
     ? touchstones
     : [...(touchstones?.confirmed || []), ...(touchstones?.possible || []), ...(touchstones?.rejected || [])];
   const topicTouchstones = getBitTouchstones(selectedTopic.id, allTouchstones);
+
+  // Estimated delivery from bitFlow
+  const estimatedDelivery = selectedTopic.bitFlow?.analysis?.estimatedDeliveryTime;
 
   return (
     <div className="detail-panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -240,21 +244,8 @@ export function DetailPanel({
       {/* Source filename */}
       <div style={{ marginBottom: 4, fontSize: 11 }}>
         {(() => {
-          const src = selectedTopic.sourceFile || "";
-          const ratingMatch = src.match(/^\[(.{5})\]\s*/);
-          const durMatch = src.match(/\{(\d{2}:\d{2})\}/);
-          const extMatch = src.match(/\.[^.]+$/);
-          const rating = ratingMatch ? ratingMatch[1] : null;
-          const dur = durMatch ? durMatch[1] : null;
-          let titlePart = src;
-          if (ratingMatch) titlePart = titlePart.slice(ratingMatch[0].length);
-          if (durMatch) titlePart = titlePart.slice(0, titlePart.indexOf(durMatch[0])).trim();
-          else if (extMatch) titlePart = titlePart.slice(0, titlePart.lastIndexOf(extMatch[0])).trim();
-
-          const ratingColors = rating?.includes('+') ? { bg: "#51cf6618", fg: "#51cf66" }
-            : rating?.includes('x') ? { bg: "#ff6b6b18", fg: "#ff6b6b" }
-            : { bg: "#88888818", fg: "#888" };
-
+          const parsed = parseFilenameClient(selectedTopic.sourceFile || "");
+          const rc = ratingColor(parsed.rating);
           return (
             <span
               style={{ cursor: onGoToMix ? "pointer" : undefined, fontFamily: "'JetBrains Mono', monospace" }}
@@ -265,9 +256,9 @@ export function DetailPanel({
               }}
               title={onGoToMix ? "Open in Mix view" : undefined}
             >
-              {rating && <span style={{ background: ratingColors.bg, color: ratingColors.fg, padding: "1px 4px", borderRadius: 3, fontWeight: 700, fontSize: 10 }}>{rating}</span>}
-              <span style={{ color: "#aaa", marginLeft: rating ? 4 : 0 }}>{titlePart}</span>
-              {dur && <span style={{ color: "#74c0fc", marginLeft: 4, fontSize: 10 }}>{dur}</span>}
+              {parsed.rating && <span style={{ background: rc.bg, color: rc.fg, padding: "1px 4px", borderRadius: 3, fontWeight: 700, fontSize: 10, ...RATING_FONT }}>{parsed.rating}</span>}
+              <span style={{ color: "#aaa", marginLeft: parsed.rating ? 4 : 0 }}>{parsed.title}</span>
+              {parsed.duration && <span style={{ color: "#74c0fc", marginLeft: 4, fontSize: 10 }}>{parsed.duration}</span>}
             </span>
           );
         })()}

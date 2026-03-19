@@ -64,6 +64,7 @@ const initialState = {
   huntProgress: null, // { current, total, found, status }
   embeddingModel: "mxbai-embed-large",
   embeddingStatus: { cached: 0, total: 0 },
+  vaultReady: false,
 };
 
 function reducer(state, action) {
@@ -98,7 +99,7 @@ export default function ComedyParser() {
     foundBits, selectedTranscript, adjustingBit, validationResult,
     editingMode, touchstones, rootBits, dbStats, lastSave,
     selectedModel, availableModels, shouldStop, debugMode,
-    debugLog, huntProgress, embeddingModel, embeddingStatus,
+    debugLog, huntProgress, embeddingModel, embeddingStatus, vaultReady,
   } = state;
 
   // Dispatch helpers
@@ -226,8 +227,10 @@ export default function ComedyParser() {
           rootBits: saved.rootBits || [],
         }});
       }
+      set('vaultReady', true);
     } catch (err) {
       console.error("Error loading saved data:", err);
+      set('vaultReady', true); // still mark ready so the app isn't stuck
     }
   }, []);
 
@@ -244,6 +247,11 @@ export default function ComedyParser() {
 
     return () => clearTimeout(timer);
   }, [topics, matches, transcripts, touchstones, rootBits]);
+
+  // Pause background embedding queue while model operations are running
+  useEffect(() => {
+    setEmbedPaused(processing);
+  }, [processing]);
 
   // Run validation whenever topics change
   useEffect(() => {
@@ -2866,6 +2874,7 @@ export default function ComedyParser() {
             onConsumePlayInit={() => setPlayInitFile(null)}
             onNowPlaying={setNowPlaying}
             nowPlaying={nowPlaying}
+            vaultReady={vaultReady}
           />
         )}
 
@@ -2902,6 +2911,12 @@ export default function ComedyParser() {
                 touchstones={touchstones}
                 rootBits={rootBits}
                 transcripts={transcripts}
+                onGoToTouchstone={(touchstoneId) => { setTouchstoneInit(touchstoneId); setActiveTab("touchstones"); }}
+                onGoToMix={(tr) => { setMixTranscriptInit(tr); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
+                onGoToBit={(bitId, sourceFile) => {
+                  const tr = transcripts.find(t => t.name === sourceFile);
+                  if (tr) { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setSelectedTranscript(tr); setActiveTab("transcripts"); }
+                }}
               />
             )}
           </div>

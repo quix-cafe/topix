@@ -1,4 +1,17 @@
 import { useState, useMemo, useEffect } from "react";
+import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
+
+function StyledFilename({ sourceFile, style }) {
+  const p = parseFilenameClient(sourceFile || "");
+  const rc = ratingColor(p.rating);
+  return (
+    <span style={{ fontSize: 10, fontFamily: "'JetBrains Mono', monospace", ...style }}>
+      {p.rating && <span style={{ padding: "1px 3px", borderRadius: 2, background: rc.bg, color: rc.fg, fontWeight: 700, ...RATING_FONT }}>{p.rating}</span>}
+      <span style={{ color: "#666", marginLeft: p.rating ? 3 : 0 }}>{p.title}</span>
+      {p.duration && <span style={{ color: "#74c0fc", marginLeft: 3 }}>{p.duration}</span>}
+    </span>
+  );
+}
 
 const RELATIONSHIP_OPTIONS = ["same_bit", "evolved", "related", "callback", "tag-on"];
 const EXCLUSIVE_RELATIONSHIPS = new Set(["same_bit", "evolved"]);
@@ -309,7 +322,7 @@ function CreateTouchstoneFromBit({ bits, onSelect, onCreateTouchstone }) {
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
               >
                 <span style={{ fontWeight: 600, color: "#ddd" }}>{bit.title}</span>
-                <span style={{ marginLeft: 8, fontSize: 10, color: "#666" }}>{bit.sourceFile}</span>
+                <StyledFilename sourceFile={bit.sourceFile} style={{ marginLeft: 8 }} />
               </div>
             ))}
           </div>
@@ -1056,7 +1069,7 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
                   <div style={{ fontWeight: 600, color: "#ddd", fontSize: 13, marginBottom: 4 }}>
                     #{instance.instanceNumber} — {applyCorrections(instance.title)}
                   </div>
-                  <div style={{ fontSize: 11, color: "#666", marginBottom: 4 }}>{instance.sourceFile}</div>
+                  <div style={{ fontSize: 11, marginBottom: 4 }}><StyledFilename sourceFile={instance.sourceFile} /></div>
                   {bit.summary && <div style={{ fontSize: 11, color: "#777", lineHeight: 1.4, marginBottom: 4 }}>{applyCorrections(bit.summary)}</div>}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4, marginLeft: 8, alignItems: "flex-end" }}>

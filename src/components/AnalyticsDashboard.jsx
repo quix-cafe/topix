@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { getSimilarityStats } from "../utils/similaritySearch";
+import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
 const WORDS_PER_MINUTE = 150;
 
@@ -46,7 +47,7 @@ const SECTION_HEADER = {
 /**
  * AnalyticsDashboard - Comprehensive statistics and insights
  */
-export function AnalyticsDashboard({ topics, matches, touchstones, rootBits, transcripts }) {
+export function AnalyticsDashboard({ topics, matches, touchstones, rootBits, transcripts, onGoToTouchstone, onGoToMix, onGoToBit }) {
   const stats = useMemo(
     () => calculateStats(topics, matches, touchstones, rootBits, transcripts),
     [topics, matches, touchstones, rootBits, transcripts]
@@ -58,14 +59,13 @@ export function AnalyticsDashboard({ topics, matches, touchstones, rootBits, tra
       <StatCard label="Total Bits" value={stats.totalBits} color="#ff6b6b" icon="📝" />
       <StatCard label="Connections" value={stats.totalMatches} color="#4ecdc4" icon="🔗" />
       <StatCard label="Touchstones" value={stats.totalTouchstones} color="#51cf66" icon="🔄" />
-      <StatCard label="Root Bits" value={stats.totalRootBits} color="#ffa94d" icon="🌳" />
       {stats.totalMaterialDuration > 0 && (
         <StatCard label="Total Material" value={formatDurationMinSec(stats.totalMaterialDuration)} color="#74c0fc" icon="⏱" />
       )}
 
       {/* Set Timelines */}
       {stats.transcriptTimelines.length > 0 && (
-        <SetTimeline timelines={stats.transcriptTimelines} />
+        <SetTimeline timelines={stats.transcriptTimelines} onGoToTouchstone={onGoToTouchstone} onGoToMix={onGoToMix} onGoToBit={onGoToBit} transcripts={transcripts} />
       )}
 
       {/* Set Comparison */}
@@ -282,103 +282,223 @@ export function AnalyticsDashboard({ topics, matches, touchstones, rootBits, tra
  * SetTimeline - Per-transcript horizontal bit lanes
  * Bits sized proportionally by word count, colored by touchstone/connection status
  */
-function SetTimeline({ timelines }) {
+function SetTimeline({ timelines, onGoToTouchstone, onGoToMix, onGoToBit, transcripts }) {
   const [hoveredBit, setHoveredBit] = useState(null); // { timelineIdx, bitIdx }
+  const [filterTouchstones, setFilterTouchstones] = useState([]); // touchstone IDs to filter by
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterSearch, setFilterSearch] = useState("");
+  const [nameSearch, setNameSearch] = useState("");
+
+  // Collect all touchstones appearing in timelines
+  const allTimelineTouchstones = useMemo(() => {
+    const map = new Map();
+    for (const tl of timelines) {
+      for (const bit of tl.bits) {
+        if (bit.tsId && bit.tsName && !map.has(bit.tsId)) {
+          map.set(bit.tsId, bit.tsName);
+        }
+      }
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [timelines]);
+
+  // Filter timelines by touchstones + filename search
+  const filteredTimelines = useMemo(() => {
+    let result = timelines;
+    if (filterTouchstones.length > 0) {
+      result = result.filter((tl) => {
+        const tlTsIds = new Set(tl.bits.filter(b => b.tsId).map(b => b.tsId));
+        return filterTouchstones.every(id => tlTsIds.has(id));
+      });
+    }
+    if (nameSearch.trim()) {
+      const q = nameSearch.toLowerCase();
+      result = result.filter((tl) => tl.source.toLowerCase().includes(q));
+    }
+    return result;
+  }, [timelines, filterTouchstones, nameSearch]);
+
+  const toggleFilter = (tsId) => {
+    setFilterTouchstones((prev) =>
+      prev.includes(tsId) ? prev.filter(id => id !== tsId) : [...prev, tsId]
+    );
+  };
+
+  const handleBitClick = (bit, timeline) => {
+    if (bit.tsId && onGoToTouchstone) {
+      onGoToTouchstone(bit.tsId);
+    } else if (onGoToBit) {
+      onGoToBit(bit.id, timeline.source);
+    }
+  };
 
   return (
     <div style={CARD_STYLE}>
-      <h3 style={SECTION_HEADER}>Set Timelines</h3>
-      <div style={{ display: "flex", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 10, color: "#888", display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ display: "inline-block", width: 10, height: 10, background: "#74c0fc", borderRadius: 2 }} />
-          Touchstone (colored per theme)
-        </span>
-        <span style={{ fontSize: 10, color: "#888", display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ display: "inline-block", width: 10, height: 10, background: "#1e2a2a", border: "1px solid #4ecdc466", borderRadius: 2 }} />
-          Connected
-        </span>
-        <span style={{ fontSize: 10, color: "#888", display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ display: "inline-block", width: 10, height: 10, background: "#16161f", border: "1px solid #1e1e30", borderRadius: 2 }} />
-          Other
-        </span>
-        <span style={{ fontSize: 10, color: "#555" }}>Block width = word count</span>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <h3 style={{ ...SECTION_HEADER, marginBottom: 0 }}>Set Timelines</h3>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {(filterTouchstones.length > 0 || nameSearch.trim()) && (
+            <button
+              onClick={() => { setFilterTouchstones([]); setNameSearch(""); }}
+              style={{ background: "none", border: "1px solid #333", borderRadius: 4, color: "#888", fontSize: 10, padding: "2px 6px", cursor: "pointer" }}
+            >Clear</button>
+          )}
+          <input
+            type="text"
+            value={nameSearch}
+            onChange={(e) => setNameSearch(e.target.value)}
+            placeholder="Filter by name..."
+            style={{ padding: "2px 8px", background: "#0d0d16", border: "1px solid #252538", borderRadius: 4, color: "#ddd", fontSize: 10, fontFamily: "inherit", width: 120 }}
+          />
+          <button
+            onClick={() => { setFilterOpen(!filterOpen); setFilterSearch(""); }}
+            style={{
+              background: filterTouchstones.length > 0 ? "#51cf6618" : "#1a1a2a",
+              border: `1px solid ${filterTouchstones.length > 0 ? "#51cf6644" : "#333"}`,
+              borderRadius: 4, color: filterTouchstones.length > 0 ? "#51cf66" : "#888",
+              fontSize: 10, padding: "2px 8px", cursor: "pointer",
+            }}
+          >{filterTouchstones.length > 0 ? `TS (${filterTouchstones.length})` : "Filter TS"}</button>
+        </div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {timelines.map((timeline, tIdx) => {
-          const hoveredIdx = hoveredBit?.timelineIdx === tIdx ? hoveredBit.bitIdx : null;
-          const hoveredData = hoveredIdx !== null ? timeline.bits[hoveredIdx] : null;
+      {/* Touchstone filter dropdown */}
+      {filterOpen && (
+        <div style={{ marginBottom: 12, padding: 10, background: "#0a0a14", borderRadius: 8, border: "1px solid #1e1e30" }}>
+          <input
+            type="text"
+            value={filterSearch}
+            onChange={(e) => setFilterSearch(e.target.value)}
+            placeholder="Search touchstones..."
+            autoFocus
+            style={{ width: "100%", padding: "5px 8px", background: "#0d0d16", border: "1px solid #252538", borderRadius: 4, color: "#ddd", fontSize: 11, fontFamily: "inherit", marginBottom: 6, boxSizing: "border-box" }}
+          />
+          <div style={{ maxHeight: 160, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+            {allTimelineTouchstones
+              .filter(([, name]) => !filterSearch.trim() || name.toLowerCase().includes(filterSearch.toLowerCase()))
+              .map(([tsId, tsName]) => {
+                const isSelected = filterTouchstones.includes(tsId);
+                return (
+                  <div
+                    key={tsId}
+                    onClick={() => toggleFilter(tsId)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 6, padding: "4px 6px",
+                      borderRadius: 4, cursor: "pointer", fontSize: 11,
+                      background: isSelected ? "#51cf6612" : "transparent",
+                    }}
+                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#1a1a2a"; }}
+                    onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <span style={{ width: 8, height: 8, borderRadius: 2, background: tsColor(tsId), flexShrink: 0 }} />
+                    <span style={{ color: isSelected ? "#51cf66" : "#bbb", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tsName}</span>
+                    {isSelected && <span style={{ color: "#51cf66", fontSize: 10 }}>✓</span>}
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
 
-          return (
-            <div key={timeline.source}>
-              <div style={{ fontSize: 10, color: "#666", marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {timeline.source}
-                <span style={{ color: "#444", marginLeft: 8 }}>{timeline.bits.length} bits</span>
-              </div>
-              <div style={{ display: "flex", gap: 2, height: 28 }}>
-                {timeline.bits.map((bit, bIdx) => {
-                  const isHovered = hoveredIdx === bIdx;
-                  let bg, border;
-                  if (bit.tsId) {
-                    bg = tsColor(bit.tsId);
-                    border = "none";
-                  } else if (bit.isConnected) {
-                    bg = "#1e2a2a";
-                    border = "1px solid #4ecdc466";
-                  } else {
-                    bg = "#16161f";
-                    border = "1px solid #1e1e30";
-                  }
+      <div style={{ maxHeight: 480, overflowY: "auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {filteredTimelines.map((timeline, tIdx) => {
+            const hoveredIdx = hoveredBit?.timelineIdx === tIdx ? hoveredBit.bitIdx : null;
+            const hoveredData = hoveredIdx !== null ? timeline.bits[hoveredIdx] : null;
+            const p = parseFilenameClient(timeline.source);
+            const rc = ratingColor(p.rating);
 
-                  return (
-                    <div
-                      key={bit.id}
-                      onMouseEnter={() => setHoveredBit({ timelineIdx: tIdx, bitIdx: bIdx })}
-                      onMouseLeave={() => setHoveredBit(null)}
-                      style={{
-                        flex: bit.wordCount,
-                        minWidth: 4,
-                        background: bg,
-                        border,
-                        borderRadius: 3,
-                        opacity: isHovered ? 1 : 0.8,
-                        transition: "opacity 0.1s",
-                        cursor: "default",
-                        boxShadow: isHovered ? `0 0 0 1px ${bit.tsId ? tsColor(bit.tsId) : "#4ecdc4"}` : "none",
+            return (
+              <div key={timeline.source}>
+                <div style={{ fontSize: 10, color: "#666", marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontFamily: "'JetBrains Mono', monospace" }}>
+                    {p.rating && <span style={{ ...RATING_FONT, fontSize: 9, padding: "0px 3px", borderRadius: 2, background: rc.bg, color: rc.fg }}>{p.rating}</span>}
+                    <span style={{ color: "#999" }}>{p.title}</span>
+                    {p.duration && <span style={{ color: "#74c0fc" }}>{p.duration}</span>}
+                  </span>
+                  <span style={{ color: "#444" }}>{timeline.bits.length}b</span>
+                  {onGoToMix && (
+                    <button
+                      onClick={() => {
+                        const tr = (transcripts || []).find(t => t.name === timeline.source);
+                        if (tr) onGoToMix(tr);
                       }}
-                    />
-                  );
-                })}
-              </div>
+                      style={{ background: "none", border: "1px solid #333", borderRadius: 3, color: "#a78bfa", fontSize: 9, padding: "1px 5px", cursor: "pointer", fontWeight: 600, flexShrink: 0 }}
+                    >Mix</button>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 1, height: 16 }}>
+                  {timeline.bits.map((bit, bIdx) => {
+                    const isHovered = hoveredIdx === bIdx;
+                    const isFilterHighlight = filterTouchstones.length > 0 && bit.tsId && filterTouchstones.includes(bit.tsId);
+                    let bg, border;
+                    if (bit.tsId) {
+                      bg = tsColor(bit.tsId);
+                      border = "none";
+                    } else if (bit.isConnected) {
+                      bg = "#1e2a2a";
+                      border = "1px solid #4ecdc466";
+                    } else {
+                      bg = "#16161f";
+                      border = "1px solid #1e1e30";
+                    }
 
-              {/* Hover info panel */}
-              {hoveredData && (
+                    return (
+                      <div
+                        key={bit.id}
+                        onMouseEnter={() => setHoveredBit({ timelineIdx: tIdx, bitIdx: bIdx })}
+                        onMouseLeave={() => setHoveredBit(null)}
+                        onClick={() => handleBitClick(bit, timeline)}
+                        style={{
+                          flex: bit.wordCount,
+                          minWidth: 3,
+                          background: bg,
+                          border,
+                          borderRadius: 2,
+                          opacity: filterTouchstones.length > 0 ? (isFilterHighlight ? 1 : 0.3) : (isHovered ? 1 : 0.8),
+                          transition: "opacity 0.1s",
+                          cursor: "pointer",
+                          boxShadow: isHovered ? `0 0 0 1px ${bit.tsId ? tsColor(bit.tsId) : "#4ecdc4"}` : "none",
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+
+                {/* Info panel — always reserved height to prevent layout shift */}
                 <div style={{
-                  marginTop: 4,
-                  padding: "5px 8px",
-                  background: "#0a0a14",
+                  marginTop: 2,
+                  padding: "3px 8px",
+                  background: hoveredData ? "#0a0a14" : "transparent",
                   borderRadius: 4,
-                  fontSize: 11,
-                  borderLeft: `2px solid ${hoveredData.tsId ? tsColor(hoveredData.tsId) : "#4ecdc4"}`,
+                  fontSize: 10,
+                  borderLeft: hoveredData ? `2px solid ${hoveredData.tsId ? tsColor(hoveredData.tsId) : "#4ecdc4"}` : "2px solid transparent",
                   display: "flex",
                   gap: 8,
                   alignItems: "baseline",
                   flexWrap: "wrap",
+                  minHeight: 18,
+                  visibility: hoveredData ? "visible" : "hidden",
                 }}>
-                  <span style={{ color: "#ddd", fontWeight: 600 }}>{hoveredData.title}</span>
-                  {hoveredData.tsName && (
+                  <span style={{ color: "#ddd", fontWeight: 600 }}>{hoveredData?.title || "\u00A0"}</span>
+                  {hoveredData?.tsName && (
                     <span style={{ color: "#888" }}>· {hoveredData.tsName}</span>
                   )}
-                  {hoveredData.tags.length > 0 && (
-                    <span style={{ color: "#555", fontSize: 10 }}>{hoveredData.tags.slice(0, 3).join(", ")}</span>
+                  {hoveredData?.tags?.length > 0 && (
+                    <span style={{ color: "#555", fontSize: 9 }}>{hoveredData.tags.slice(0, 3).join(", ")}</span>
                   )}
-                  <span style={{ color: "#444", fontSize: 10, marginLeft: "auto" }}>{hoveredData.wordCount}w</span>
+                  <span style={{ color: "#444", fontSize: 9, marginLeft: "auto" }}>{hoveredData?.wordCount || 0}w</span>
                 </div>
-              )}
-            </div>
-          );
-        })}
+              </div>
+            );
+          })}
+        </div>
       </div>
+      {filteredTimelines.length === 0 && (filterTouchstones.length > 0 || nameSearch.trim()) && (
+        <div style={{ textAlign: "center", padding: 20, color: "#555", fontSize: 12 }}>
+          No matching setlists.
+        </div>
+      )}
     </div>
   );
 }

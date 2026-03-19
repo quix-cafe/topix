@@ -1,30 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { MixPanel } from "./MixPanel";
-
-function parseFilenameClient(filename) {
-  const ratingMatch = filename.match(/^\[(.{5})\]\s*/);
-  const durationMatch = filename.match(/\s*\{(\d+):(\d+)\}/);
-  const rating = ratingMatch ? ratingMatch[1] : null;
-  const title = filename
-    .replace(/^\[.{5}\]\s*/, "")
-    .replace(/\s*\{\d+:\d+\}/, "")
-    .replace(/\.\w+$/, "") // strip extension
-    .trim();
-  const duration = durationMatch
-    ? `${String(parseInt(durationMatch[1])).padStart(2, "0")}:${String(parseInt(durationMatch[2])).padStart(2, "0")}`
-    : null;
-  return { rating, title, duration };
-}
-
-function ratingColor(rating) {
-  if (!rating) return { bg: "#1a1a2a", fg: "#555" };
-  const plusCount = (rating.match(/\+/g) || []).length;
-  if (rating === "xxxxx") return { bg: "#ff6b6b18", fg: "#ff6b6b" };
-  if (plusCount >= 4) return { bg: "#51cf6618", fg: "#51cf66" };
-  if (plusCount >= 2) return { bg: "#ffa94d18", fg: "#ffa94d" };
-  if (plusCount >= 1) return { bg: "#74c0fc18", fg: "#74c0fc" };
-  return { bg: "#1a1a2a", fg: "#555" };
-}
+import { parseFilenameClient, ratingColor, ratingValue, RATING_FONT } from "../utils/filenameUtils";
 
 export function TranscriptTab({
   transcripts,
@@ -143,7 +119,11 @@ export function TranscriptTab({
         case "bits": return dir * (a.bitsParsed.length - b.bitsParsed.length);
         case "coverage": return dir * (a.coverage - b.coverage);
         case "touchstones": return dir * (a.touchstonePct - b.touchstonePct);
-        case "model": return dir * a.lastModel.localeCompare(b.lastModel);
+        case "rating": return dir * (ratingValue(a.parsed.rating) - ratingValue(b.parsed.rating));
+        case "duration": {
+          const durSecs = (d) => { if (!d) return 0; const [m, s] = d.split(":").map(Number); return m * 60 + s; };
+          return dir * (durSecs(a.parsed.duration) - durSecs(b.parsed.duration));
+        }
         default: return 0;
       }
     });
@@ -187,18 +167,17 @@ export function TranscriptTab({
     return sortDir === "asc" ? " ▲" : " ▼";
   };
 
-  const actionBtnStyle = (bg, color, opts = {}) => ({
+  const actionBtnStyle = (color, opts = {}) => ({
     padding: "3px 6px",
-    background: bg,
-    border: "none",
+    background: `${color}18`,
+    border: `1px solid ${color}44`,
     color: color,
     borderRadius: "3px",
     fontSize: "10px",
     fontWeight: 600,
-    cursor: "pointer",
+    cursor: opts.disabled ? "not-allowed" : "pointer",
     marginRight: 3,
-    opacity: opts.disabled ? 0.5 : 1,
-    ...opts,
+    opacity: opts.disabled ? 0.4 : 1,
   });
 
   return (
@@ -281,6 +260,7 @@ export function TranscriptTab({
       </div>
 
       <div style={{ marginBottom: 24 }}>
+        <div style={{ overflowX: "hidden" }}>
         <table style={{
           width: "100%",
           tableLayout: "fixed",
@@ -288,23 +268,25 @@ export function TranscriptTab({
           fontSize: "12px",
         }}>
           <colgroup>
-            <col />
-            <col style={{ width: 60 }} />
-            <col style={{ width: 44 }} />
-            <col style={{ width: 44 }} />
-            <col style={{ width: 70 }} />
-            <col style={{ width: 80 }} />
-            <col style={{ width: 240 }} />
+            <col />{/* file - takes remaining */}
+            <col style={{ width: 66 }} />{/* rating */}
+            <col style={{ width: 50 }} />{/* dur */}
+            <col style={{ width: 50 }} />{/* size */}
+            <col style={{ width: 38 }} />{/* bits */}
+            <col style={{ width: 38 }} />{/* cov */}
+            <col style={{ width: 50 }} />{/* ts */}
+            <col style={{ width: 240 }} />{/* actions */}
           </colgroup>
           <thead>
             <tr style={{ borderBottom: "2px solid #1e1e30" }}>
               <th style={thStyle("file")} onClick={() => handleSort("file")}>File{sortArrow("file")}</th>
-              <th style={thStyle("size")} onClick={() => handleSort("size")}>Size{sortArrow("size")}</th>
-              <th style={thStyle("bits")} onClick={() => handleSort("bits")}>Bits{sortArrow("bits")}</th>
-              <th style={thStyle("coverage")} onClick={() => handleSort("coverage")}>Cov{sortArrow("coverage")}</th>
-              <th style={thStyle("touchstones")} onClick={() => handleSort("touchstones")}>TS{sortArrow("touchstones")}</th>
-              <th style={thStyle("model")} onClick={() => handleSort("model")}>Model{sortArrow("model")}</th>
-              <th style={{ padding: "10px 6px", textAlign: "center", color: "#888", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: 10 }}>Actions</th>
+              <th style={{ ...thStyle("rating"), whiteSpace: "nowrap" }} onClick={() => handleSort("rating")}>★{sortArrow("rating")}</th>
+              <th style={{ ...thStyle("duration"), whiteSpace: "nowrap" }} onClick={() => handleSort("duration")}>Dur{sortArrow("duration")}</th>
+              <th style={{ ...thStyle("size"), whiteSpace: "nowrap" }} onClick={() => handleSort("size")}>Size{sortArrow("size")}</th>
+              <th style={{ ...thStyle("bits"), whiteSpace: "nowrap" }} onClick={() => handleSort("bits")}>Bits{sortArrow("bits")}</th>
+              <th style={{ ...thStyle("coverage"), whiteSpace: "nowrap" }} onClick={() => handleSort("coverage")}>Cov{sortArrow("coverage")}</th>
+              <th style={{ ...thStyle("touchstones"), whiteSpace: "nowrap" }} onClick={() => handleSort("touchstones")}>TS{sortArrow("touchstones")}</th>
+              <th style={{ padding: "10px 6px", textAlign: "center", color: "#888", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: 10, whiteSpace: "nowrap" }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -326,28 +308,28 @@ export function TranscriptTab({
                     <td
                       onClick={() => setSelectedTranscript(isSelected ? null : tr)}
                       title={tr.name}
-                      style={{ padding: "10px 6px", cursor: "pointer", overflow: "hidden", whiteSpace: "nowrap" }}
+                      style={{ padding: "10px 6px", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 8, overflow: "hidden" }}>
-                        {parsed.rating && (
-                          <span style={{
-                            fontFamily: "'JetBrains Mono', monospace", fontSize: 10, padding: "1px 5px",
-                            borderRadius: 3, flexShrink: 0, letterSpacing: 1,
-                            background: ratingColor(parsed.rating).bg,
-                            color: ratingColor(parsed.rating).fg,
-                          }}>
-                            {parsed.rating}
-                          </span>
-                        )}
                         <span style={{ color: "#ddd", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>
                           {parsed.title || tr.name.replace(/\.\w+$/, "")}
                         </span>
-                        {parsed.duration && (
-                          <span style={{ fontSize: 10, color: "#555", fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>
-                            {parsed.duration}
-                          </span>
-                        )}
                       </div>
+                    </td>
+                    <td style={{ padding: "10px 6px", textAlign: "center" }}>
+                      {parsed.rating && (
+                        <span style={{
+                          ...RATING_FONT, fontSize: 10, padding: "1px 5px",
+                          borderRadius: 3, letterSpacing: 1,
+                          background: ratingColor(parsed.rating).bg,
+                          color: ratingColor(parsed.rating).fg,
+                        }}>
+                          {parsed.rating}
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: "10px 6px", textAlign: "center", color: "#74c0fc", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                      {parsed.duration || "-"}
                     </td>
                     <td style={{ padding: "10px 6px", textAlign: "center", color: "#999", fontSize: 11 }}>
                       {wordCount.toLocaleString()}w
@@ -382,21 +364,18 @@ export function TranscriptTab({
                         <span style={{ color: "#555" }}>-</span>
                       )}
                     </td>
-                    <td style={{ padding: "10px 6px", textAlign: "center", color: "#ffa94d", fontSize: "10px", fontFamily: "'JetBrains Mono', monospace" }}>
-                      {lastModel}
-                    </td>
                     <td style={{ padding: "10px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
                       <button
                         onClick={() => onHuntTranscript?.(tr)}
                         disabled={processing || bitsParsed.length === 0}
-                        style={actionBtnStyle("#da77f2", "#000", { disabled: processing || bitsParsed.length === 0 })}
+                        style={actionBtnStyle("#da77f2", { disabled: processing || bitsParsed.length === 0 })}
                       >
                         Hunt
                       </button>
                       <button
                         onClick={() => reParseTranscript(tr)}
                         disabled={processing}
-                        style={actionBtnStyle("#ffa94d", "#000", { disabled: processing })}
+                        style={actionBtnStyle("#ffa94d", { disabled: processing })}
                       >
                         Re-parse
                       </button>
@@ -404,7 +383,7 @@ export function TranscriptTab({
                         onClick={() => purgeTranscriptData(tr)}
                         disabled={processing}
                         title="Delete parsed bits but keep transcript"
-                        style={actionBtnStyle("#ff6b6b", "#fff", { disabled: processing })}
+                        style={actionBtnStyle("#ff6b6b", { disabled: processing })}
                       >
                         Purge
                       </button>
@@ -412,7 +391,7 @@ export function TranscriptTab({
                         onClick={() => removeTranscript(tr)}
                         disabled={processing}
                         title="Remove transcript and all its bits"
-                        style={actionBtnStyle("#661111", "#ff6b6b", { disabled: processing, border: "1px solid #992222" })}
+                        style={actionBtnStyle("#ff4444", { disabled: processing })}
                       >
                         Remove
                       </button>
@@ -420,22 +399,9 @@ export function TranscriptTab({
                   </tr>
                   {isSelected && (
                     <tr>
-                      <td colSpan={7} style={{ padding: "0 4px 12px", background: "#0e0e1a", borderBottom: "1px solid #1a1a2a" }}>
-                        {onGoToPlay && (
-                          <div style={{ padding: "8px 8px 4px", display: "flex", justifyContent: "flex-end" }}>
-                            <button
-                              onClick={() => onGoToPlay(tr)}
-                              style={{
-                                padding: "4px 12px", background: "#6c5ce718", color: "#a78bfa",
-                                border: "1px solid #6c5ce733", borderRadius: 6, fontSize: 11,
-                                fontWeight: 600, cursor: "pointer",
-                              }}
-                            >
-                              View in Play
-                            </button>
-                          </div>
-                        )}
+                      <td colSpan={8} style={{ padding: "0 4px 12px", background: "#0e0e1a", borderBottom: "1px solid #1a1a2a", overflow: "hidden" }}>
                         <MixPanel
+                          onGoToPlay={onGoToPlay ? () => onGoToPlay(tr) : null}
                           topics={topics}
                           transcripts={transcripts}
                           touchstones={touchstones}
@@ -465,6 +431,7 @@ export function TranscriptTab({
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

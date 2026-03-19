@@ -1,5 +1,6 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { uid } from "../utils/ollama";
+import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
 /**
  * MixPanel - Intuitive join/split interface for bits within transcripts.
@@ -11,7 +12,7 @@ import { uid } from "../utils/ollama";
  * - Multiple selected bits highlight overlapping regions
  * - "View" toggles expanded full text without leaving the page
  */
-export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplitBit, onTakeOverlap, onDeleteBit, onScrollBoundary, onGenerateTitle, onConfirmRename, onAddPhantomBit, onReParseGap, onViewBitDetail, initialTranscript, initialBitId, initialGap, onConsumeInitialTranscript, approvedGaps, onApproveGap, onBack }) {
+export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplitBit, onTakeOverlap, onDeleteBit, onScrollBoundary, onGenerateTitle, onConfirmRename, onAddPhantomBit, onReParseGap, onViewBitDetail, initialTranscript, initialBitId, initialGap, onConsumeInitialTranscript, approvedGaps, onApproveGap, onBack, onGoToPlay }) {
   const [selectedTranscript, setSelectedTranscript] = useState(null);
 
   const [pendingScrollBitId, setPendingScrollBitId] = useState(null);
@@ -37,6 +38,17 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [joinTitle, setJoinTitle] = useState("");
+  const mixRootRef = useRef(null);
+  const [joinBarRect, setJoinBarRect] = useState(null);
+  useEffect(() => {
+    if (!mixRootRef.current) return;
+    const ro = new ResizeObserver(() => {
+      const r = mixRootRef.current?.getBoundingClientRect();
+      if (r) setJoinBarRect({ left: r.left, width: r.width });
+    });
+    ro.observe(mixRootRef.current);
+    return () => ro.disconnect();
+  }, [selectedTranscript]);
   // renamePending: { [bitId]: { loading: bool, suggested: string|null } }
   const [renamePending, setRenamePending] = useState({});
   // Track which phantom gaps are expanded and which are being added
@@ -447,7 +459,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
   const shouldShowText = (id) => selectedIds.has(id) || expandedIds.has(id);
 
   return (
-    <div>
+    <div ref={mixRootRef}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div>
@@ -460,11 +472,54 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
           >
             &larr; Back
           </button>
-          <h3 style={{ margin: "8px 0 0", fontSize: 16, fontWeight: 700, color: "#eee" }}>
-            {selectedTranscript.name}
-          </h3>
-          <div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>
-            {sortedBits.length} bits in transcript order &middot; Click to select, shift-click for range
+          <div style={{ margin: "8px 0 0", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {(() => {
+              const p = parseFilenameClient(selectedTranscript.name);
+              const rc = ratingColor(p.rating);
+              return (
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: "#eee", margin: 0, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  {p.rating && <span style={{ ...RATING_FONT, fontSize: 11, padding: "2px 5px", borderRadius: 3, background: rc.bg, color: rc.fg }}>{p.rating}</span>}
+                  <span>{p.title}</span>
+                  {p.duration && <span style={{ fontSize: 12, color: "#74c0fc", fontWeight: 400 }}>{p.duration}</span>}
+                </h3>
+              );
+            })()}
+            {onGoToPlay && (
+              <button
+                onClick={onGoToPlay}
+                style={{
+                  padding: "3px 10px", background: "#6c5ce718", color: "#a78bfa",
+                  border: "1px solid #6c5ce733", borderRadius: 4, fontSize: 10,
+                  fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
+                }}
+              >
+                Play
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: "#666", marginTop: 6, display: "flex", alignItems: "left", gap: 6 }}>
+            <span style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "left" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#4ecdc4" }}>{sortedBits.length} bits</span>
+              {(() => {
+                const textLen = selectedTranscript.text?.length || 0;
+                if (!textLen || sortedBits.length === 0) return null;
+                let coveredChars = 0, lastEnd = 0;
+                const positioned = sortedBits.filter(b => b.textPosition?.startChar != null && b.textPosition?.endChar != null);
+                for (const bit of positioned) {
+                  const s = Math.max(bit.textPosition.startChar, lastEnd);
+                  const e = bit.textPosition.endChar;
+                  if (e > s) { coveredChars += e - s; lastEnd = e; }
+                }
+                const cov = Math.round((coveredChars / textLen) * 100);
+                return <span style={{ fontSize: 13, fontWeight: 700, color: cov >= 80 ? "#51cf66" : cov >= 50 ? "#ffa94d" : "#ff6b6b" }}>{cov}% cov</span>;
+              })()}
+              {(() => {
+                const inTs = sortedBits.filter(b => (bitTouchstoneMap.get(b.id) || []).length > 0).length;
+                if (inTs === 0) return null;
+                const pct = Math.round((inTs / sortedBits.length) * 100);
+                return <span style={{ fontSize: 13, fontWeight: 700, color: "#a78bfa" }}>{pct}% TS</span>;
+              })()}
+            </span>
           </div>
         </div>
         {selectedBits.length > 0 && (
@@ -490,13 +545,18 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
         )}
       </div>
 
-      {/* Join bar */}
+      {/* Join bar — fixed to viewport top */}
       {selectedBits.length >= 2 && (
+        <>
+        <div style={{ height: 52 }} /> {/* spacer for fixed bar */}
         <div style={{
           padding: 12, background: canJoin ? "#1a2a1a" : "#2a1f1f",
           border: `1px solid ${canJoin ? "#2a3a2a" : "#3a2020"}`,
-          borderRadius: 8, marginBottom: 16, display: "flex", alignItems: "center", gap: 12,
-          position: "sticky", top: 0, zIndex: 10,
+          borderRadius: "0 0 8px 8px", display: "flex", alignItems: "center", gap: 12,
+          position: "fixed", top: 0, zIndex: 1000,
+          left: joinBarRect ? joinBarRect.left : 0,
+          width: joinBarRect ? joinBarRect.width : "100%",
+          boxSizing: "border-box",
         }}>
           {canJoin ? (
             <>
@@ -550,6 +610,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
             </>
           )}
         </div>
+        </>
       )}
 
       {/* Leading gap — text before first bit */}
@@ -655,19 +716,13 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                       <span style={{ fontWeight: 600, color: "#ddd", fontSize: 13 }}>
                         {bit.title}
                       </span>
-                      {onGenerateTitle && bit.fullText?.trim() && !renamePending[bit.id] && (
+                      {onConfirmRename && !renamePending[bit.id] && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setRenamePending((prev) => ({ ...prev, [bit.id]: { loading: true, suggested: null } }));
-                            onGenerateTitle(bit.fullText).then((title) => {
-                              setRenamePending((prev) => ({ ...prev, [bit.id]: { loading: false, suggested: title || "" } }));
-                            }).catch((err) => {
-                              console.error("[Rename] Error:", err);
-                              setRenamePending((prev) => { const next = { ...prev }; delete next[bit.id]; return next; });
-                            });
+                            setRenamePending((prev) => ({ ...prev, [bit.id]: { loading: false, suggested: bit.title || "" } }));
                           }}
-                          title="Auto-generate title from content"
+                          title="Rename this bit"
                           style={{
                             background: "none", border: "1px solid #333", color: "#c4b5fd",
                             borderRadius: 4, padding: "2px 6px", fontSize: 9, cursor: "pointer",
@@ -676,9 +731,6 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                         >
                           Rename
                         </button>
-                      )}
-                      {renamePending[bit.id]?.loading && (
-                        <span style={{ fontSize: 10, color: "#555" }}>generating...</span>
                       )}
                     </div>
                     {!isExpanded && bit.summary && (
@@ -691,7 +743,12 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                     )}
                     <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
                       <span style={{ fontSize: 10, color: "#74c0fc", fontFamily: "'JetBrains Mono', monospace" }}>{charSpan} chars</span>
-                      <span style={{ fontSize: 10, color: "#74c0fc", fontFamily: "'JetBrains Mono', monospace" }}>~{Math.max(1, Math.round(charSpan / 900))}min</span>
+                      {(() => {
+                        const secs = Math.round(charSpan / 15); // ~15 chars/sec at speaking pace
+                        const mm = String(Math.floor(secs / 60)).padStart(2, "0");
+                        const ss = String(secs % 60).padStart(2, "0");
+                        return <span style={{ fontSize: 10, color: "#74c0fc", fontFamily: "'JetBrains Mono', monospace" }}>~{mm}:{ss}</span>;
+                      })()}
                       {(bitTouchstoneMap.get(bit.id) || []).map((ts, i) => (
                         <span key={i} style={{
                           fontSize: 9, padding: "1px 6px", borderRadius: 3, fontWeight: 600,
@@ -756,9 +813,9 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                       </div>
                     )}
                   </div>
-                  <div style={{ display: "flex", gap: 4, marginLeft: 8, flexShrink: 0, alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: 6, marginLeft: 8, flexShrink: 0, alignItems: "stretch" }}>
                     {/* Boundary scroll +/- */}
-                    {onScrollBoundary && sortedBits[index + 1] && (
+                    {isSelected && onScrollBoundary && sortedBits[index + 1] && (
                       <div style={{ display: "flex", gap: 3, marginRight: 4 }}>
                         {[[-10, "−10"], [-1, "−"], [1, "+"], [10, "+10"]].map(([delta, label]) => (
                           <button
@@ -787,6 +844,23 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                         ))}
                       </div>
                     )}
+                    {isSelected && overlapData.byBitId[bit.id] && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleTake(bit.id);
+                        }}
+                        title="Claim overlapping text from other selected bits"
+                        style={{
+                          background: "#ffa94d18", border: "1px solid #ffa94d44",
+                          color: "#ffa94d", borderRadius: 4, padding: "12px 8px",
+                          fontSize: 10, cursor: "pointer", whiteSpace: "nowrap", fontWeight: 600,
+                          display: "flex", alignItems: "center",
+                        }}
+                      >
+                        Take
+                      </button>
+                    )}
                     {isSelected && onDeleteBit && (
                       <button
                         onClick={(e) => {
@@ -799,27 +873,12 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                         title="Remove this bit"
                         style={{
                           background: "#ff6b6b22", border: "1px solid #ff6b6b44",
-                          color: "#ff8888", borderRadius: 4, padding: "4px 8px",
+                          color: "#ff8888", borderRadius: 4, padding: "12px 8px",
                           fontSize: 10, cursor: "pointer", whiteSpace: "nowrap", fontWeight: 600,
+                          display: "flex", alignItems: "center",
                         }}
                       >
                         Remove
-                      </button>
-                    )}
-                    {isSelected && overlapData.byBitId[bit.id] && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleTake(bit.id);
-                        }}
-                        title="Claim overlapping text from other selected bits"
-                        style={{
-                          background: "#ff6b6b22", border: "1px solid #ff6b6b44",
-                          color: "#ff8888", borderRadius: 4, padding: "4px 8px",
-                          fontSize: 10, cursor: "pointer", whiteSpace: "nowrap", fontWeight: 600,
-                        }}
-                      >
-                        Take
                       </button>
                     )}
                     {onViewBitDetail && (
@@ -834,11 +893,11 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                           border: "1px solid #74c0fc44", color: "#74c0fc",
                           borderRadius: 4, padding: "12px 8px", fontSize: 10, cursor: "pointer",
                           whiteSpace: "nowrap", fontWeight: 600,
-                          alignSelf: "stretch",
                           display: "flex", alignItems: "center",
+                          marginLeft: 8,
                         }}
                       >
-                        Info
+                        Detail
                       </button>
                     )}
                   </div>

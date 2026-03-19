@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useReducer, useRef } from "react";
+import { parseFilenameClient, ratingColor, ratingValue, RATING_FONT } from "../utils/filenameUtils";
 
 const SERVER_URL = "http://localhost:3001";
 
@@ -44,6 +45,7 @@ export function PlayTab({
   onConsumePlayInit,
   onNowPlaying,
   nowPlaying,
+  vaultReady,
 }) {
   const [state, dispatch] = useReducer(playReducer, {
     files: [],
@@ -58,6 +60,10 @@ export function PlayTab({
 
   const { files, selectedHash, selectedDetail, search, filter, saving, syncDiff, loading } = state;
   const set = (field, value) => dispatch({ type: "SET", field, value });
+
+  // Keep a ref to transcripts so computeSyncDiff always uses latest
+  const transcriptsRef = useRef(transcripts);
+  transcriptsRef.current = transcripts;
 
   // Sort state — separate useState to avoid closure issues
   const [sortBy, setSortBy] = useState("name");
@@ -86,10 +92,11 @@ export function PlayTab({
 
   // Compute sync diff — returns the diff object (or null)
   const computeSyncDiff = useCallback(async (playFiles) => {
+    const currentTranscripts = transcriptsRef.current;
     const withTranscript = playFiles.filter((e) => e.has_transcript);
     const playByHash = new Map(withTranscript.map((e) => [e.hash, e]));
     const topixByHash = new Map();
-    for (const tr of transcripts) {
+    for (const tr of currentTranscripts) {
       if (tr.playHash) topixByHash.set(tr.playHash, tr);
     }
 
@@ -99,9 +106,10 @@ export function PlayTab({
     const toLink = [];
     let unchanged = 0;
 
-    const unlinkedByName = new Map();
-    for (const tr of transcripts) {
-      if (!tr.playHash) unlinkedByName.set(tr.name, tr);
+    // Build name-based lookup for ALL transcripts (not just unlinked)
+    const topixByName = new Map();
+    for (const tr of currentTranscripts) {
+      topixByName.set(tr.name, tr);
     }
 
     for (const [hash, entry] of playByHash) {
@@ -113,17 +121,21 @@ export function PlayTab({
           unchanged++;
         }
       } else {
-        const unlinked = unlinkedByName.get(entry.transcript_filename);
-        if (unlinked) {
-          toLink.push({ entry, existing: unlinked });
-          unlinkedByName.delete(entry.transcript_filename);
+        // Check by name — transcript may exist without playHash (or with a stale hash)
+        const byName = topixByName.get(entry.transcript_filename);
+        if (byName) {
+          if (!byName.playHash) {
+            toLink.push({ entry, existing: byName });
+          } else {
+            unchanged++; // already exists by name, just hash mismatch — don't re-add
+          }
         } else {
           toAdd.push(entry);
         }
       }
     }
 
-    for (const tr of transcripts) {
+    for (const tr of currentTranscripts) {
       if (tr.playHash && !playByHash.has(tr.playHash)) {
         toDelete.push(tr);
       }
@@ -133,7 +145,7 @@ export function PlayTab({
     const diff = hasChanges ? { toAdd, toRename, toDelete, toLink, unchanged, total: withTranscript.length } : null;
     set("syncDiff", diff);
     return diff;
-  }, [transcripts]);
+  }, []);
 
   // Auto-apply sync: fetch transcript text for new entries, then call onSyncApply
   const autoSync = useCallback(async (playFiles) => {
@@ -164,12 +176,16 @@ export function PlayTab({
     fetchFiles().then(() => {});
   }, [fetchFiles]);
 
-  // After files load, auto-sync (only on file list changes, not on transcripts changes)
+  // After files load, auto-sync — but wait until vault data has loaded from IndexedDB
   const autoSyncRef = useRef(autoSync);
   autoSyncRef.current = autoSync;
+  const lastSyncedFilesRef = useRef(null);
   useEffect(() => {
-    if (files.length > 0) autoSyncRef.current(files);
-  }, [files]);
+    if (files.length > 0 && vaultReady && files !== lastSyncedFilesRef.current) {
+      lastSyncedFilesRef.current = files;
+      autoSyncRef.current(files);
+    }
+  }, [files, vaultReady]);
 
 
   // Select a file
@@ -209,24 +225,23 @@ export function PlayTab({
 
   // Track hashes currently awaiting transcription
   const [transcribingHashes, setTranscribingHashes] = useState(new Set());
-  const [transcribeLog, setTranscribeLog] = useState(null); // null=hidden, string[]=lines
+  const [transcribeStatus, setTranscribeStatus] = useState(null); // null=hidden, { status, lines[], filesDone, filesTotal }
   const [transcribeRunning, setTranscribeRunning] = useState(false);
   const transcribeRunningRef = useRef(false);
-  const transcribeLogRef = useRef(null);
-  useEffect(() => {
-    if (transcribeLogRef.current) transcribeLogRef.current.scrollTop = transcribeLogRef.current.scrollHeight;
-  }, [transcribeLog]);
 
   const startTranscribe = useCallback(async () => {
     if (transcribeRunningRef.current) return;
     transcribeRunningRef.current = true;
-    setTranscribeLog([]);
+    setTranscribeStatus({ status: "Starting transcription...", lines: [], filesDone: 0, filesTotal: 0 });
     setTranscribeRunning(true);
     try {
       const res = await fetch(`${SERVER_URL}/api/transcribe`, { method: "POST" });
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
+      let filesDone = 0;
+      let filesTotal = 0;
+      let currentStatus = "Starting transcription...";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -241,24 +256,37 @@ export function PlayTab({
             if (msg.done) {
               transcribeRunningRef.current = false;
               setTranscribeRunning(false);
+              setTranscribeStatus((prev) => ({ ...prev, status: "Transcription complete" }));
               fetchFiles();
             } else if (msg.line) {
-              setTranscribeLog((prev) => {
-                        const lines = prev || [];
-                        // Spinner/progress lines (start with braille spinner or contain ━ progress bar) replace the last line
-                        const isProgress = /^[\u2800-\u28FF]/.test(msg.line) || msg.line.includes('\u2501');
-                        const lastIsProgress = lines.length > 0 && (/^[\u2800-\u28FF]/.test(lines[lines.length - 1]) || lines[lines.length - 1].includes('\u2501'));
-                        if (isProgress && lastIsProgress) {
-                          return [...lines.slice(0, -1), msg.line];
-                        }
-                        return [...lines, msg.line];
-                      });
+              const text = msg.line;
+              // 🎤 lines = file status updates
+              if (text.includes("🎤") || text.includes("\uD83C\uDFA4")) {
+                currentStatus = text;
+                // Try to extract file count from patterns like "Transcribing 2/5"
+                const countMatch = text.match(/(\d+)\s*\/\s*(\d+)/);
+                if (countMatch) { filesDone = parseInt(countMatch[1]) - 1; filesTotal = parseInt(countMatch[2]); }
+                setTranscribeStatus((prev) => ({ ...prev, status: currentStatus, filesDone, filesTotal }));
+              } else if (/^[\u2800-\u28FF]/.test(text) || text.includes('\u2501')) {
+                // Spinner/progress lines — update progress indicator
+                setTranscribeStatus((prev) => ({ ...prev, progress: text }));
+              } else if (text.startsWith("[") && text.includes("-->")) {
+                // Timestamp segment lines — show latest transcript chunk
+                const content = text.replace(/^\[[\d:.]+\s*-->\s*[\d:.]+\]\s*/, "");
+                setTranscribeStatus((prev) => ({
+                  ...prev,
+                  lines: [content].slice(-1),
+                }));
+              } else if (text.startsWith("Error")) {
+                setTranscribeStatus((prev) => ({ ...prev, status: text }));
+              }
+              // Ignore other noise
             }
           } catch {}
         }
       }
     } catch (err) {
-      setTranscribeLog((prev) => [...(prev || []), `Error: ${err.message}`]);
+      setTranscribeStatus((prev) => ({ ...(prev || {}), status: `Error: ${err.message}` }));
       transcribeRunningRef.current = false;
       setTranscribeRunning(false);
     }
@@ -453,7 +481,7 @@ export function PlayTab({
     list.sort((a, b) => {
       switch (sortBy) {
         case "name": return (a._parsed?.title || a.audio_filename).localeCompare(b._parsed?.title || b.audio_filename);
-        case "rating": return ratingRank(b.rating) - ratingRank(a.rating); // best first
+        case "rating": return ratingValue(b.rating) - ratingValue(a.rating); // best first
         case "duration": {
           const cmp = (a.duration_seconds || 0) - (b.duration_seconds || 0);
           return sortAsc ? cmp : -cmp;
@@ -569,32 +597,53 @@ export function PlayTab({
           </span>
         </div>
 
-        {/* Transcribe terminal */}
-        {transcribeLog !== null && (
+        {/* Transcribe status */}
+        {transcribeStatus !== null && (
           <div style={{
             margin: "10px 20px 0", background: "#0a0a14", border: "1px solid #1e1e30",
             borderRadius: 8, overflow: "hidden",
           }}>
-            <div style={{ display: "flex", alignItems: "center", padding: "6px 10px", background: "#12121f", borderBottom: "1px solid #1e1e30" }}>
-              <span style={{ fontSize: 11, color: transcribeRunning ? "#6bc46b" : "#888", fontWeight: 600, flex: 1 }}>
-                {transcribeRunning ? "Transcribing..." : "Transcription complete"}
-              </span>
-              <span
-                onClick={() => { setTranscribeLog(null); }}
-                style={{ fontSize: 12, color: "#666", cursor: "pointer", padding: "0 4px" }}
-              >x</span>
+            <div style={{ display: "flex", alignItems: "center", padding: "8px 12px", gap: 10 }}>
+              {transcribeRunning && (
+                <span style={{ fontSize: 14, animation: "spin 1s linear infinite", display: "inline-block" }}>🎤</span>
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: 12, fontWeight: 600,
+                  color: transcribeStatus.status?.startsWith("Error") ? "#ff6b6b" : transcribeRunning ? "#6bc46b" : "#888",
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                }}>
+                  {transcribeStatus.status}
+                </div>
+                {transcribeStatus.lines?.length > 0 && (
+                  <div style={{
+                    fontSize: 11, color: "#666", fontFamily: "monospace", marginTop: 2,
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }}>
+                    {transcribeStatus.lines[0]}
+                  </div>
+                )}
+              </div>
+              {transcribeStatus.filesTotal > 0 && transcribeRunning && (
+                <span style={{ fontSize: 11, color: "#555", whiteSpace: "nowrap" }}>
+                  {transcribeStatus.filesDone}/{transcribeStatus.filesTotal}
+                </span>
+              )}
+              {!transcribeRunning && (
+                <span
+                  onClick={() => setTranscribeStatus(null)}
+                  style={{ fontSize: 12, color: "#666", cursor: "pointer", padding: "0 4px" }}
+                >✕</span>
+              )}
             </div>
-            <div
-              ref={transcribeLogRef}
-              style={{
-                padding: "8px 10px", maxHeight: 150, overflowY: "auto",
-                fontFamily: "monospace", fontSize: 11, color: "#aaa", lineHeight: 1.5,
-              }}
-            >
-              {(transcribeLog || []).map((line, i) => (
-                <div key={i} style={{ wordBreak: "break-word", overflowWrap: "break-word", whiteSpace: "pre-wrap", color: line.startsWith("Error") ? "#ff6b6b" : "#aaa" }}>{line}</div>
-              ))}
-            </div>
+            {transcribeRunning && transcribeStatus.progress && (
+              <div style={{
+                padding: "0 12px 6px", fontSize: 11, color: "#555", fontFamily: "monospace",
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              }}>
+                {transcribeStatus.progress}
+              </div>
+            )}
           </div>
         )}
 
@@ -642,7 +691,7 @@ export function PlayTab({
               >
                 {/* Rating badge */}
                 <span style={{
-                  fontFamily: "'JetBrains Mono', monospace", fontSize: 11, padding: "2px 6px",
+                  ...RATING_FONT, fontSize: 11, padding: "2px 6px",
                   borderRadius: 4, flexShrink: 0, letterSpacing: 1,
                   background: ratingColor(f.rating || "_____").bg,
                   color: ratingColor(f.rating || "_____").fg,
@@ -739,7 +788,7 @@ export function PlayTab({
             <div style={{ marginBottom: 12 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{
-                  fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, letterSpacing: 2,
+                  ...RATING_FONT, fontSize: 15, fontWeight: 700, letterSpacing: 2,
                   color: ratingColor(editRating).fg, background: ratingColor(editRating).bg,
                   padding: "3px 8px", borderRadius: 4, flexShrink: 0,
                 }}>
@@ -863,35 +912,3 @@ export function PlayTab({
 
 // --- Helpers ---
 
-function parseFilenameClient(filename) {
-  const ratingMatch = filename.match(/^\[(.{5})\]\s*/);
-  const durationMatch = filename.match(/\s*\{(\d+):(\d+)\}\.m4a$/);
-  if (!ratingMatch && !durationMatch) return null;
-  const rating = ratingMatch ? ratingMatch[1] : "_____";
-  const title = filename
-    .replace(/^\[.{5}\]\s*/, "")
-    .replace(/\s*\{\d+:\d+\}\.m4a$/, "")
-    .trim();
-  const duration = durationMatch
-    ? `${String(parseInt(durationMatch[1])).padStart(2, "0")}:${String(parseInt(durationMatch[2])).padStart(2, "0")}`
-    : null;
-  return { rating, title, duration };
-}
-
-function ratingRank(rating) {
-  if (!rating || rating === "_____") return 0;
-  const plusCount = (rating.match(/\+/g) || []).length;
-  const xCount = (rating.match(/x/g) || []).length;
-  if (xCount > 0) return -xCount; // x ratings are worst, more x = worse
-  return plusCount; // more + = better
-}
-
-function ratingColor(rating) {
-  if (!rating) return { bg: "#1a1a2a", fg: "#555" };
-  const plusCount = (rating.match(/\+/g) || []).length;
-  if (rating === "xxxxx") return { bg: "#ff6b6b18", fg: "#ff6b6b" };
-  if (plusCount >= 4) return { bg: "#51cf6618", fg: "#51cf66" };
-  if (plusCount >= 2) return { bg: "#ffa94d18", fg: "#ffa94d" };
-  if (plusCount >= 1) return { bg: "#74c0fc18", fg: "#74c0fc" };
-  return { bg: "#1a1a2a", fg: "#555" };
-}

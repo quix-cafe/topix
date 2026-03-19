@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
+import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
 export function DatabaseTab({
   topics,
@@ -121,17 +122,17 @@ export function DatabaseTab({
                   {bitToTouchstone.get(topic.id)}
                 </span>
               )}
-              <span style={{
-                fontSize: 10,
-                padding: "2px 6px",
-                borderRadius: 4,
-                background: "#1a1a2a",
-                color: "#888",
-                fontFamily: "'JetBrains Mono', monospace",
-                flexShrink: 0,
-              }}>
-                {topic.sourceFile}
-              </span>
+              {(() => {
+                const p = parseFilenameClient(topic.sourceFile || "");
+                const rc = ratingColor(p.rating);
+                return (
+                  <span style={{ fontSize: 10, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                    {p.rating && <span style={{ padding: "1px 4px", borderRadius: 3, background: rc.bg, color: rc.fg, fontWeight: 700, ...RATING_FONT }}>{p.rating}</span>}
+                    <span style={{ padding: "2px 6px", borderRadius: 4, background: "#1a1a2a", color: "#888" }}>{p.title}</span>
+                    {p.duration && <span style={{ color: "#74c0fc" }}>{p.duration}</span>}
+                  </span>
+                );
+              })()}
             </div>
           </div>
           <div style={{ marginTop: 6, fontSize: 13, color: "#999", lineHeight: 1.5 }}>

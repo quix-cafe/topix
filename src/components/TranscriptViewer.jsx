@@ -4,6 +4,9 @@ import { useState, useRef, useEffect } from "react";
  * TranscriptViewer - Display transcript with sidebar bit list
  * Sidebar shows all bits as clickable list, click to highlight in transcript
  */
+
+// Todo: see if this is dead code, I believe it was used in an older version.
+
 export function TranscriptViewer({ transcript, bits, onSelectBit, selectedBitId }) {
   const [hoveredBitId, setHoveredBitId] = useState(null);
   const [sortBy, setSortBy] = useState("position"); // "position" or "title"

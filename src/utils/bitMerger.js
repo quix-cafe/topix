@@ -3,6 +3,8 @@
  * Aggregates variations and tracks evolution of jokes across transcripts
  */
 
+// Todo: I believe this is dead code in the current interface, having been superseded by Touchstones. 
+
 import { calculateBitSimilarity } from "./textSimilarity.js";
 
 /**

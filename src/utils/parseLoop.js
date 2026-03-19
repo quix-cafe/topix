@@ -1,5 +1,7 @@
 import { requestOllamaRestart } from "./ollama";
 
+// Todo: error received: "[Re-parse 1] Evaluated remaining 5184 chars as non-comedic. Parsing complete." but coverage is sometimes as low as 0% — need better handling of the case where the LLM determines the remaining text is non-comedic, which will not happen, as ALL the transcripts are comedy sets. This likely means the LLM is freezing or erroring in a way that doesn't trigger the froze/error flags, and we need better detection of that case to avoid prematurely stopping the parse loop.
+
 // Merge overlapping ranges into a sorted non-overlapping list
 export function mergeRanges(ranges) {
   if (ranges.length === 0) return [];

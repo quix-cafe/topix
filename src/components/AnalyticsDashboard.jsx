@@ -662,6 +662,9 @@ function HealthMetric({ label, value, description }) {
 /**
  * Calculate all statistics
  */
+
+// Todo: rootBits are extinct code. 
+
 function calculateStats(topics, matches, touchstonesRaw, rootBits, transcripts) {
   const touchstones = Array.isArray(touchstonesRaw)
     ? touchstonesRaw

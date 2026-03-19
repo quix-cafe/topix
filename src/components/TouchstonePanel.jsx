@@ -19,6 +19,9 @@ const EXCLUSIVE_RELATIONSHIPS = new Set(["same_bit", "evolved"]);
 /**
  * TouchstonePanel - Display and explore touchstones (recurring jokes across transcripts)
  */
+
+// Todo: creating a new touchstone from a bit is deleted by the auto-matcher. Touchstones created manually should be protected from ever be removed except manually.
+
 export function TouchstonePanel({
   touchstones, bits, matches, onSelectBit, onHunt, onRectifyOverlaps, huntProgress, processing,
   onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onCreateTouchstone,
@@ -338,6 +341,8 @@ const COMMUNION_STATUS_CONFIG = {
   purgatory: { label: "Purgatory", color: "#888", bg: "#88888818", border: "#88888833", icon: "◌" },
   damned: { label: "Damned", color: "#ff6b6b", bg: "#ff6b6b18", border: "#ff6b6b33", icon: "⚠" },
 };
+
+// Todo: If a touchstone isn't Sainted, Blessed, or Damned, then it's in Purgatory. On the touchstone list, the counts of all 4 should be listed.
 
 function CommunionStatusBadge({ instance }) {
   const status = instance.communionStatus || (typeof instance.communionScore === 'number' ? (instance.communionScore >= 70 ? 'blessed' : 'damned') : null);

@@ -4,6 +4,9 @@ import { extractCommonWords } from "../utils/textSimilarity.js";
 /**
  * MergePanel - Find and create root bits from matched bit clusters
  */
+
+// Todo: I believe this is dead code in the current interface, having been superseded by Touchstones. The Panel is not linked to.
+
 export function MergePanel({ bits, matches, onCreateRoot }) {
   const [selectedClusterId, setSelectedClusterId] = useState(null);
 

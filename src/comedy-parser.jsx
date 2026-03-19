@@ -67,6 +67,10 @@ const initialState = {
   vaultReady: false,
 };
 
+// Todo: factor out as much as possible from comedy-parser.jsx into separate hooks and utils. The main component should ideally just orchestrate state and pass props to child components, with minimal internal logic.
+// Todo: add a 'scroll to top' button that appears when user scrolls down in any tab, to improve navigation in long lists of bits/topics/matches.
+// Todo: 'root bits' are extinct code. They were an early attempt at aggregating similar bits across transcripts, but have been superseded by the more flexible Touchstone system. The code is still present but not linked to from the UI, and may be removed.
+
 function reducer(state, action) {
   switch (action.type) {
     case 'SET':

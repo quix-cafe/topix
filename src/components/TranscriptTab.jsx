@@ -2,6 +2,10 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import { MixPanel } from "./MixPanel";
 import { parseFilenameClient, ratingColor, ratingValue, RATING_FONT } from "../utils/filenameUtils";
 
+// Todo: if a transcript is unparsed, display the full transcript when expanded as if it were a gap. also maintain the column sorting even when i navigate away. also make the transcripts expand to a new page instead of expanding in place. make that in-page navigation also persist when i navigate away and back. If a 'gap' is approved, don't calculate it to count against the coverage percentage. 
+// Todo: when a gap has been approved, the button should change to a button to un-approve it, in case of mistakes.
+// Todo: when a gap is re-parsed, the gap position and size needs to be re-calculated with the new bits having been taken out of it.
+
 export function TranscriptTab({
   transcripts,
   topics,

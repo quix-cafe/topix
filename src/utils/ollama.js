@@ -16,6 +16,10 @@ export { calculateCharPosition, extractTextByPosition, adjustBoundary, findWordB
 // ─── Global generation queue ─────────────────────────────────────────
 // Ollama can only run one generation at a time on a single GPU.
 // This queue serializes all LLM calls (chat + stream) to prevent contention.
+
+// Todo: this queue should be visible from the topix debug panel, showing pending and active generations, with ability to cancel pending ones and see which one is currently running. Also consider adding priority levels (e.g. user-initiated calls vs background calls).
+
+
 const _genQueue = [];
 let _genRunning = false;
 
@@ -278,6 +282,9 @@ export async function checkOllamaHealth() {
  * Request Ollama restart via backend API
  * @returns {Promise<object>} Result of restart attempt
  */
+
+
+
 export async function requestOllamaRestart() {
   try {
     console.log("[Ollama] Requesting process restart...");

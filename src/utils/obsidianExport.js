@@ -2,6 +2,8 @@
  * Obsidian vault export - generates markdown files for Obsidian import
  */
 
+// Todo: 'Root bits' is extinct code. 
+
 export function generateObsidianVault(topics, matches, transcripts, touchstones = [], rootBits = []) {
   const files = [];
 

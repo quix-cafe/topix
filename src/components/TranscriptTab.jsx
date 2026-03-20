@@ -5,11 +5,13 @@ import { parseFilenameClient, ratingColor, ratingValue, RATING_FONT } from "../u
 // Todo: if a transcript is unparsed, display the full transcript when expanded as if it were a gap. also maintain the column sorting even when i navigate away. also make the transcripts expand to a new page instead of expanding in place. make that in-page navigation also persist when i navigate away and back. If a 'gap' is approved, don't calculate it to count against the coverage percentage. 
 // Todo: when a gap has been approved, the button should change to a button to un-approve it, in case of mistakes.
 // Todo: when a gap is re-parsed, the gap position and size needs to be re-calculated with the new bits having been taken out of it.
+// Todo: Move the "set timelines" feature from the AnalyticsDashboard into this tab -- with each bar underneath it's respective transcript line. Since we're moving the 'expand transcript' feature to a new page, we can use that page to show the full set timelines for that transcript, and clicking on a bit in the timeline would take you to that bit's detail view.
 
 export function TranscriptTab({
   transcripts,
   topics,
   touchstones,
+  matches,
   selectedTranscript,
   selectedTopic,
   processing,
@@ -99,11 +101,16 @@ export function TranscriptTab({
 
       const bitsInTouchstone = bitsParsed.filter(b => touchstoneBitIds.has(b.id)).length;
       const touchstonePct = bitsParsed.length > 0 ? Math.round((bitsInTouchstone / bitsParsed.length) * 100) : 0;
+      
+      const matchedBitIds = new Set((matches || []).flatMap(m => [m.sourceId, m.targetId]));
+      const unmatchedCount = bitsParsed.filter(b => !matchedBitIds.has(b.id)).length;
+      const unmatchedPct = bitsParsed.length > 0 ? Math.round((unmatchedCount / bitsParsed.length) * 100) : 0;
+
       const parsed = parseFilenameClient(tr.name);
 
-      return { tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, bitsInTouchstone, parsed };
+      return { tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed };
     });
-  }, [transcripts, topics, touchstoneBitIds]);
+  }, [transcripts, topics, touchstoneBitIds, matches]);
 
   // Filter by search
   const filteredRows = useMemo(() => {
@@ -123,6 +130,7 @@ export function TranscriptTab({
         case "bits": return dir * (a.bitsParsed.length - b.bitsParsed.length);
         case "coverage": return dir * (a.coverage - b.coverage);
         case "touchstones": return dir * (a.touchstonePct - b.touchstonePct);
+        case "unmatched": return dir * (a.unmatchedPct - b.unmatchedPct);
         case "rating": return dir * (ratingValue(a.parsed.rating) - ratingValue(b.parsed.rating));
         case "duration": {
           const durSecs = (d) => { if (!d) return 0; const [m, s] = d.split(":").map(Number); return m * 60 + s; };
@@ -279,6 +287,7 @@ export function TranscriptTab({
             <col style={{ width: 38 }} />{/* bits */}
             <col style={{ width: 38 }} />{/* cov */}
             <col style={{ width: 50 }} />{/* ts */}
+            <col style={{ width: 50 }} />{/* unmatched */}
             <col style={{ width: 240 }} />{/* actions */}
           </colgroup>
           <thead>
@@ -289,12 +298,13 @@ export function TranscriptTab({
               <th style={{ ...thStyle("size"), whiteSpace: "nowrap" }} onClick={() => handleSort("size")}>Size{sortArrow("size")}</th>
               <th style={{ ...thStyle("bits"), whiteSpace: "nowrap" }} onClick={() => handleSort("bits")}>Bits{sortArrow("bits")}</th>
               <th style={{ ...thStyle("coverage"), whiteSpace: "nowrap" }} onClick={() => handleSort("coverage")}>Cov{sortArrow("coverage")}</th>
+              <th style={{ ...thStyle("unmatched"), whiteSpace: "nowrap" }} onClick={() => handleSort("unmatched")}>UNM{sortArrow("unmatched")}</th>
               <th style={{ ...thStyle("touchstones"), whiteSpace: "nowrap" }} onClick={() => handleSort("touchstones")}>TS{sortArrow("touchstones")}</th>
               <th style={{ padding: "10px 6px", textAlign: "center", color: "#888", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: 10, whiteSpace: "nowrap" }}>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {sortedRows.map(({ tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, bitsInTouchstone, parsed }) => {
+            {sortedRows.map(({ tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed }) => {
               const isSelected = selectedTranscript?.id === tr.id;
 
               return (
@@ -355,6 +365,18 @@ export function TranscriptTab({
                     </td>
                     <td style={{ padding: "10px 6px", textAlign: "center" }}>
                       {bitsParsed.length > 0 ? (
+                        <span style={{
+                          color: unmatchedPct >= 50 ? "#ff6b6b" : unmatchedPct >= 20 ? "#ffa94d" : "#51cf66",
+                          fontWeight: 600,
+                        }}>
+                          {unmatchedPct}%
+                        </span>
+                      ) : (
+                        <span style={{ color: "#555" }}>-</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "10px 6px", textAlign: "center" }}>
+                      {bitsParsed.length > 0 ? (
                         <span title={`${bitsInTouchstone}/${bitsParsed.length} bits in touchstones`} style={{
                           color: touchstonePct >= 60 ? "#a78bfa" : touchstonePct > 0 ? "#74c0fc" : "#555",
                           fontWeight: 600,
@@ -403,7 +425,7 @@ export function TranscriptTab({
                   </tr>
                   {isSelected && (
                     <tr>
-                      <td colSpan={8} style={{ padding: "0 4px 12px", background: "#0e0e1a", borderBottom: "1px solid #1a1a2a", overflow: "hidden" }}>
+                      <td colSpan={9} style={{ padding: "0 4px 12px", background: "#0e0e1a", borderBottom: "1px solid #1a1a2a", overflow: "hidden" }}>
                         <MixPanel
                           onGoToPlay={onGoToPlay ? () => onGoToPlay(tr) : null}
                           topics={topics}

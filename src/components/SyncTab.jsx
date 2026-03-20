@@ -30,8 +30,7 @@ export function SyncTab({
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const playEntries = await res.json();
 
-      const withTranscript = playEntries.filter((e) => e.has_transcript);
-      const playByHash = new Map(withTranscript.map((e) => [e.hash, e]));
+      const playByHash = new Map(playEntries.map((e) => [e.hash, e]));
       const topixByHash = new Map();
       for (const tr of transcripts) {
         if (tr.playHash) topixByHash.set(tr.playHash, tr);
@@ -51,6 +50,9 @@ export function SyncTab({
 
       // Check what Play has
       for (const [hash, entry] of playByHash) {
+        // Skip entries that don't have a transcript yet — they aren't "in Play" for sync purposes
+        if (!entry.has_transcript) continue;
+
         const existing = topixByHash.get(hash);
         if (existing) {
           // Matched by hash
@@ -71,14 +73,22 @@ export function SyncTab({
         }
       }
 
-      // Check what Topix has that Play doesn't
+      // Check what Topix has that Play doesn't, or has been deleted on disk
       for (const tr of transcripts) {
-        if (tr.playHash && !playByHash.has(tr.playHash)) {
-          toDelete.push(tr);
+        if (tr.playHash) {
+          const entry = playByHash.get(tr.playHash);
+          if (!entry) {
+            // Hash missing from registry entirely
+            toDelete.push(tr);
+          } else if (!entry.has_transcript) {
+            // Filesystem record exists but transcript is gone (clean delete or just md gone)
+            toDelete.push(tr);
+          }
         }
       }
 
-      const result = { toAdd, toRename, toDelete, toLink, unchanged, total: withTranscript.length };
+      const totalPlayWithTranscripts = playEntries.filter((e) => e.has_transcript).length;
+      const result = { toAdd, toRename, toDelete, toLink, unchanged, total: totalPlayWithTranscripts };
       setDiff(result);
       const parts = [];
       if (toAdd.length) parts.push(`${toAdd.length} new`);

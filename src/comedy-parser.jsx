@@ -70,6 +70,7 @@ const initialState = {
 // Todo: factor out as much as possible from comedy-parser.jsx into separate hooks and utils. The main component should ideally just orchestrate state and pass props to child components, with minimal internal logic.
 // Todo: add a 'scroll to top' button that appears when user scrolls down in any tab, to improve navigation in long lists of bits/topics/matches.
 // Todo: 'root bits' are extinct code. They were an early attempt at aggregating similar bits across transcripts, but have been superseded by the more flexible Touchstone system. The code is still present but not linked to from the UI, and may be removed.
+// Todo: add browser back/forward navigation support. if a different tab or different 'subtab' page is accessed, allow me to go back to the previous view. it might be good to encode every part of the interface to a URL view, so that I can also share links to specific views (e.g. a specific topic, or the network graph with a search query applied).
 
 function reducer(state, action) {
   switch (action.type) {
@@ -2310,7 +2311,9 @@ export default function ComedyParser() {
     }
 
     // 1. Deletes — cascade remove transcript + bits + matches
+    const deletedHashes = [];
     for (const tr of toDelete) {
+      if (tr.playHash) deletedHashes.push(tr.playHash);
       const bitsToRemoveIds = new Set(
         updatedTopics.filter((t) => t.sourceFile === tr.name || t.transcriptId === tr.id).map((t) => t.id)
       );
@@ -2326,6 +2329,15 @@ export default function ComedyParser() {
       }
 
       console.log(`[Sync] Deleted "${tr.name}" and ${bitsToRemoveIds.size} bits`);
+    }
+
+    if (deletedHashes.length > 0) {
+      console.log(`[Sync] Pruning ${deletedHashes.length} hashes from server registry`);
+      fetch("http://localhost:3001/api/prune-registry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hashes: deletedHashes }),
+      }).catch((err) => console.warn("[Sync] Registry prune failed:", err));
     }
 
     // 2. Renames — update transcript name + sourceFile refs on bits
@@ -2408,6 +2420,7 @@ export default function ComedyParser() {
       commonWords: [],
       matchInfo: { totalMatches: 0, sameBitCount: 0, evolvedCount: 0, relatedCount: 0, callbackCount: 0, avgConfidence: 0, avgMatchPercentage: 0, reasons: [] },
       category: "confirmed",
+      manual: true,
     };
     update('touchstones', (prev) => ({
       confirmed: [...(prev.confirmed || []), newTouchstone],
@@ -3391,8 +3404,8 @@ export default function ComedyParser() {
             transcripts={transcripts}
             topics={topics}
             touchstones={touchstones}
-            selectedTranscript={selectedTranscript}
-            selectedTopic={selectedTopic}
+            matches={matches}
+            selectedTranscript={selectedTranscript}            selectedTopic={selectedTopic}
             processing={processing}
             selectedModel={selectedModel}
             parseAll={parseAll}

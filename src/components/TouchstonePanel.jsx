@@ -20,7 +20,7 @@ const EXCLUSIVE_RELATIONSHIPS = new Set(["same_bit", "evolved"]);
  * TouchstonePanel - Display and explore touchstones (recurring jokes across transcripts)
  */
 
-// Todo: creating a new touchstone from a bit is deleted by the auto-matcher. Touchstones created manually should be protected from ever be removed except manually.
+
 
 export function TouchstonePanel({
   touchstones, bits, matches, onSelectBit, onHunt, onRectifyOverlaps, huntProgress, processing,
@@ -342,11 +342,10 @@ const COMMUNION_STATUS_CONFIG = {
   damned: { label: "Damned", color: "#ff6b6b", bg: "#ff6b6b18", border: "#ff6b6b33", icon: "⚠" },
 };
 
-// Todo: If a touchstone isn't Sainted, Blessed, or Damned, then it's in Purgatory. On the touchstone list, the counts of all 4 should be listed.
+
 
 function CommunionStatusBadge({ instance }) {
-  const status = instance.communionStatus || (typeof instance.communionScore === 'number' ? (instance.communionScore >= 70 ? 'blessed' : 'damned') : null);
-  if (!status) return null;
+  const status = instance.communionStatus || (typeof instance.communionScore === 'number' ? (instance.communionScore >= 70 ? 'blessed' : 'damned') : 'purgatory');
   const cfg = COMMUNION_STATUS_CONFIG[status] || COMMUNION_STATUS_CONFIG.purgatory;
   return (
     <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 3, background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}` }}>
@@ -401,7 +400,11 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
   const saintedCount = instances.filter((i) => i.communionStatus === 'sainted').length;
   const blessedCount = instances.filter((i) => i.communionStatus === 'blessed').length;
   const damnedCount = instances.filter((i) => i.communionStatus === 'damned').length;
-  const hasCommunionData = saintedCount + blessedCount + damnedCount > 0;
+  const purgatoryCount = instances.filter((i) => {
+    const status = i.communionStatus || (typeof i.communionScore === 'number' ? (i.communionScore >= 70 ? 'blessed' : 'damned') : 'purgatory');
+    return status === 'purgatory';
+  }).length;
+  const hasCommunionData = instances.length > 0;
 
   const borderColor = isConfirmed ? "#51cf66" : isRejected ? "#444" : "#ffa94d";
   const matchColor = pctColor(avgPct);
@@ -454,6 +457,7 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
             <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 6 }}>
               {saintedCount > 0 && <Badge bg={COMMUNION_STATUS_CONFIG.sainted.bg} color={COMMUNION_STATUS_CONFIG.sainted.color}>{COMMUNION_STATUS_CONFIG.sainted.icon} {saintedCount} sainted</Badge>}
               {blessedCount > 0 && <Badge bg={COMMUNION_STATUS_CONFIG.blessed.bg} color={COMMUNION_STATUS_CONFIG.blessed.color}>{COMMUNION_STATUS_CONFIG.blessed.icon} {blessedCount} blessed</Badge>}
+              {purgatoryCount > 0 && <Badge bg={COMMUNION_STATUS_CONFIG.purgatory.bg} color={COMMUNION_STATUS_CONFIG.purgatory.color}>{COMMUNION_STATUS_CONFIG.purgatory.icon} {purgatoryCount} purgatory</Badge>}
               {damnedCount > 0 && <Badge bg={COMMUNION_STATUS_CONFIG.damned.bg} color={COMMUNION_STATUS_CONFIG.damned.color}>{COMMUNION_STATUS_CONFIG.damned.icon} {damnedCount} damned</Badge>}
             </div>
           )}

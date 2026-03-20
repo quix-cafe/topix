@@ -282,12 +282,16 @@ export function AnalyticsDashboard({ topics, matches, touchstones, rootBits, tra
  * SetTimeline - Per-transcript horizontal bit lanes
  * Bits sized proportionally by word count, colored by touchstone/connection status
  */
+
+
 function SetTimeline({ timelines, onGoToTouchstone, onGoToMix, onGoToBit, transcripts }) {
   const [hoveredBit, setHoveredBit] = useState(null); // { timelineIdx, bitIdx }
   const [filterTouchstones, setFilterTouchstones] = useState([]); // touchstone IDs to filter by
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterSearch, setFilterSearch] = useState("");
   const [nameSearch, setNameSearch] = useState("");
+
+  const ROW_DURATION = 900; // 10 minutes in seconds
 
   // Collect all touchstones appearing in timelines
   const allTimelineTouchstones = useMemo(() => {
@@ -427,10 +431,14 @@ function SetTimeline({ timelines, onGoToTouchstone, onGoToMix, onGoToBit, transc
                     >Mix</button>
                   )}
                 </div>
-                <div style={{ display: "flex", gap: 1, height: 16 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", width: "100%", borderRadius: 2, overflow: "hidden" }}>
                   {timeline.bits.map((bit, bIdx) => {
                     const isHovered = hoveredIdx === bIdx;
                     const isFilterHighlight = filterTouchstones.length > 0 && bit.tsId && filterTouchstones.includes(bit.tsId);
+                    
+                    const bitDuration = bit.wordCount * (timeline.duration / timeline.totalWords);
+                    const bitWidth = (bitDuration / ROW_DURATION) * 100;
+                    
                     let bg, border;
                     if (bit.tsId) {
                       bg = tsColor(bit.tsId);
@@ -450,8 +458,9 @@ function SetTimeline({ timelines, onGoToTouchstone, onGoToMix, onGoToBit, transc
                         onMouseLeave={() => setHoveredBit(null)}
                         onClick={() => handleBitClick(bit, timeline)}
                         style={{
-                          flex: bit.wordCount,
-                          minWidth: 3,
+                          width: `${bitWidth}%`,
+                          height: 16,
+                          minWidth: 2,
                           background: bg,
                           border,
                           borderRadius: 2,
@@ -459,6 +468,7 @@ function SetTimeline({ timelines, onGoToTouchstone, onGoToMix, onGoToBit, transc
                           transition: "opacity 0.1s",
                           cursor: "pointer",
                           boxShadow: isHovered ? `0 0 0 1px ${bit.tsId ? tsColor(bit.tsId) : "#4ecdc4"}` : "none",
+                          boxSizing: "border-box",
                         }}
                       />
                     );
@@ -756,6 +766,14 @@ function calculateStats(topics, matches, touchstonesRaw, rootBits, transcripts) 
 
     if (trBits.length === 0) return;
 
+    // Parse real duration if available
+    const p = parseFilenameClient(source);
+    let realDuration = 0;
+    if (p.duration) {
+      const [m, s] = p.duration.split(":").map(Number);
+      realDuration = (m * 60) + s;
+    }
+
     // Build timeline metadata
     const bitsWithMeta = trBits.map((bit) => {
       const wordCount = bit.fullText ? bit.fullText.trim().split(/\s+/).length : 1;
@@ -772,10 +790,15 @@ function calculateStats(topics, matches, touchstonesRaw, rootBits, transcripts) 
       };
     });
 
+    const totalWords = bitsWithMeta.reduce((s, b) => s + b.wordCount, 0);
+    // If no real duration, estimate from word count
+    const estimatedDuration = realDuration || (totalWords / WORDS_PER_MINUTE) * 60;
+
     transcriptTimelines.push({
       source,
       bits: bitsWithMeta,
-      totalWords: bitsWithMeta.reduce((s, b) => s + b.wordCount, 0),
+      totalWords,
+      duration: estimatedDuration,
     });
 
     // Touchstone sequence for transitions/positions

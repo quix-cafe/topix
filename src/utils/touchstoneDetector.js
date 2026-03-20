@@ -519,7 +519,7 @@ export function deduplicateBitOwnership(touchstones, matches) {
     return best;
   };
 
-  const categoryPriority = { confirmed: 2, possible: 1, rejected: 0 };
+  const getPriority = (ts) => (ts.manual ? 10 : 0) + (categoryPriority[ts._cat] || 0);
 
   // Process all touchstones, claiming bits for the best owner
   const allTouchstones = [
@@ -534,14 +534,14 @@ export function deduplicateBitOwnership(touchstones, matches) {
       const score = scoreBitInTouchstone(bitId, ts);
       const existing = claimed.get(bitId);
       if (!existing) {
-        claimed.set(bitId, { category: ts._cat, tsId: ts.id, score });
+        claimed.set(bitId, { category: ts._cat, tsId: ts.id, score, manual: ts.manual });
         continue;
       }
-      // Higher category priority wins; within same category, higher score wins
-      const existingPri = categoryPriority[existing.category];
-      const newPri = categoryPriority[ts._cat];
+      // Higher category priority (and manual flag) wins; within same priority, higher score wins
+      const existingPri = (existing.manual ? 10 : 0) + categoryPriority[existing.category];
+      const newPri = getPriority(ts);
       if (newPri > existingPri || (newPri === existingPri && score > existing.score)) {
-        claimed.set(bitId, { category: ts._cat, tsId: ts.id, score });
+        claimed.set(bitId, { category: ts._cat, tsId: ts.id, score, manual: ts.manual });
       }
     }
   }
@@ -552,7 +552,7 @@ export function deduplicateBitOwnership(touchstones, matches) {
       const owner = claimed.get(id);
       return owner && owner.tsId === ts.id;
     });
-    if (kept.length < 2) return null; // touchstone dissolved
+    if (kept.length < 2 && !ts.manual) return null; // touchstone dissolved
     if (kept.length === ts.bitIds.length) return ts; // unchanged
     return {
       ...ts,

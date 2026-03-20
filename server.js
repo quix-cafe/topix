@@ -173,18 +173,39 @@ const server = http.createServer(async (req, res) => {
     if (req.url === "/api/transcripts" && req.method === "GET") {
       const registry = await loadRegistry();
       const entries = [];
+      const toRemove = [];
+
       for (const [hash, record] of Object.entries(registry)) {
+        const audioPath = path.join(AUDIO_DIR, record.audio_filename);
         const transcriptPath = path.join(AUDIO_DIR, record.transcript_filename);
+        
+        const has_audio = existsSync(audioPath);
+        const has_transcript = existsSync(transcriptPath);
+
+        if (!has_audio && !has_transcript) {
+          toRemove.push(hash);
+          continue;
+        }
+
         entries.push({
           hash,
           audio_filename: record.audio_filename,
           transcript_filename: record.transcript_filename,
-          has_transcript: existsSync(transcriptPath),
+          has_audio,
+          has_transcript,
           duration_seconds: record.duration_seconds || 0,
           duration_formatted: formatDuration(record.duration_seconds),
           rating: getRating(record.audio_filename),
         });
       }
+
+      if (toRemove.length > 0) {
+        console.log(`[Registry] Cleaning up ${toRemove.length} stale entries:`, toRemove);
+        await withRegistry(async (reg) => {
+          for (const hash of toRemove) delete reg[hash];
+        });
+      }
+
       json(res, 200, entries);
       return;
     }
@@ -195,6 +216,7 @@ const server = http.createServer(async (req, res) => {
       const registry = await loadRegistry();
       const record = registry[transcriptMatch[1]];
       if (!record) { json(res, 404, { error: "Not found" }); return; }
+      const audioPath = path.join(AUDIO_DIR, record.audio_filename);
       const transcriptPath = path.join(AUDIO_DIR, record.transcript_filename);
       let text = "";
       try { text = await fs.readFile(transcriptPath, "utf-8"); } catch {}
@@ -202,6 +224,8 @@ const server = http.createServer(async (req, res) => {
         hash: transcriptMatch[1],
         audio_filename: record.audio_filename,
         transcript_filename: record.transcript_filename,
+        has_audio: existsSync(audioPath),
+        has_transcript: existsSync(transcriptPath),
         duration_seconds: record.duration_seconds || 0,
         duration_formatted: formatDuration(record.duration_seconds),
         rating: getRating(record.audio_filename),
@@ -451,6 +475,24 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Prune multiple registry entries
+    if (req.url === "/api/prune-registry" && req.method === "POST") {
+      const body = await parseBody(req);
+      const hashes = body.hashes;
+      if (!Array.isArray(hashes) || hashes.length === 0) {
+        json(res, 400, { error: "Array of hashes required" });
+        return;
+      }
+      console.log(`[Registry] Explicitly pruning ${hashes.length} hashes:`, hashes);
+      await withRegistry(async (reg) => {
+        for (const hash of hashes) {
+          delete reg[hash];
+        }
+      });
+      json(res, 200, { success: true });
+      return;
+    }
+
     // Delete a file
     const deleteMatch = req.url.match(/^\/api\/files\/([a-f0-9]+)\/delete$/);
     if (deleteMatch && req.method === "POST") {
@@ -484,6 +526,29 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "localhost", () => {
   console.log(`[Server] Topix server running on http://localhost:${PORT}`);
+  
+  // Background registry cleanup: every 5 minutes
+  setInterval(async () => {
+    try {
+      const registry = await loadRegistry();
+      const toPrune = [];
+      for (const [hash, record] of Object.entries(registry)) {
+        const audioPath = path.join(AUDIO_DIR, record.audio_filename);
+        const transcriptPath = path.join(AUDIO_DIR, record.transcript_filename);
+        if (!existsSync(audioPath) && !existsSync(transcriptPath)) {
+          toPrune.push(hash);
+        }
+      }
+      if (toPrune.length > 0) {
+        console.log(`[Background Prune] Removing ${toPrune.length} stale entries from registry`);
+        await withRegistry(async (reg) => {
+          for (const h of toPrune) delete reg[h];
+        });
+      }
+    } catch (err) {
+      console.error("[Background Prune] Error:", err.message);
+    }
+  }, 5 * 60 * 1000);
 });
 
 process.on("SIGTERM", () => {

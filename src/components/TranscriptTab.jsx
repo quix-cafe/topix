@@ -2,6 +2,94 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import { MixPanel } from "./MixPanel";
 import { parseFilenameClient, ratingColor, ratingValue, RATING_FONT } from "../utils/filenameUtils";
 
+const TOUCHSTONE_PALETTE = [
+  "#ff6b6b", "#ffa94d", "#ffd43b", "#51cf66",
+  "#4ecdc4", "#74c0fc", "#da77f2", "#f783ac",
+  "#a9e34b", "#63e6be", "#ff8787", "#ffb347",
+];
+function hashStr(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) & 0xffffffff; return Math.abs(h); }
+function tsColor(tsId) { return TOUCHSTONE_PALETTE[hashStr(tsId) % TOUCHSTONE_PALETTE.length]; }
+const WORDS_PER_MINUTE = 150;
+const ROW_DURATION = 900; // 10 min in seconds
+
+
+/**
+ * PageTimeline - Interactive horizontal bit lane for a single transcript's page view.
+ * Shows bit segments sized by word count, colored by touchstone, with hover details.
+ */
+function PageTimeline({ timeline, onViewBitDetail, topics }) {
+  const [hoveredIdx, setHoveredIdx] = useState(null);
+  const hoveredBit = hoveredIdx !== null ? timeline.bits[hoveredIdx] : null;
+
+  return (
+    <div style={{ marginBottom: 16, padding: "10px 12px", background: "#0a0a14", borderRadius: 8, border: "1px solid #1e1e30" }}>
+      <div style={{ fontSize: 10, color: "#555", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>Set Timeline</div>
+      <div style={{ display: "flex", flexWrap: "wrap", width: "100%", borderRadius: 3, overflow: "hidden" }}>
+        {timeline.bits.map((bit, bIdx) => {
+          const isHovered = hoveredIdx === bIdx;
+          const bitDur = bit.wordCount * (timeline.duration / timeline.totalWords);
+          const pct = (bitDur / ROW_DURATION) * 100;
+
+          let bg, border;
+          if (bit.tsId) {
+            bg = tsColor(bit.tsId);
+            border = "none";
+          } else if (bit.isConnected) {
+            bg = "#1e2a2a";
+            border = "1px solid #4ecdc466";
+          } else {
+            bg = "#16161f";
+            border = "1px solid #1e1e30";
+          }
+
+          return (
+            <div
+              key={bit.id}
+              onMouseEnter={() => setHoveredIdx(bIdx)}
+              onMouseLeave={() => setHoveredIdx(null)}
+              onClick={() => {
+                const fullBit = topics.find(t => t.id === bit.id);
+                if (fullBit && onViewBitDetail) onViewBitDetail(fullBit);
+              }}
+              style={{
+                width: `${pct}%`,
+                height: 20,
+                minWidth: 2,
+                background: bg,
+                border,
+                borderRadius: 2,
+                opacity: isHovered ? 1 : 0.8,
+                transition: "opacity 0.1s",
+                cursor: "pointer",
+                boxShadow: isHovered ? `0 0 0 1px ${bit.tsId ? tsColor(bit.tsId) : "#4ecdc4"}` : "none",
+                boxSizing: "border-box",
+              }}
+            />
+          );
+        })}
+      </div>
+      <div style={{
+        marginTop: 4,
+        padding: "3px 8px",
+        background: hoveredBit ? "#0d0d18" : "transparent",
+        borderRadius: 4,
+        fontSize: 10,
+        borderLeft: hoveredBit ? `2px solid ${hoveredBit.tsId ? tsColor(hoveredBit.tsId) : "#4ecdc4"}` : "2px solid transparent",
+        display: "flex",
+        gap: 8,
+        alignItems: "baseline",
+        flexWrap: "wrap",
+        minHeight: 18,
+        visibility: hoveredBit ? "visible" : "hidden",
+      }}>
+        <span style={{ color: "#ddd", fontWeight: 600 }}>{hoveredBit?.title || "\u00A0"}</span>
+        {hoveredBit?.tsName && <span style={{ color: "#888" }}>· {hoveredBit.tsName}</span>}
+        {hoveredBit?.tags?.length > 0 && <span style={{ color: "#555", fontSize: 9 }}>{hoveredBit.tags.slice(0, 3).join(", ")}</span>}
+        <span style={{ color: "#444", fontSize: 9, marginLeft: "auto" }}>{hoveredBit?.wordCount || 0}w</span>
+      </div>
+    </div>
+  );
+}
 
 export function TranscriptTab({
   transcripts,
@@ -51,14 +139,20 @@ export function TranscriptTab({
   const sortDir = sortDirProp ?? localSortDir;
   const [searchFilter, setSearchFilter] = useState("");
   const prevSelectedRef = useRef(null);
+  const listScrollY = useRef(0);
 
-  // Scroll to transcript row when selectedTranscript changes from external navigation
+  // When entering page view: save list scroll position, scroll to top
+  // When returning to list: restore saved scroll position
   useEffect(() => {
     if (selectedTranscript && selectedTranscript !== prevSelectedRef.current) {
-      requestAnimationFrame(() => {
-        const el = document.getElementById(`transcript-row-${selectedTranscript.id}`);
-        if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
-      });
+      // Entering page view — save current scroll, then scroll to top
+      if (!prevSelectedRef.current) {
+        listScrollY.current = window.scrollY;
+      }
+      requestAnimationFrame(() => window.scrollTo(0, 0));
+    } else if (!selectedTranscript && prevSelectedRef.current) {
+      // Returning to list — restore scroll position
+      requestAnimationFrame(() => window.scrollTo(0, listScrollY.current));
     }
     prevSelectedRef.current = selectedTranscript;
   }, [selectedTranscript]);
@@ -75,6 +169,22 @@ export function TranscriptTab({
     }
     return ids;
   }, [touchstones]);
+
+  // Build bit→touchstone and touchstone-by-id maps for timeline coloring
+  const { bitToTouchstone, tsById } = useMemo(() => {
+    const btMap = new Map();
+    const byId = new Map();
+    const all = [...(touchstones?.confirmed || []), ...(touchstones?.possible || [])];
+    for (const ts of all) {
+      byId.set(ts.id, ts);
+      for (const inst of (ts.instances || [])) btMap.set(inst.bitId, ts.id);
+    }
+    return { bitToTouchstone: btMap, tsById: byId };
+  }, [touchstones]);
+
+  const connectedBitIds = useMemo(() => {
+    return new Set((matches || []).flatMap(m => [m.sourceId, m.targetId]));
+  }, [matches]);
 
   // Pre-compute row data
   const rows = useMemo(() => {
@@ -121,7 +231,36 @@ export function TranscriptTab({
 
       const parsed = parseFilenameClient(tr.name);
 
-      return { tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed };
+      // Timeline data for this transcript
+      const sortedBits = [...bitsParsed].sort((a, b) => (a.textPosition?.startChar ?? 0) - (b.textPosition?.startChar ?? 0));
+      const timelineBits = sortedBits.map((bit) => {
+        const wc = bit.fullText ? bit.fullText.trim().split(/\s+/).length : 1;
+        const tsId = bitToTouchstone.get(bit.id) || null;
+        const ts = tsId ? tsById.get(tsId) : null;
+        return {
+          id: bit.id,
+          title: bit.title || "Untitled",
+          wordCount: Math.max(wc, 1),
+          tsId,
+          tsName: ts?.name || null,
+          tags: bit.tags || [],
+          isConnected: connectedBitIds.has(bit.id),
+        };
+      });
+      const totalWords = timelineBits.reduce((s, b) => s + b.wordCount, 0);
+      let realDuration = 0;
+      if (parsed.duration) {
+        const [m, s] = parsed.duration.split(":").map(Number);
+        realDuration = (m * 60) + s;
+      }
+      const timeline = {
+        source: tr.name,
+        bits: timelineBits,
+        totalWords,
+        duration: realDuration || (totalWords / WORDS_PER_MINUTE) * 60,
+      };
+
+      return { tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed, timeline };
     });
   }, [transcripts, topics, touchstoneBitIds, matches, approvedGaps]);
 
@@ -241,6 +380,13 @@ export function TranscriptTab({
             <button onClick={() => purgeTranscriptData(selectedTranscript)} disabled={processing} style={actionBtnStyle("#ff6b6b", { disabled: processing })}>Purge</button>
           </div>
         </div>
+        {/* Set Timeline */}
+        {selectedRow && selectedRow.timeline.bits.length > 0 && <PageTimeline
+          timeline={selectedRow.timeline}
+          onViewBitDetail={onViewBitDetail}
+          topics={topics}
+        />}
+
         <MixPanel
           onGoToPlay={onGoToPlay ? () => onGoToPlay(selectedTranscript) : null}
           topics={topics}
@@ -380,7 +526,7 @@ export function TranscriptTab({
             </tr>
           </thead>
           <tbody>
-            {sortedRows.map(({ tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed }) => {
+            {sortedRows.map(({ tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed, timeline }) => {
               return (
                 <tr
                   key={tr.id}
@@ -404,6 +550,19 @@ export function TranscriptTab({
                         {parsed.title || tr.name.replace(/\.\w+$/, "")}
                       </span>
                     </div>
+                    {timeline.bits.length > 0 && (
+                      <div style={{ display: "flex", width: "100%", height: 4, marginTop: 4, borderRadius: 2, overflow: "hidden" }}>
+                        {timeline.bits.map((bit) => {
+                          const bitDur = bit.wordCount * (timeline.duration / timeline.totalWords);
+                          const pct = (bitDur / ROW_DURATION) * 100;
+                          let bg;
+                          if (bit.tsId) bg = tsColor(bit.tsId);
+                          else if (bit.isConnected) bg = "#4ecdc444";
+                          else bg = "#1e1e30";
+                          return <div key={bit.id} style={{ width: `${pct}%`, minWidth: 1, background: bg }} />;
+                        })}
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: "10px 6px", textAlign: "center" }}>
                     {parsed.rating && (

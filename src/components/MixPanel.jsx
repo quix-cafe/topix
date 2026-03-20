@@ -662,7 +662,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                   {onApproveGap && (() => {
                     const approveKey = `${selectedTranscript.name}:0-${firstStart}`;
                     const isApproved = (approvedGaps || []).includes(approveKey);
-                    if (isApproved) return <span style={{ fontSize: 10, color: "#51cf66", padding: "6px 8px" }}>Approved</span>;
+                    if (isApproved) return <button onClick={() => onApproveGap(approveKey)} style={{ padding: "6px 12px", background: "#ff6b6b22", border: "1px solid #ff6b6b44", color: "#ff6b6b", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Unapprove</button>;
                     return (
                       <button
                         onClick={() => onApproveGap(approveKey)}
@@ -1020,7 +1020,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                           {onApproveGap && isPhantom && (() => {
                             const approveKey = `${selectedTranscript.name}:${gapInfo.gapStart}-${gapInfo.gapEnd}`;
                             const isApproved = (approvedGaps || []).includes(approveKey);
-                            if (isApproved) return <span style={{ fontSize: 10, color: "#51cf66", padding: "6px 8px" }}>Approved</span>;
+                            if (isApproved) return <button onClick={() => onApproveGap(approveKey)} style={{ padding: "6px 12px", background: "#ff6b6b22", border: "1px solid #ff6b6b44", color: "#ff6b6b", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Unapprove</button>;
                             return (
                               <button
                                 onClick={() => onApproveGap(approveKey)}
@@ -1089,7 +1089,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                     {onApproveGap && (() => {
                       const approveKey = `${selectedTranscript.name}:${lastEnd}-${cleanText.length}`;
                       const isApproved = (approvedGaps || []).includes(approveKey);
-                      if (isApproved) return <span style={{ fontSize: 10, color: "#51cf66", padding: "6px 8px" }}>Approved</span>;
+                      if (isApproved) return <button onClick={() => onApproveGap(approveKey)} style={{ padding: "6px 12px", background: "#ff6b6b22", border: "1px solid #ff6b6b44", color: "#ff6b6b", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: "pointer" }}>Unapprove</button>;
                       return (
                         <button
                           onClick={() => onApproveGap(approveKey)}

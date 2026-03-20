@@ -2,10 +2,6 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import { MixPanel } from "./MixPanel";
 import { parseFilenameClient, ratingColor, ratingValue, RATING_FONT } from "../utils/filenameUtils";
 
-// Todo: if a transcript is unparsed, display the full transcript when expanded as if it were a gap. also maintain the column sorting even when i navigate away. also make the transcripts expand to a new page instead of expanding in place. make that in-page navigation also persist when i navigate away and back. If a 'gap' is approved, don't calculate it to count against the coverage percentage. 
-// Todo: when a gap has been approved, the button should change to a button to un-approve it, in case of mistakes.
-// Todo: when a gap is re-parsed, the gap position and size needs to be re-calculated with the new bits having been taken out of it.
-// Todo: Move the "set timelines" feature from the AnalyticsDashboard into this tab -- with each bar underneath it's respective transcript line. Since we're moving the 'expand transcript' feature to a new page, we can use that page to show the full set timelines for that transcript, and clicking on a bit in the timeline would take you to that bit's detail view.
 
 export function TranscriptTab({
   transcripts,
@@ -44,9 +40,15 @@ export function TranscriptTab({
   approvedGaps,
   onApproveGap,
   onGoToPlay,
+  sortCol: sortColProp,
+  sortDir: sortDirProp,
+  onSortChange,
 }) {
-  const [sortCol, setSortCol] = useState("file");
-  const [sortDir, setSortDir] = useState("asc");
+  // Sort state: use parent-managed props if provided (persists across tab switches), else local
+  const [localSortCol, setLocalSortCol] = useState("file");
+  const [localSortDir, setLocalSortDir] = useState("asc");
+  const sortCol = sortColProp ?? localSortCol;
+  const sortDir = sortDirProp ?? localSortDir;
   const [searchFilter, setSearchFilter] = useState("");
   const prevSelectedRef = useRef(null);
 
@@ -97,7 +99,18 @@ export function TranscriptTab({
           lastEnd = e;
         }
       }
-      const coverage = textLen > 0 ? Math.round((coveredChars / textLen) * 100) : 0;
+      // Subtract approved gap chars from denominator so they don't drag coverage down
+      let approvedGapChars = 0;
+      const prefix = `${tr.name}:`;
+      for (const key of (approvedGaps || [])) {
+        if (key.startsWith(prefix)) {
+          const range = key.slice(prefix.length);
+          const [s, e] = range.split("-").map(Number);
+          if (!isNaN(s) && !isNaN(e) && e > s) approvedGapChars += e - s;
+        }
+      }
+      const effectiveLen = textLen - approvedGapChars;
+      const coverage = effectiveLen > 0 ? Math.min(100, Math.round((coveredChars / effectiveLen) * 100)) : 0;
 
       const bitsInTouchstone = bitsParsed.filter(b => touchstoneBitIds.has(b.id)).length;
       const touchstonePct = bitsParsed.length > 0 ? Math.round((bitsInTouchstone / bitsParsed.length) * 100) : 0;
@@ -110,7 +123,7 @@ export function TranscriptTab({
 
       return { tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed };
     });
-  }, [transcripts, topics, touchstoneBitIds, matches]);
+  }, [transcripts, topics, touchstoneBitIds, matches, approvedGaps]);
 
   // Filter by search
   const filteredRows = useMemo(() => {
@@ -143,11 +156,13 @@ export function TranscriptTab({
   }, [filteredRows, sortCol, sortDir]);
 
   const handleSort = (col) => {
-    if (sortCol === col) {
-      setSortDir(d => d === "asc" ? "desc" : "asc");
+    const newDir = sortCol === col ? (sortDir === "asc" ? "desc" : "asc") : "asc";
+    const newCol = col;
+    if (onSortChange) {
+      onSortChange(newCol, newDir);
     } else {
-      setSortCol(col);
-      setSortDir("asc");
+      setLocalSortCol(newCol);
+      setLocalSortDir(newDir);
     }
   };
 
@@ -191,6 +206,67 @@ export function TranscriptTab({
     marginRight: 3,
     opacity: opts.disabled ? 0.4 : 1,
   });
+
+  // Page view: when a transcript is selected, show full-page MixPanel
+  if (selectedTranscript) {
+    const selectedParsed = parseFilenameClient(selectedTranscript.name);
+    const selectedRow = rows.find(r => r.tr.id === selectedTranscript.id);
+    return (
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid #1e1e30" }}>
+          <button
+            onClick={() => setSelectedTranscript(null)}
+            style={{ background: "none", border: "1px solid #333", color: "#aaa", borderRadius: 6, padding: "6px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}
+          >
+            Back
+          </button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: "#ddd", fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {selectedParsed.title || selectedTranscript.name.replace(/\.\w+$/, "")}
+            </div>
+            <div style={{ display: "flex", gap: 12, fontSize: 10, color: "#666", marginTop: 2 }}>
+              {selectedParsed.rating && (
+                <span style={{ ...RATING_FONT, padding: "0 4px", borderRadius: 2, background: ratingColor(selectedParsed.rating).bg, color: ratingColor(selectedParsed.rating).fg }}>
+                  {selectedParsed.rating}
+                </span>
+              )}
+              {selectedParsed.duration && <span style={{ color: "#74c0fc" }}>{selectedParsed.duration}</span>}
+              {selectedRow && <span>{selectedRow.bitsParsed.length} bits</span>}
+              {selectedRow && selectedRow.bitsParsed.length > 0 && <span style={{ color: selectedRow.coverage >= 80 ? "#51cf66" : selectedRow.coverage >= 50 ? "#ffa94d" : "#ff6b6b" }}>{selectedRow.coverage}% coverage</span>}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button onClick={() => onHuntTranscript?.(selectedTranscript)} disabled={processing || !selectedRow?.bitsParsed.length} style={actionBtnStyle("#da77f2", { disabled: processing || !selectedRow?.bitsParsed.length })}>Hunt</button>
+            <button onClick={() => reParseTranscript(selectedTranscript)} disabled={processing} style={actionBtnStyle("#ffa94d", { disabled: processing })}>Re-parse</button>
+            <button onClick={() => purgeTranscriptData(selectedTranscript)} disabled={processing} style={actionBtnStyle("#ff6b6b", { disabled: processing })}>Purge</button>
+          </div>
+        </div>
+        <MixPanel
+          onGoToPlay={onGoToPlay ? () => onGoToPlay(selectedTranscript) : null}
+          topics={topics}
+          transcripts={transcripts}
+          touchstones={touchstones}
+          onJoinBits={onJoinBits}
+          onSplitBit={onSplitBit}
+          onTakeOverlap={onTakeOverlap}
+          onDeleteBit={onDeleteBit}
+          onScrollBoundary={onScrollBoundary}
+          onGenerateTitle={onGenerateTitle}
+          onConfirmRename={onConfirmRename}
+          onAddPhantomBit={onAddPhantomBit}
+          onReParseGap={onReParseGap}
+          onViewBitDetail={onViewBitDetail}
+          initialTranscript={selectedTranscript}
+          initialBitId={mixTranscriptInit?.id === selectedTranscript.id ? mixBitInit : null}
+          initialGap={mixTranscriptInit?.id === selectedTranscript.id ? mixGapInit : null}
+          onConsumeInitialTranscript={onConsumeMixInit}
+          approvedGaps={approvedGaps}
+          onApproveGap={onApproveGap}
+          onBack={() => setSelectedTranscript(null)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -305,154 +381,123 @@ export function TranscriptTab({
           </thead>
           <tbody>
             {sortedRows.map(({ tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed }) => {
-              const isSelected = selectedTranscript?.id === tr.id;
-
               return (
-                <React.Fragment key={tr.id}>
-                  <tr
-                    id={`transcript-row-${tr.id}`}
-                    style={{
-                      borderBottom: isSelected ? "none" : "1px solid #1a1a2a",
-                      background: isSelected ? "#1a1a2a" : "transparent",
-                      transition: "all 0.2s",
-                    }}
-                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#161628"; }}
-                    onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
+                <tr
+                  key={tr.id}
+                  id={`transcript-row-${tr.id}`}
+                  style={{
+                    borderBottom: "1px solid #1a1a2a",
+                    background: "transparent",
+                    transition: "all 0.2s",
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#161628"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  onClick={() => setSelectedTranscript(tr)}
+                >
+                  <td
+                    title={tr.name}
+                    style={{ padding: "10px 6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                   >
-                    <td
-                      onClick={() => setSelectedTranscript(isSelected ? null : tr)}
-                      title={tr.name}
-                      style={{ padding: "10px 6px", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, overflow: "hidden" }}>
+                      <span style={{ color: "#ddd", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>
+                        {parsed.title || tr.name.replace(/\.\w+$/, "")}
+                      </span>
+                    </div>
+                  </td>
+                  <td style={{ padding: "10px 6px", textAlign: "center" }}>
+                    {parsed.rating && (
+                      <span style={{
+                        ...RATING_FONT, fontSize: 10, padding: "1px 5px",
+                        borderRadius: 3, letterSpacing: 1,
+                        background: ratingColor(parsed.rating).bg,
+                        color: ratingColor(parsed.rating).fg,
+                      }}>
+                        {parsed.rating}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding: "10px 6px", textAlign: "center", color: "#74c0fc", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                    {parsed.duration || "-"}
+                  </td>
+                  <td style={{ padding: "10px 6px", textAlign: "center", color: "#999", fontSize: 11 }}>
+                    {wordCount.toLocaleString()}w
+                  </td>
+                  <td style={{ padding: "10px 6px", textAlign: "center", color: "#4ecdc4", fontWeight: 600 }}>
+                    {bitsParsed.length}
+                  </td>
+                  <td style={{ padding: "10px 6px", textAlign: "center" }}>
+                    {bitsParsed.length > 0 ? (
+                      <span style={{
+                        color: coverage >= 80 ? "#51cf66" : coverage >= 50 ? "#ffa94d" : "#ff6b6b",
+                        fontWeight: 600,
+                      }}>
+                        {coverage}%
+                      </span>
+                    ) : (
+                      <span style={{ color: "#555" }}>-</span>
+                    )}
+                  </td>
+                  <td style={{ padding: "10px 6px", textAlign: "center" }}>
+                    {bitsParsed.length > 0 ? (
+                      <span style={{
+                        color: unmatchedPct >= 50 ? "#ff6b6b" : unmatchedPct >= 20 ? "#ffa94d" : "#51cf66",
+                        fontWeight: 600,
+                      }}>
+                        {unmatchedPct}%
+                      </span>
+                    ) : (
+                      <span style={{ color: "#555" }}>-</span>
+                    )}
+                  </td>
+                  <td style={{ padding: "10px 6px", textAlign: "center" }}>
+                    {bitsParsed.length > 0 ? (
+                      <span title={`${bitsInTouchstone}/${bitsParsed.length} bits in touchstones`} style={{
+                        color: touchstonePct >= 60 ? "#a78bfa" : touchstonePct > 0 ? "#74c0fc" : "#555",
+                        fontWeight: 600,
+                      }}>
+                        {touchstonePct}%
+                        <span style={{ color: "#666", fontWeight: 400, fontSize: 9, marginLeft: 3 }}>
+                          ({bitsInTouchstone}/{bitsParsed.length})
+                        </span>
+                      </span>
+                    ) : (
+                      <span style={{ color: "#555" }}>-</span>
+                    )}
+                  </td>
+                  <td style={{ padding: "10px 6px", textAlign: "center", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => onHuntTranscript?.(tr)}
+                      disabled={processing || bitsParsed.length === 0}
+                      style={actionBtnStyle("#da77f2", { disabled: processing || bitsParsed.length === 0 })}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, overflow: "hidden" }}>
-                        <span style={{ color: "#ddd", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>
-                          {parsed.title || tr.name.replace(/\.\w+$/, "")}
-                        </span>
-                      </div>
-                    </td>
-                    <td style={{ padding: "10px 6px", textAlign: "center" }}>
-                      {parsed.rating && (
-                        <span style={{
-                          ...RATING_FONT, fontSize: 10, padding: "1px 5px",
-                          borderRadius: 3, letterSpacing: 1,
-                          background: ratingColor(parsed.rating).bg,
-                          color: ratingColor(parsed.rating).fg,
-                        }}>
-                          {parsed.rating}
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: "10px 6px", textAlign: "center", color: "#74c0fc", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
-                      {parsed.duration || "-"}
-                    </td>
-                    <td style={{ padding: "10px 6px", textAlign: "center", color: "#999", fontSize: 11 }}>
-                      {wordCount.toLocaleString()}w
-                    </td>
-                    <td style={{ padding: "10px 6px", textAlign: "center", color: "#4ecdc4", fontWeight: 600 }}>
-                      {bitsParsed.length}
-                    </td>
-                    <td style={{ padding: "10px 6px", textAlign: "center" }}>
-                      {bitsParsed.length > 0 ? (
-                        <span style={{
-                          color: coverage >= 80 ? "#51cf66" : coverage >= 50 ? "#ffa94d" : "#ff6b6b",
-                          fontWeight: 600,
-                        }}>
-                          {coverage}%
-                        </span>
-                      ) : (
-                        <span style={{ color: "#555" }}>-</span>
-                      )}
-                    </td>
-                    <td style={{ padding: "10px 6px", textAlign: "center" }}>
-                      {bitsParsed.length > 0 ? (
-                        <span style={{
-                          color: unmatchedPct >= 50 ? "#ff6b6b" : unmatchedPct >= 20 ? "#ffa94d" : "#51cf66",
-                          fontWeight: 600,
-                        }}>
-                          {unmatchedPct}%
-                        </span>
-                      ) : (
-                        <span style={{ color: "#555" }}>-</span>
-                      )}
-                    </td>
-                    <td style={{ padding: "10px 6px", textAlign: "center" }}>
-                      {bitsParsed.length > 0 ? (
-                        <span title={`${bitsInTouchstone}/${bitsParsed.length} bits in touchstones`} style={{
-                          color: touchstonePct >= 60 ? "#a78bfa" : touchstonePct > 0 ? "#74c0fc" : "#555",
-                          fontWeight: 600,
-                        }}>
-                          {touchstonePct}%
-                          <span style={{ color: "#666", fontWeight: 400, fontSize: 9, marginLeft: 3 }}>
-                            ({bitsInTouchstone}/{bitsParsed.length})
-                          </span>
-                        </span>
-                      ) : (
-                        <span style={{ color: "#555" }}>-</span>
-                      )}
-                    </td>
-                    <td style={{ padding: "10px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
-                      <button
-                        onClick={() => onHuntTranscript?.(tr)}
-                        disabled={processing || bitsParsed.length === 0}
-                        style={actionBtnStyle("#da77f2", { disabled: processing || bitsParsed.length === 0 })}
-                      >
-                        Hunt
-                      </button>
-                      <button
-                        onClick={() => reParseTranscript(tr)}
-                        disabled={processing}
-                        style={actionBtnStyle("#ffa94d", { disabled: processing })}
-                      >
-                        Re-parse
-                      </button>
-                      <button
-                        onClick={() => purgeTranscriptData(tr)}
-                        disabled={processing}
-                        title="Delete parsed bits but keep transcript"
-                        style={actionBtnStyle("#ff6b6b", { disabled: processing })}
-                      >
-                        Purge
-                      </button>
-                      <button
-                        onClick={() => removeTranscript(tr)}
-                        disabled={processing}
-                        title="Remove transcript and all its bits"
-                        style={actionBtnStyle("#ff4444", { disabled: processing })}
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                  {isSelected && (
-                    <tr>
-                      <td colSpan={9} style={{ padding: "0 4px 12px", background: "#0e0e1a", borderBottom: "1px solid #1a1a2a", overflow: "hidden" }}>
-                        <MixPanel
-                          onGoToPlay={onGoToPlay ? () => onGoToPlay(tr) : null}
-                          topics={topics}
-                          transcripts={transcripts}
-                          touchstones={touchstones}
-                          onJoinBits={onJoinBits}
-                          onSplitBit={onSplitBit}
-                          onTakeOverlap={onTakeOverlap}
-                          onDeleteBit={onDeleteBit}
-                          onScrollBoundary={onScrollBoundary}
-                          onGenerateTitle={onGenerateTitle}
-                          onConfirmRename={onConfirmRename}
-                          onAddPhantomBit={onAddPhantomBit}
-                          onReParseGap={onReParseGap}
-                          onViewBitDetail={onViewBitDetail}
-                          initialTranscript={tr}
-                          initialBitId={mixTranscriptInit?.id === tr.id ? mixBitInit : null}
-                          initialGap={mixTranscriptInit?.id === tr.id ? mixGapInit : null}
-                          onConsumeInitialTranscript={onConsumeMixInit}
-                          approvedGaps={approvedGaps}
-                          onApproveGap={onApproveGap}
-                          onBack={() => setSelectedTranscript(null)}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
+                      Hunt
+                    </button>
+                    <button
+                      onClick={() => reParseTranscript(tr)}
+                      disabled={processing}
+                      style={actionBtnStyle("#ffa94d", { disabled: processing })}
+                    >
+                      Re-parse
+                    </button>
+                    <button
+                      onClick={() => purgeTranscriptData(tr)}
+                      disabled={processing}
+                      title="Delete parsed bits but keep transcript"
+                      style={actionBtnStyle("#ff6b6b", { disabled: processing })}
+                    >
+                      Purge
+                    </button>
+                    <button
+                      onClick={() => removeTranscript(tr)}
+                      disabled={processing}
+                      title="Remove transcript and all its bits"
+                      style={actionBtnStyle("#ff4444", { disabled: processing })}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
               );
             })}
           </tbody>

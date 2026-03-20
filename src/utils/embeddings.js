@@ -11,8 +11,6 @@ const BATCH_SIZE = 50;
 // ─── Embedding queue ─────────────────────────────────────────────────
 // Serializes all embedding API calls to prevent Ollama contention.
 
-// Todo: make this more strict during user-run LLM calls, which also use the same API and can cause failures if interleaved with Parse, Commune, Baptize, Touchstone Merge, Refresh, etc calls, which are more urgent. 
-
 const _embedQueue = [];
 let _embedRunning = false;
 let _embedPaused = false;

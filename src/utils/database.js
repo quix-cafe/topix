@@ -11,7 +11,6 @@ const STORES = {
   topics: "topics",
   matches: "matches",
   touchstones: "touchstones",
-  rootBits: "rootBits",
   metadata: "metadata",
 };
 
@@ -243,33 +242,12 @@ export async function loadTouchstones() {
 }
 
 /**
- * Save root bits to database
- */
-export async function saveRootBits(rootBits) {
-  await syncStore(STORES.rootBits, rootBits);
-}
-
-/**
- * Load root bits from database
- */
-export async function loadRootBits() {
-  const db = await getDB();
-  const store = db.transaction([STORES.rootBits], "readonly").objectStore(STORES.rootBits);
-
-  return new Promise((resolve, reject) => {
-    const request = store.getAll();
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result || []);
-  });
-}
-
-/**
  * Save entire vault state atomically — all stores in one transaction.
  * If any store fails, the entire save rolls back.
  */
 export async function saveVaultState(vaultData) {
   const db = await getDB();
-  const storeNames = [STORES.transcripts, STORES.topics, STORES.matches, STORES.touchstones, STORES.rootBits, STORES.metadata];
+  const storeNames = [STORES.transcripts, STORES.topics, STORES.matches, STORES.touchstones, STORES.metadata];
   const tx = db.transaction(storeNames, "readwrite");
 
   const flatTouchstones = flattenTouchstones(vaultData.touchstones || {});
@@ -280,7 +258,6 @@ export async function saveVaultState(vaultData) {
     [tx.objectStore(STORES.topics), vaultData.topics || []],
     [tx.objectStore(STORES.matches), vaultData.matches || []],
     [tx.objectStore(STORES.touchstones), flatTouchstones],
-    [tx.objectStore(STORES.rootBits), vaultData.rootBits || []],
   ];
 
   // Fetch all existing keys in parallel (single await keeps transaction alive)
@@ -313,7 +290,6 @@ export async function saveVaultState(vaultData) {
       totalBits: vaultData.topics?.length || 0,
       totalMatches: vaultData.matches?.length || 0,
       totalTouchstones: flatTouchstones.length,
-      totalRootBits: vaultData.rootBits?.length || 0,
     },
   });
 
@@ -334,7 +310,6 @@ export async function loadVaultState() {
     topics: await loadTopics(),
     matches: await loadMatches(),
     touchstones: await loadTouchstones(),
-    rootBits: await loadRootBits(),
   };
 }
 

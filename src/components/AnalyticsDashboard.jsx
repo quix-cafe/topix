@@ -47,10 +47,10 @@ const SECTION_HEADER = {
 /**
  * AnalyticsDashboard - Comprehensive statistics and insights
  */
-export function AnalyticsDashboard({ topics, matches, touchstones, rootBits, transcripts, onGoToTouchstone, onGoToMix, onGoToBit }) {
+export function AnalyticsDashboard({ topics, matches, touchstones, transcripts, onGoToTouchstone, onGoToMix, onGoToBit }) {
   const stats = useMemo(
-    () => calculateStats(topics, matches, touchstones, rootBits, transcripts),
-    [topics, matches, touchstones, rootBits, transcripts]
+    () => calculateStats(topics, matches, touchstones, transcripts),
+    [topics, matches, touchstones, transcripts]
   );
 
   return (
@@ -673,9 +673,7 @@ function HealthMetric({ label, value, description }) {
  * Calculate all statistics
  */
 
-// Todo: rootBits are extinct code. 
-
-function calculateStats(topics, matches, touchstonesRaw, rootBits, transcripts) {
+function calculateStats(topics, matches, touchstonesRaw, transcripts) {
   const touchstones = Array.isArray(touchstonesRaw)
     ? touchstonesRaw
     : [...(touchstonesRaw?.confirmed || []), ...(touchstonesRaw?.possible || [])];
@@ -910,7 +908,6 @@ function calculateStats(topics, matches, touchstonesRaw, rootBits, transcripts) 
     coverage,
     touchstoneRate,
     totalTouchstones: touchstones.length,
-    totalRootBits: rootBits.length,
     hasDeadZone,
   });
 
@@ -918,7 +915,6 @@ function calculateStats(topics, matches, touchstonesRaw, rootBits, transcripts) 
     totalBits: topics.length,
     totalMatches: matches.length,
     totalTouchstones: touchstones.length,
-    totalRootBits: rootBits.length,
     topTags,
     sourceDistribution,
     relationshipDistribution,
@@ -958,9 +954,6 @@ function generateInsights(metrics) {
   }
   if (metrics.totalTouchstones > 5 && metrics.totalBits > 10) {
     insights.push("🌟 Vault is mature! You have good bit organization and recurring patterns.");
-  }
-  if (metrics.totalRootBits > 0 && metrics.totalRootBits >= metrics.totalTouchstones) {
-    insights.push("✨ Root bits are well-organized. Good deduplication and variation tracking.");
   }
   if (metrics.totalBits < 5) {
     insights.push("🚀 Getting started! Parse more transcripts to build a richer vault.");

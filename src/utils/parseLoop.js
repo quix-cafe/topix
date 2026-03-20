@@ -1,7 +1,5 @@
 import { requestOllamaRestart } from "./ollama";
 
-// Todo: error received: "[Re-parse 1] Evaluated remaining 5184 chars as non-comedic. Parsing complete." but coverage is sometimes as low as 0% — need better handling of the case where the LLM determines the remaining text is non-comedic, which will not happen, as ALL the transcripts are comedy sets. This likely means the LLM is freezing or erroring in a way that doesn't trigger the froze/error flags, and we need better detection of that case to avoid prematurely stopping the parse loop.
-
 // Merge overlapping ranges into a sorted non-overlapping list
 export function mergeRanges(ranges) {
   if (ranges.length === 0) return [];
@@ -249,9 +247,28 @@ export async function runParseLoop({
     // --- Handle success ---
     consecutiveFreezes = 0;
 
-    // No bits found and no freeze = LLM says remaining text is non-comedic
+    // No bits found and no freeze — LLM returned nothing.
+    // If coverage is still very low, this is likely a silent LLM failure,
+    // not a genuine "non-comedic" verdict (all transcripts are comedy sets).
     if (result.foundBits.length === 0) {
-      console.log(`[${logPrefix} ${pass}] Evaluated remaining ${textToProcess.length} chars as non-comedic. Parsing complete.`);
+      const currentRemaining = getRemainingText();
+      const currentCoverage = Math.round(((originalText.length - currentRemaining.length) / originalText.length) * 100);
+
+      if (currentCoverage < 20 && textToProcess.length > 200) {
+        consecutiveFreezes++;
+        console.warn(`[${logPrefix} ${pass}] LLM returned 0 bits at only ${currentCoverage}% coverage — treating as silent failure (streak ${consecutiveFreezes}/${maxConsecutiveFreezes}).`);
+        if (consecutiveFreezes >= maxConsecutiveFreezes) {
+          console.error(`[${logPrefix} ${pass}] ${maxConsecutiveFreezes} consecutive empty responses at low coverage — giving up.`);
+          onStatus(`LLM returned no bits ${maxConsecutiveFreezes}x at ${currentCoverage}% coverage — moving on.`);
+          break;
+        }
+        onStatus(`Restarting Ollama after empty response at ${currentCoverage}% coverage (attempt ${consecutiveFreezes}/${maxConsecutiveFreezes})...`);
+        await requestOllamaRestart();
+        pass++;
+        continue;
+      }
+
+      console.log(`[${logPrefix} ${pass}] Evaluated remaining ${textToProcess.length} chars as non-comedic at ${currentCoverage}% coverage. Parsing complete.`);
       break;
     }
 

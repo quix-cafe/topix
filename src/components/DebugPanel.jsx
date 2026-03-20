@@ -1,4 +1,28 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { onQueueChange, getQueueSnapshot, cancelPendingGenerations } from "../utils/ollama";
+
+function QueueStatus() {
+  const [queue, setQueue] = useState(getQueueSnapshot);
+  useEffect(() => onQueueChange(setQueue), []);
+
+  if (queue.total === 0) return <span style={{ color: "#555" }}>Queue: idle</span>;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <span style={{ color: "#ffa94d" }}>
+        Queue: {queue.active ? `running "${queue.active.label}"` : "waiting"}
+        {queue.pending.length > 0 && ` + ${queue.pending.length} pending`}
+      </span>
+      {queue.pending.length > 0 && (
+        <button
+          onClick={cancelPendingGenerations}
+          style={{ background: "none", border: "1px solid #ff6b6b44", color: "#ff6b6b", padding: "1px 6px", borderRadius: 3, cursor: "pointer", fontSize: 9 }}
+        >
+          cancel pending
+        </button>
+      )}
+    </span>
+  );
+}
 
 export function DebugPanel({ log, onClear }) {
   const [selected, setSelected] = useState(log.length > 0 ? log[log.length - 1].id : null);
@@ -14,6 +38,7 @@ export function DebugPanel({ log, onClear }) {
         display: "flex", alignItems: "center", gap: 12,
       }}>
         <span style={{ color: "#51cf66", fontWeight: 700 }}>DEBUG</span>
+        <QueueStatus />
         <span>Waiting for Ollama calls...</span>
         <button onClick={onClear} style={{ marginLeft: "auto", background: "none", border: "1px solid #333", color: "#555", padding: "2px 8px", borderRadius: 4, cursor: "pointer", fontSize: 10 }}>close</button>
       </div>
@@ -30,6 +55,8 @@ export function DebugPanel({ log, onClear }) {
       {/* Header bar */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderBottom: "1px solid #1a1a2a", flexShrink: 0 }}>
         <span style={{ color: "#51cf66", fontWeight: 700, marginRight: 4 }}>DEBUG</span>
+        <QueueStatus />
+        <span style={{ color: "#333", margin: "0 4px" }}>|</span>
         <div style={{ display: "flex", gap: 4, overflowX: "auto", flex: 1 }}>
           {log.map((e) => (
             <button

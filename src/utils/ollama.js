@@ -16,16 +16,54 @@ export { calculateCharPosition, extractTextByPosition, adjustBoundary, findWordB
 // ─── Global generation queue ─────────────────────────────────────────
 // Ollama can only run one generation at a time on a single GPU.
 // This queue serializes all LLM calls (chat + stream) to prevent contention.
-
-// Todo: this queue should be visible from the topix debug panel, showing pending and active generations, with ability to cancel pending ones and see which one is currently running. Also consider adding priority levels (e.g. user-initiated calls vs background calls).
-
+// Supports priority levels: "high" (user-initiated) runs before "normal" (background).
 
 const _genQueue = [];
 let _genRunning = false;
+let _genActive = null; // { label, startedAt } for the currently running item
+const _genListeners = new Set();
 
-function enqueueGeneration(fn) {
+/** Subscribe to queue state changes. Returns unsubscribe function. */
+export function onQueueChange(fn) {
+  _genListeners.add(fn);
+  return () => _genListeners.delete(fn);
+}
+
+function _notifyListeners() {
+  const snapshot = getQueueSnapshot();
+  for (const fn of _genListeners) fn(snapshot);
+}
+
+/** Get a snapshot of the current queue state. */
+export function getQueueSnapshot() {
+  return {
+    active: _genActive,
+    pending: _genQueue.map(q => ({ label: q.label, priority: q.priority })),
+    total: _genQueue.length + (_genActive ? 1 : 0),
+  };
+}
+
+/** Cancel all pending (not active) queue items. */
+export function cancelPendingGenerations() {
+  while (_genQueue.length > 0) {
+    const item = _genQueue.pop();
+    item.reject(new Error("Cancelled"));
+  }
+  _notifyListeners();
+}
+
+function enqueueGeneration(fn, label = "generation", priority = "normal") {
   return new Promise((resolve, reject) => {
-    _genQueue.push({ fn, resolve, reject });
+    const item = { fn, resolve, reject, label, priority };
+    // Insert high-priority items before normal-priority ones
+    if (priority === "high") {
+      const insertIdx = _genQueue.findIndex(q => q.priority !== "high");
+      if (insertIdx === -1) _genQueue.push(item);
+      else _genQueue.splice(insertIdx, 0, item);
+    } else {
+      _genQueue.push(item);
+    }
+    _notifyListeners();
     _drainGenQueue();
   });
 }
@@ -34,14 +72,18 @@ async function _drainGenQueue() {
   if (_genRunning || _genQueue.length === 0) return;
   _genRunning = true;
   while (_genQueue.length > 0) {
-    const { fn, resolve, reject } = _genQueue.shift();
+    const { fn, resolve, reject, label } = _genQueue.shift();
+    _genActive = { label, startedAt: Date.now() };
+    _notifyListeners();
     try {
       resolve(await fn());
     } catch (e) {
       reject(e);
     }
   }
+  _genActive = null;
   _genRunning = false;
+  _notifyListeners();
 }
 
 // ─── JSON repair for truncated responses ────────────────────────────
@@ -225,7 +267,7 @@ async function callOllamaOnce(system, userMsg, onStatus, model, debugCallback, e
   }
 }
 
-export async function callOllama(system, userMsg, onStatus, model = "qwen3.5:9b", debugCallback = null, externalSignal = null) {
+export async function callOllama(system, userMsg, onStatus, model = "qwen3.5:9b", debugCallback = null, externalSignal = null, { label = "chat", priority = "normal" } = {}) {
   return enqueueGeneration(async () => {
     onStatus?.("Calling " + model + " via Ollama...");
 
@@ -248,7 +290,7 @@ export async function callOllama(system, userMsg, onStatus, model = "qwen3.5:9b"
       }
       throw e;
     }
-  });
+  }, label, priority);
 }
 
 // ─── Health check and restart helpers ────────────────────────────────
@@ -315,8 +357,8 @@ export async function requestOllamaRestart() {
  * @param {number} timeoutMs - Timeout in milliseconds (0 = no timeout, default 45000 = 45s for chunks)
  * @returns {Promise<Array>} Final parsed JSON result
  */
-export async function callOllamaStream(system, userMsg, callbacks = {}, model = "qwen3.5:9b", abortController = null, timeoutMs = 30000) {
-  return enqueueGeneration(() => _callOllamaStreamInner(system, userMsg, callbacks, model, abortController, timeoutMs));
+export async function callOllamaStream(system, userMsg, callbacks = {}, model = "qwen3.5:9b", abortController = null, timeoutMs = 30000, { label = "stream", priority = "normal" } = {}) {
+  return enqueueGeneration(() => _callOllamaStreamInner(system, userMsg, callbacks, model, abortController, timeoutMs), label, priority);
 }
 
 async function _callOllamaStreamInner(system, userMsg, callbacks = {}, model = "qwen3.5:9b", abortController = null, timeoutMs = 30000) {

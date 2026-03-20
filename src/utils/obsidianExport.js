@@ -2,9 +2,7 @@
  * Obsidian vault export - generates markdown files for Obsidian import
  */
 
-// Todo: 'Root bits' is extinct code. 
-
-export function generateObsidianVault(topics, matches, transcripts, touchstones = [], rootBits = []) {
+export function generateObsidianVault(topics, matches, transcripts, touchstones = []) {
   const files = [];
 
   // MOC (Map of Content) index
@@ -16,14 +14,6 @@ export function generateObsidianVault(topics, matches, transcripts, touchstones 
 
   let moc = `---\ntags: [comedy-vault, index]\n---\n# Comedy Bit Vault\n\n`;
   moc += `> Last updated: ${new Date().toLocaleString()}\n\n`;
-
-  if (rootBits.length > 0) {
-    moc += `## Root Bits (${rootBits.length})\n`;
-    rootBits.forEach((rb) => {
-      moc += `- [[${rb.title}]] (merged from ${rb.aggregateData.totalInstances} instances)\n`;
-    });
-    moc += `\n`;
-  }
 
   if (touchstones.length > 0) {
     moc += `## Recurring Touchstones (${touchstones.length})\n`;
@@ -47,52 +37,6 @@ export function generateObsidianVault(topics, matches, transcripts, touchstones 
     moc += `- #${tag.replace(/\s+/g, "-")}\n`;
   });
   files.push({ name: "Comedy Vault MOC.md", content: moc });
-
-  // Root bit files
-  rootBits.forEach((root) => {
-    let md = `---\n`;
-    md += `title: "${root.title}"\n`;
-    md += `type: root-bit\n`;
-    md += `merged-from: [${root.mergedFrom.join(", ")}]\n`;
-    md += `total-instances: ${root.aggregateData.totalInstances}\n`;
-    md += `average-confidence: ${root.aggregateData.averageConfidence.toFixed(2)}\n`;
-    md += `tags: [${root.tags.map((t) => t.replace(/\s+/g, "-")).join(", ")}]\n`;
-    md += `keywords: [${root.keywords.join(", ")}]\n`;
-    md += `sources: [${root.aggregateData.sources.join(", ")}]\n`;
-    md += `---\n\n`;
-    md += `# ${root.title}\n\n`;
-    md += `> [!success] Root Bit\n> Aggregated from **${root.aggregateData.totalInstances}** instances with **${Math.round(root.aggregateData.averageConfidence * 100)}%** average confidence.\n\n`;
-    md += `## Summary\n${root.summary}\n\n`;
-
-    if (root.aggregateData.variations && root.aggregateData.variations.length > 0) {
-      md += `## Variations\n`;
-      root.aggregateData.variations.forEach((v) => {
-        md += `\n### Version ${v.version} - ${v.sourceFile}\n`;
-        md += `**Title:** ${v.title}\n\n`;
-        if (v.changes && v.changes.length > 0) {
-          md += `**Changes:**\n`;
-          v.changes.forEach((c) => {
-            md += `- ${c}\n`;
-          });
-          md += `\n`;
-        }
-        if (v.lengthDifference !== 0) {
-          md += `**Length:** ${v.lengthDifference > 0 ? "+" : ""}${v.lengthDifference} characters\n\n`;
-        }
-      });
-    }
-
-    md += `## Instances\n`;
-    root.mergedFrom.forEach((bitId) => {
-      const bit = topics.find((t) => t.id === bitId);
-      if (bit) {
-        md += `- [[${bit.title}]] (${bit.sourceFile})\n`;
-      }
-    });
-
-    md += `\n## Tags\n${root.tags.map((t) => `#${t.replace(/\s+/g, "-")}`).join(" ")}\n`;
-    files.push({ name: `_root-bits/${root.title.replace(/[/\\:*?"<>|]/g, "_")}.md`, content: md });
-  });
 
   // Touchstone files
   touchstones.forEach((touchstone) => {

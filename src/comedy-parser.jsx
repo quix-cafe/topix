@@ -4,7 +4,6 @@ import { findTextPosition } from "./utils/textMatcher";
 import { validateAllBits } from "./utils/textContinuityValidator";
 import { TouchstonePanel } from "./components/TouchstonePanel";
 import { detectTouchstones, annotateBitsWithTouchstones } from "./utils/touchstoneDetector";
-import { createRootBit } from "./utils/bitMerger";
 import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
 import {
   getDB,
@@ -53,7 +52,6 @@ const initialState = {
   validationResult: null,
   editingMode: null,
   touchstones: { confirmed: [], possible: [] },
-  rootBits: [],
   dbStats: null,
   lastSave: null,
   selectedModel: "qwen3.5:9b",
@@ -65,11 +63,11 @@ const initialState = {
   embeddingModel: "mxbai-embed-large",
   embeddingStatus: { cached: 0, total: 0 },
   vaultReady: false,
+  transcriptSortCol: "file",
+  transcriptSortDir: "asc",
 };
 
 // Todo: factor out as much as possible from comedy-parser.jsx into separate hooks and utils. The main component should ideally just orchestrate state and pass props to child components, with minimal internal logic.
-// Todo: add a 'scroll to top' button that appears when user scrolls down in any tab, to improve navigation in long lists of bits/topics/matches.
-// Todo: 'root bits' are extinct code. They were an early attempt at aggregating similar bits across transcripts, but have been superseded by the more flexible Touchstone system. The code is still present but not linked to from the UI, and may be removed.
 // Todo: add browser back/forward navigation support. if a different tab or different 'subtab' page is accessed, allow me to go back to the previous view. it might be good to encode every part of the interface to a URL view, so that I can also share links to specific views (e.g. a specific topic, or the network graph with a search query applied).
 
 function reducer(state, action) {
@@ -92,6 +90,33 @@ function reducer(state, action) {
   }
 }
 
+function ScrollToTop() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setVisible(window.scrollY > 400);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+  if (!visible) return null;
+  return (
+    <button
+      onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+      style={{
+        position: "fixed", bottom: 80, right: 24, zIndex: 9998,
+        width: 36, height: 36, borderRadius: "50%",
+        background: "#1a1a2e", border: "1px solid #2a2a40",
+        color: "#aaa", fontSize: 16, cursor: "pointer",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+        transition: "opacity 0.2s",
+      }}
+      title="Scroll to top"
+    >
+      ↑
+    </button>
+  );
+}
+
 export default function ComedyParser() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const stateRef = useRef(state);
@@ -102,7 +127,7 @@ export default function ComedyParser() {
     transcripts, topics, matches, status, processing,
     activeTab, selectedTopic, streamingProgress,
     foundBits, selectedTranscript, adjustingBit, validationResult,
-    editingMode, touchstones, rootBits, dbStats, lastSave,
+    editingMode, touchstones, dbStats, lastSave,
     selectedModel, availableModels, shouldStop, debugMode,
     debugLog, huntProgress, embeddingModel, embeddingStatus, vaultReady,
   } = state;
@@ -141,7 +166,7 @@ export default function ComedyParser() {
   });
   const handleApproveGap = useCallback((gapKey) => {
     setApprovedGaps((prev) => {
-      const next = [...prev, gapKey];
+      const next = prev.includes(gapKey) ? prev.filter(k => k !== gapKey) : [...prev, gapKey];
       try { localStorage.setItem("topix-approved-gaps", JSON.stringify(next)); } catch {}
       return next;
     });
@@ -229,7 +254,6 @@ export default function ComedyParser() {
           transcripts,
           matches: saved.matches || [],
           touchstones: saved.touchstones || { confirmed: [], possible: [] },
-          rootBits: saved.rootBits || [],
         }});
       }
       set('vaultReady', true);
@@ -242,7 +266,7 @@ export default function ComedyParser() {
   // Auto-save vault state (debounced to every 5 seconds after changes)
   useEffect(() => {
     const timer = setTimeout(() => {
-      saveVaultState({ topics, matches, transcripts, touchstones, rootBits })
+      saveVaultState({ topics, matches, transcripts, touchstones })
         .then(() => {
           set('lastSave', new Date());
           getDatabaseStats().then(stats => set('dbStats', stats)).catch(console.error);
@@ -251,7 +275,7 @@ export default function ComedyParser() {
     }, 5000);
 
     return () => clearTimeout(timer);
-  }, [topics, matches, transcripts, touchstones, rootBits]);
+  }, [topics, matches, transcripts, touchstones]);
 
   // Pause background embedding queue while model operations are running
   useEffect(() => {
@@ -508,7 +532,7 @@ export default function ComedyParser() {
 
     // Persist
     const s = stateRef.current;
-    await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits }).catch(console.error);
+    await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }).catch(console.error);
 
     const msg = [];
     if (toRemove.size > 0) msg.push(`removed ${toRemove.size} stale`);
@@ -545,7 +569,7 @@ export default function ComedyParser() {
     dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches, touchstones: updatedTouchstones, editingMode: null, selectedTopic: null } });
 
     try {
-      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: updatedTouchstones, rootBits: s.rootBits });
+      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: updatedTouchstones });
       if (updatedMatches.length < s.matches.length) {
         console.log(`[Split] Removed ${s.matches.length - updatedMatches.length} stale matches for split bit`);
       }
@@ -576,7 +600,7 @@ export default function ComedyParser() {
         };
         update('topics', (prev) => prev.map((t) => t.id === bit.id ? updated : t));
         const s2 = stateRef.current;
-        saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones, rootBits: s2.rootBits }).catch(console.error);
+        saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
       }).catch((err) => console.warn("[Split baptize] Failed:", err.message));
     }
 
@@ -600,7 +624,7 @@ export default function ComedyParser() {
     dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches, touchstones: updatedTouchstones, editingMode: null, selectedTopic: null } });
 
     try {
-      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: updatedTouchstones, rootBits: s.rootBits });
+      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: updatedTouchstones });
       console.log(`[Join] Joined ${bitsToJoin.length} bits into "${completeBit.title}", removed ${s.matches.length - updatedMatches.length} stale matches`);
     } catch (err) {
       console.error("Error saving joined bits:", err);
@@ -626,7 +650,7 @@ export default function ComedyParser() {
     dispatch({ type: 'MERGE', payload: { topics: updatedTopics, adjustingBit: null } });
 
     try {
-      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits });
+      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
     } catch (err) {
       console.error("Error saving boundary change:", err);
     }
@@ -643,7 +667,7 @@ export default function ComedyParser() {
     dispatch({ type: 'MERGE', payload: { topics: updatedTopics } });
 
     try {
-      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits });
+      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
     } catch (err) {
       console.error("Error saving take overlap:", err);
     }
@@ -660,7 +684,7 @@ export default function ComedyParser() {
 
     dispatch({ type: 'MERGE', payload: { topics: updatedTopics } });
     try {
-      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits });
+      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
     } catch (err) {
       console.error("Error saving boundary scroll:", err);
     }
@@ -698,7 +722,7 @@ export default function ComedyParser() {
         : t
     );
     dispatch({ type: 'MERGE', payload: { topics: updatedTopics } });
-    await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits });
+    await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
   }, []);
 
   // "Baptize" a bit — run full LLM analysis (title, summary, tags, keywords) + cross-transcript matching
@@ -733,7 +757,7 @@ export default function ComedyParser() {
         matchBitLiveRef.current?.(updatedBit, stateRef.current.topics.map((t) => t.id === bitId ? updatedBit : t));
 
         const s2 = stateRef.current;
-        await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones, rootBits: s2.rootBits });
+        await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones });
         set('status', `Baptized "${updatedBit.title}"`);
       }
     } catch (err) {
@@ -821,7 +845,7 @@ export default function ComedyParser() {
     });
 
     const s2 = stateRef.current;
-    await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones, rootBits: s2.rootBits }).catch(console.error);
+    await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
 
     const msg = [];
     if (toRemove.size > 0) msg.push(`removed ${toRemove.size} false`);
@@ -945,7 +969,7 @@ export default function ComedyParser() {
       // Persist after each bit (only if something changed)
       if (dirtyThisBit) {
         const s2 = stateRef.current;
-        await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones, rootBits: s2.rootBits }).catch(console.error);
+        await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
       }
     }
 
@@ -1061,7 +1085,7 @@ export default function ComedyParser() {
           newCoreBitIds = t.coreBitIds;
           newRemovedBitIds = t.removedBitIds;
         }
-        if (newInstances.length === 0) return null; // dissolve if empty
+        if (newInstances.length === 0 && !t.manual) return null; // dissolve if empty (manual touchstones survive)
         return {
           ...t,
           instances: newInstances,
@@ -1080,7 +1104,7 @@ export default function ComedyParser() {
 
       set('touchstones', updatedTouchstones);
       const s2 = stateRef.current;
-      await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: updatedTouchstones, rootBits: s2.rootBits }).catch(
+      await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: updatedTouchstones }).catch(
         (err) => console.error("Error saving after communion iteration:", err)
       );
     }
@@ -1153,7 +1177,7 @@ export default function ComedyParser() {
 
       // Save immediately
       const s2 = stateRef.current;
-      await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones, rootBits: s2.rootBits }).catch(
+      await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(
         (err) => console.error("Error saving after synthesis:", err)
       );
 
@@ -1223,7 +1247,7 @@ export default function ComedyParser() {
     console.log(`[Mix] Deleted empty bit ${bitId}`);
     dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches } });
     try {
-      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits });
+      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: s.touchstones });
     } catch (err) {
       console.error("Error saving after delete:", err);
     }
@@ -1267,12 +1291,12 @@ export default function ComedyParser() {
         const latest = stateRef.current;
         const updated = latest.topics.map((t) => t.id === newBit.id ? final : t);
         dispatch({ type: 'MERGE', payload: { topics: updated } });
-        await saveVaultState({ topics: updated, matches: latest.matches, transcripts: latest.transcripts, touchstones: latest.touchstones, rootBits: latest.rootBits });
+        await saveVaultState({ topics: updated, matches: latest.matches, transcripts: latest.transcripts, touchstones: latest.touchstones });
       }
     } catch (err) {
       console.error("[PhantomBit] LLM metadata failed:", err);
       // Bit is still saved with placeholder title — user can rename manually
-      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits });
+      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
     }
   }, []);
 
@@ -1323,7 +1347,7 @@ export default function ComedyParser() {
             const latest = stateRef.current;
             const updatedTopics = [...latest.topics, newBit];
             dispatch({ type: 'MERGE', payload: { topics: updatedTopics } });
-            saveVaultState({ topics: updatedTopics, matches: latest.matches, transcripts: latest.transcripts, touchstones: latest.touchstones, rootBits: latest.rootBits }).catch(console.error);
+            saveVaultState({ topics: updatedTopics, matches: latest.matches, transcripts: latest.transcripts, touchstones: latest.touchstones }).catch(console.error);
           },
           onFrozen: () => {
             console.log("[ReParseGap] Streaming froze");
@@ -1350,6 +1374,20 @@ export default function ComedyParser() {
       set('status', 'Re-parse returned no bits.');
     } else {
       set('status', `Re-parsed gap into ${foundBits.length} bit${foundBits.length !== 1 ? 's' : ''}.`);
+      // Clean up stale approved gap keys that overlap the re-parsed region
+      setApprovedGaps((prev) => {
+        const prefix = `${sourceFile}:`;
+        const next = prev.filter(key => {
+          if (!key.startsWith(prefix)) return true;
+          const [s, e] = key.slice(prefix.length).split("-").map(Number);
+          if (isNaN(s) || isNaN(e)) return true;
+          return e <= startChar || s >= endChar; // keep if no overlap
+        });
+        if (next.length !== prev.length) {
+          try { localStorage.setItem("topix-approved-gaps", JSON.stringify(next)); } catch {}
+        }
+        return next;
+      });
     }
   }, []);
 
@@ -1448,7 +1486,7 @@ export default function ComedyParser() {
     setTimeout(async () => {
       const s2 = stateRef.current;
       try {
-        await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones, rootBits: s2.rootBits });
+        await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones });
       } catch (err) { console.error("Error saving after rectify:", err); }
     }, 100);
   }, []);
@@ -1559,7 +1597,6 @@ export default function ComedyParser() {
           matches: [...s2.matches, ...batchMatches],
           transcripts: s2.transcripts,
           touchstones: s2.touchstones,
-          rootBits: s2.rootBits,
         }).catch((err) => console.error('[Hunt] Error saving matches:', err));
       },
       debugLogger: addDebugEntry,
@@ -1674,7 +1711,6 @@ export default function ComedyParser() {
           matches: [...s2.matches, ...batchMatches],
           transcripts: s2.transcripts,
           touchstones: s2.touchstones,
-          rootBits: s2.rootBits,
         }).catch((err) => console.error('[Hunt] Error saving matches:', err));
       },
       debugLogger: addDebugEntry,
@@ -1684,15 +1720,6 @@ export default function ComedyParser() {
     set('processing', false);
     update('huntProgress', (prev) => ({ ...prev, current: batches.length, total: batches.length, found: allMatches.length, status: `Done "${transcript.name}". Found ${allMatches.length} new match${allMatches.length !== 1 ? 'es' : ''}.` }));
   }, [debugMode]);
-
-  // Handle root bit creation
-  const handleCreateRoot = useCallback((bitIds) => {
-    const s = stateRef.current;
-    const newRoot = createRootBit(bitIds, s.topics, s.matches);
-    if (newRoot) {
-      dispatch({ type: 'MERGE', payload: { rootBits: [...s.rootBits, newRoot], editingMode: null } });
-    }
-  }, []);
 
   // Helper function to match a newly found bit against existing topics (pairwise)
   const matchBitLive = useCallback(async (newBit, existingTopics, signal) => {
@@ -1793,7 +1820,6 @@ export default function ComedyParser() {
               matches: [...s.matches, newMatch],
               transcripts: s.transcripts,
               touchstones: s.touchstones,
-              rootBits: s.rootBits,
             }).catch((err) => console.error("Error saving match:", err));
             console.log(`[MatchPair] "${newBit.title}" vs "${candidate.title}": ${mp}% (${matchData.relationship})`);
           }
@@ -2052,7 +2078,7 @@ export default function ComedyParser() {
                       update('topics', (prev) => [...prev, enhancedBit]);
                     }
                     const s2 = stateRef.current;
-                    saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones, rootBits: s2.rootBits }).catch((err) => console.error("Error saving bit:", err));
+                    saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch((err) => console.error("Error saving bit:", err));
                     if (dedupResult.action === "none" && s2.topics.length > 0) {
                       matchBitLive(enhancedBit, s2.topics, sessionController.signal).catch((err) => { if (err.name !== "AbortError") console.error("Live match error:", err); });
                     }
@@ -2102,7 +2128,7 @@ export default function ComedyParser() {
       console.error(`[Pass ${pass}] Unexpected error:`, err);
       throw err;
     }
-  }, [topics, matches, transcripts, touchstones, rootBits, selectedModel, matchBitLive, debugMode, addDebugEntry]);
+  }, [topics, matches, transcripts, touchstones, selectedModel, matchBitLive, debugMode, addDebugEntry]);
 
 
   const parseAll = useCallback(async (transcriptSubset) => {
@@ -2158,7 +2184,7 @@ export default function ComedyParser() {
             const lastBitText = lastBit.fullText;
             update('topics', prev => prev.filter(t => t.fullText !== lastBitText));
             const s = stateRef.current;
-            saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits }).catch(console.error);
+            saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }).catch(console.error);
           },
           selectedModel,
           logPrefix: "Parse",
@@ -2224,7 +2250,6 @@ export default function ComedyParser() {
         matches: updatedMatches,
         transcripts,
         touchstones,
-        rootBits
       });
 
       set('status', `✅ Purged all data for "${tr.name}"`);
@@ -2235,7 +2260,7 @@ export default function ComedyParser() {
       console.error("Error purging data:", err);
       set('status', `Error purging data: ${err.message}`);
     }
-  }, [topics, matches, transcripts, touchstones, rootBits, selectedTranscript]);
+  }, [topics, matches, transcripts, touchstones, selectedTranscript]);
 
   // Remove a transcript AND all its parsed data
   const removeTranscript = useCallback(async (tr) => {
@@ -2258,7 +2283,6 @@ export default function ComedyParser() {
         matches: updatedMatches,
         transcripts: updatedTranscripts,
         touchstones,
-        rootBits
       });
 
       set('status', `✅ Removed "${tr.name}" and ${bitsToRemoveIds.size} bits`);
@@ -2269,7 +2293,7 @@ export default function ComedyParser() {
       console.error("Error removing transcript:", err);
       set('status', `Error removing transcript: ${err.message}`);
     }
-  }, [topics, matches, transcripts, touchstones, rootBits, selectedTranscript]);
+  }, [topics, matches, transcripts, touchstones, selectedTranscript]);
 
   // Handle sync apply from SyncTab — adds, renames, deletes in one batch
   const handleSyncApply = useCallback(async ({ toAdd, toRename, toDelete, toLink }) => {
@@ -2384,7 +2408,6 @@ export default function ComedyParser() {
       topics: updatedTopics,
       matches: updatedMatches,
       touchstones: updatedTouchstones,
-      rootBits: s.rootBits,
     });
 
     const parts = [];
@@ -2440,13 +2463,12 @@ export default function ComedyParser() {
         topics: [],
         matches: [],
         touchstones: { confirmed: [], possible: [] },
-        rootBits: [],
         selectedTopic: null,
         editingMode: null,
       }});
       // Save the cleared state (transcripts preserved via auto-save)
       const s = stateRef.current;
-      await saveVaultState({ topics: [], matches: [], transcripts: s.transcripts, touchstones: { confirmed: [], possible: [] }, rootBits: [] });
+      await saveVaultState({ topics: [], matches: [], transcripts: s.transcripts, touchstones: { confirmed: [], possible: [] } });
       set('status', "✅ Processed data cleared. Transcripts kept.");
       getDatabaseStats().then(stats => set('dbStats', stats)).catch(console.error);
     } catch (err) {
@@ -2612,7 +2634,7 @@ export default function ComedyParser() {
         onFreezeRollback: (lastBit) => {
           update('topics', prev => prev.filter(t => t.fullText !== lastBit.fullText));
           const s = stateRef.current;
-          saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits }).catch(console.error);
+          saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }).catch(console.error);
         },
         selectedModel,
         logPrefix: "Re-parse",
@@ -2629,10 +2651,10 @@ export default function ComedyParser() {
       set('streamingProgress', null);
       abortControllerRef.current = null;
     }
-  }, [topics, matches, transcripts, touchstones, rootBits, selectedModel, matchBitLive, processRemainingText, shouldStop]);
+  }, [topics, matches, transcripts, touchstones, selectedModel, matchBitLive, processRemainingText, shouldStop]);
 
   const exportVault = useCallback(() => {
-    const files = generateObsidianVault(topics, matches, transcripts, [...(touchstones.confirmed || []), ...(touchstones.possible || [])], rootBits);
+    const files = generateObsidianVault(topics, matches, transcripts, [...(touchstones.confirmed || []), ...(touchstones.possible || [])]);
     // Create a zip-like download: one combined markdown or individual files
     // For simplicity, we'll create a single zip via blob
     // But since we can't use JSZip easily, we'll export as a single combined file
@@ -2642,7 +2664,6 @@ export default function ComedyParser() {
       exportDate: new Date().toISOString(),
       stats: {
         totalBits: topics.length,
-        rootBits: rootBits.length,
         touchstones: (touchstones.confirmed || []).length + (touchstones.possible || []).length,
         connections: matches.length,
         transcripts: transcripts.length,
@@ -2658,12 +2679,12 @@ export default function ComedyParser() {
     a.download = "comedy-vault-export.json";
     a.click();
     URL.revokeObjectURL(url);
-  }, [topics, matches, transcripts, touchstones, rootBits]);
+  }, [topics, matches, transcripts, touchstones]);
 
   const exportMarkdownZip = useCallback(() => {
     // Export as individual .md files in a downloadable format
     // We'll create a simple combined markdown for immediate use
-    const files = generateObsidianVault(topics, matches, transcripts, [...(touchstones.confirmed || []), ...(touchstones.possible || [])], rootBits);
+    const files = generateObsidianVault(topics, matches, transcripts, [...(touchstones.confirmed || []), ...(touchstones.possible || [])]);
     files.forEach((f) => {
       const blob = new Blob([f.content], { type: "text/markdown" });
       const url = URL.createObjectURL(blob);
@@ -2673,10 +2694,10 @@ export default function ComedyParser() {
       a.click();
       URL.revokeObjectURL(url);
     });
-  }, [topics, matches, transcripts, touchstones, rootBits]);
+  }, [topics, matches, transcripts, touchstones]);
 
   const exportSingleMd = useCallback(() => {
-    const files = generateObsidianVault(topics, matches, transcripts, [...(touchstones.confirmed || []), ...(touchstones.possible || [])], rootBits);
+    const files = generateObsidianVault(topics, matches, transcripts, [...(touchstones.confirmed || []), ...(touchstones.possible || [])]);
     const combined = files.map((f) => `<!-- FILE: ${f.name} -->\n${f.content}`).join("\n\n---\n\n");
     const blob = new Blob([combined], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
@@ -2685,7 +2706,7 @@ export default function ComedyParser() {
     a.download = "comedy-vault-combined.md";
     a.click();
     URL.revokeObjectURL(url);
-  }, [topics, matches, transcripts, touchstones, rootBits]);
+  }, [topics, matches, transcripts, touchstones]);
 
 
   const getMatchesForTopic = (topicId) =>
@@ -2926,7 +2947,6 @@ export default function ComedyParser() {
                 topics={topics}
                 matches={matches}
                 touchstones={touchstones}
-                rootBits={rootBits}
                 transcripts={transcripts}
                 onGoToTouchstone={(touchstoneId) => { setTouchstoneInit(touchstoneId); setActiveTab("touchstones"); }}
                 onGoToMix={(tr) => { setMixTranscriptInit(tr); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
@@ -3114,7 +3134,7 @@ export default function ComedyParser() {
                   // Persist
                   setTimeout(async () => {
                     const s2 = stateRef.current;
-                    try { await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones, rootBits: s2.rootBits }); }
+                    try { await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }); }
                     catch (err) { console.error("Error saving after merge:", err); }
                   }, 100);
                   return { accepted: source.instances.length, rejected: 0, alreadyMerged: true };
@@ -3390,7 +3410,7 @@ export default function ComedyParser() {
                 const updatedTouchstones = { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };
                 set('touchstones', updatedTouchstones);
                 const s2 = stateRef.current;
-                saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: updatedTouchstones, rootBits: s2.rootBits }).catch(
+                saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: updatedTouchstones }).catch(
                   (err) => console.error("Error saving after saint status change:", err)
                 );
               }}
@@ -3435,6 +3455,9 @@ export default function ComedyParser() {
             approvedGaps={approvedGaps}
             onApproveGap={handleApproveGap}
             onGoToPlay={(tr) => { setPlayInitFile(tr.name); setActiveTab("play"); }}
+            sortCol={state.transcriptSortCol}
+            sortDir={state.transcriptSortDir}
+            onSortChange={(col, dir) => dispatch({ type: 'MERGE', payload: { transcriptSortCol: col, transcriptSortDir: dir } })}
           />
         )}
 
@@ -3547,7 +3570,7 @@ export default function ComedyParser() {
                     touchstoneNameCache.current.clear();
                     try {
                       const s = stateRef.current;
-                      await saveVaultState({ topics: s.topics, matches: [], transcripts: s.transcripts, touchstones: { confirmed: [], possible: [], rejected: [] }, rootBits: s.rootBits });
+                      await saveVaultState({ topics: s.topics, matches: [], transcripts: s.transcripts, touchstones: { confirmed: [], possible: [], rejected: [] } });
                       set('status', 'Cleared all touchstone data and matches.');
                     } catch (err) { console.error("Error clearing touchstones:", err); }
                   }, title: "Clear all touchstones and matches for re-detection", bg: "#1a1a2a", border: "#2a2a40", color: "#ff6b6b" },
@@ -3636,7 +3659,7 @@ export default function ComedyParser() {
           setTimeout(async () => {
             const s = stateRef.current;
             try {
-              await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits });
+              await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
             } catch (err) { console.error("Error saving after remove-from-touchstone:", err); }
           }, 100);
         }}
@@ -3664,12 +3687,13 @@ export default function ComedyParser() {
           setTimeout(async () => {
             const s = stateRef.current;
             try {
-              await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones, rootBits: s.rootBits });
+              await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
             } catch (err) { console.error("Error saving after add-to-touchstone:", err); }
           }, 100);
         }}
       />
       {/* Mini audio player — visible on play tab when file selected, persists on other tabs only while playing */}
+      <ScrollToTop />
       {nowPlaying && (activeTab === "play" || audioIsPlaying) && (
         <div style={{
           position: "fixed", bottom: 20, right: 20, zIndex: 9999,

@@ -1,7 +1,5 @@
 import { useState, useCallback } from "react";
 
-// Todo: 
-
 const SERVER_URL = "http://localhost:3001";
 
 export function SyncTab({

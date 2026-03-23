@@ -13,6 +13,90 @@ import {
 export { tryParsePartialJSON, tryParsePartialBits, extractCompleteJsonObjects, extractRawJsonObjects } from "./jsonParser.js";
 export { calculateCharPosition, extractTextByPosition, adjustBoundary, findWordBoundary, getLineColumn, getLineBoundaries } from "./positionTracker.js";
 
+// ─── Passthru support (Claude / Gemini via web UI automation) ────────
+const PASSTHRU_URL = "http://localhost:8899";
+const PASSTHRU_PROVIDERS = { claude: "claude", gemini: "gemini" };
+
+/**
+ * Check if a model name refers to a passthru provider (claude/gemini).
+ * Returns the provider name or null.
+ */
+export function getPassthruProvider(model) {
+  if (!model) return null;
+  const m = model.toLowerCase();
+  for (const key of Object.keys(PASSTHRU_PROVIDERS)) {
+    if (m === key || m.startsWith(key + "/") || m.startsWith(key + ":")) {
+      return PASSTHRU_PROVIDERS[key];
+    }
+  }
+  return null;
+}
+
+/**
+ * Check if the passthru server is running.
+ */
+export async function checkPassthruHealth() {
+  try {
+    const res = await fetch(`${PASSTHRU_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Start the passthru server if it's not running.
+ * Calls the Node backend which spawns server.py.
+ */
+export async function ensurePassthruRunning() {
+  if (await checkPassthruHealth()) return true;
+  try {
+    const res = await fetch("/api/passthru/start", { method: "POST" });
+    if (!res.ok) {
+      console.warn("[Passthru] Failed to start passthru server via backend");
+      return false;
+    }
+    // Wait for it to come up
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      if (await checkPassthruHealth()) return true;
+    }
+    console.warn("[Passthru] Passthru server did not become available in 20s");
+    return false;
+  } catch (e) {
+    console.error("[Passthru] Error starting passthru:", e);
+    return false;
+  }
+}
+
+/**
+ * Send a prompt to Claude or Gemini via the passthru server.
+ * Combines system + user messages into a single prompt.
+ * Returns the raw text response (caller handles JSON parsing).
+ */
+async function callPassthru(provider, system, userMsg, externalSignal) {
+  // Combine system + user into a single prompt for the web UI
+  let prompt = userMsg;
+  if (system) {
+    prompt = `${system}\n\n${userMsg}`;
+  }
+
+  const res = await fetch(`${PASSTHRU_URL}/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, prompt }),
+    signal: externalSignal,
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Passthru ${provider} error ${res.status}: ${err}`);
+  }
+
+  const data = await res.json();
+  return data.response || "";
+}
+
 // ─── Global generation queue ─────────────────────────────────────────
 // Ollama can only run one generation at a time on a single GPU.
 // This queue serializes all LLM calls (chat + stream) to prevent contention.
@@ -181,21 +265,49 @@ export const uid = () => crypto.randomUUID().slice(0, 8);
  * @returns {Promise<Array>} Array of available model names
  */
 export async function getAvailableModels() {
+  const models = [];
   try {
     const res = await fetch("http://localhost:11434/api/tags");
-    if (!res.ok) {
-      throw new Error(`Ollama API error ${res.status}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.models) models.push(...data.models.map((m) => m.name));
     }
-    const data = await res.json();
-    return data.models ? data.models.map((m) => m.name) : [];
   } catch (error) {
     console.error("[Ollama] Error fetching available models:", error);
-    return ["qwen3.5:9b"]; // Fallback to default
+    if (models.length === 0) models.push("qwen3.5:9b");
   }
+  // Add passthru providers (Claude/Gemini via web UI)
+  models.push("claude", "gemini");
+  return models;
 }
 
 // ─── Non-streaming call with retry ──────────────────────────────────
 async function callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal) {
+  debugCallback?.({ type: "prompt", system, userMsg, model });
+
+  // Route through passthru for Claude/Gemini
+  const provider = getPassthruProvider(model);
+  if (provider) {
+    onStatus?.(`Calling ${model} via web passthru...`);
+    await ensurePassthruRunning();
+    let text = await callPassthru(provider, system, userMsg, externalSignal);
+    debugCallback?.({ type: "response", rawText: text, model });
+    text = text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    text = text.replace(/```json\s?|```/g, "").trim();
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      const rawObjects = extractRawJsonObjects(text);
+      if (rawObjects.length > 0) return rawObjects;
+      const parsed = tryParsePartialJSON(text);
+      if (parsed && Array.isArray(parsed) && parsed.length > 0) return parsed;
+      const repaired = tryRepairTruncatedObject(text);
+      if (repaired) return repaired;
+      // For passthru, if no JSON is expected, return raw text wrapped
+      return text;
+    }
+  }
+
   const messages = [
     { role: "system", content: system },
     { role: "user", content: userMsg }
@@ -363,6 +475,48 @@ export async function callOllamaStream(system, userMsg, callbacks = {}, model = 
 
 async function _callOllamaStreamInner(system, userMsg, callbacks = {}, model = "qwen3.5:9b", abortController = null, timeoutMs = 30000) {
   const { onChunk, onBitFound, onTagProgress, onComplete, onError, onFrozen, onDebug } = callbacks;
+
+  // Route through passthru for Claude/Gemini (no real streaming, deliver full response)
+  const provider = getPassthruProvider(model);
+  if (provider) {
+    onDebug?.({ type: "prompt", system, userMsg, model });
+    try {
+      onChunk?.(`[Waiting for ${provider} response via web UI...]`);
+      await ensurePassthruRunning();
+      let text = await callPassthru(provider, system, userMsg, abortController?.signal);
+      onDebug?.({ type: "response", rawText: text, model });
+      text = text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      text = text.replace(/```json\s?|```/g, "").trim();
+      onChunk?.(text);
+      // Parse and deliver bits
+      try {
+        const parsed = JSON.parse(text);
+        const bits = Array.isArray(parsed) ? parsed : [parsed];
+        bits.forEach(bit => onBitFound?.(bit));
+        onComplete?.(bits);
+        return bits;
+      } catch {
+        const rawObjects = extractRawJsonObjects(text);
+        if (rawObjects.length > 0) {
+          rawObjects.forEach(bit => onBitFound?.(bit));
+          onComplete?.(rawObjects);
+          return rawObjects;
+        }
+        const partial = tryParsePartialJSON(text);
+        if (partial && Array.isArray(partial) && partial.length > 0) {
+          partial.forEach(bit => onBitFound?.(bit));
+          onComplete?.(partial);
+          return partial;
+        }
+        // Return raw text if not JSON
+        onComplete?.([text]);
+        return [text];
+      }
+    } catch (e) {
+      onError?.(e);
+      throw e;
+    }
+  }
 
   const messages = [
     { role: "system", content: system },

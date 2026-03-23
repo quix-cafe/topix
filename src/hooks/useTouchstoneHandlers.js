@@ -22,15 +22,32 @@ export function useTouchstoneHandlers(ctx) {
 
   const onRemoveTouchstone = useCallback((touchstoneId) => {
     update('touchstones', (prev) => {
-      const all = [...(prev.confirmed || []), ...(prev.possible || [])];
-      const rejected = all.find((t) => t.id === touchstoneId);
-      if (!rejected) return prev;
-      return {
-        confirmed: (prev.confirmed || []).filter((t) => t.id !== touchstoneId),
-        possible: (prev.possible || []).filter((t) => t.id !== touchstoneId),
-        rejected: [...(prev.rejected || []), { ...rejected, category: "rejected" }],
-      };
+      const fromConfirmedOrPossible = [...(prev.confirmed || []), ...(prev.possible || [])].find((t) => t.id === touchstoneId);
+      const alreadyRejected = (prev.rejected || []).find((t) => t.id === touchstoneId);
+
+      if (fromConfirmedOrPossible) {
+        // Move to rejected, clear bitIds/instances
+        return {
+          confirmed: (prev.confirmed || []).filter((t) => t.id !== touchstoneId),
+          possible: (prev.possible || []).filter((t) => t.id !== touchstoneId),
+          rejected: [...(prev.rejected || []), { ...fromConfirmedOrPossible, category: "rejected", bitIds: [], instances: [] }],
+        };
+      } else if (alreadyRejected) {
+        // Already rejected — just clear bitIds/instances
+        return {
+          ...prev,
+          rejected: (prev.rejected || []).map((t) =>
+            t.id === touchstoneId ? { ...t, bitIds: [], instances: [] } : t
+          ),
+        };
+      }
+      return prev;
     });
+
+    // Unlink notes that were matched to this touchstone
+    update('notes', (prev) =>
+      prev.map((n) => n.matchedTouchstoneId === touchstoneId ? { ...n, matchedTouchstoneId: null, matchScore: null } : n)
+    );
   }, []);
 
   const onConfirmTouchstone = useCallback((touchstoneId) => {
@@ -128,8 +145,7 @@ export function useTouchstoneHandlers(ctx) {
 
       const accepted = [];
       const rejSet = new Set((target.rejectedReasons || []).map((r) => r.toLowerCase().trim()));
-      const llmReasons = (result.group_reasoning || []).filter((r) => !rejSet.has(r.toLowerCase().trim()));
-      const newReasons = [...(target.userReasons || []), ...llmReasons].slice(0, 5);
+      const llmReasons = (result.group_reasoning || []).filter((r) => !rejSet.has(r.toLowerCase().trim())).slice(0, 6);
       if (result.candidates && Array.isArray(result.candidates)) {
         for (const c of result.candidates) {
           const idx = (c.candidate || 0) - 1;
@@ -149,7 +165,7 @@ export function useTouchstoneHandlers(ctx) {
           return {
             ...t, instances: nextInstances, bitIds: nextBitIds, frequency: nextInstances.length,
             sourceCount: new Set(nextInstances.map((i) => i.sourceFile)).size,
-            matchInfo: { ...t.matchInfo, reasons: newReasons.slice(0, 5), sameBitCount: nextInstances.filter((i) => i.relationship === "same_bit").length, evolvedCount: nextInstances.filter((i) => i.relationship === "evolved").length },
+            matchInfo: { ...t.matchInfo, reasons: llmReasons, sameBitCount: nextInstances.filter((i) => i.relationship === "same_bit").length, evolvedCount: nextInstances.filter((i) => i.relationship === "evolved").length },
           };
         });
         const removeSource = (list) => list.filter((t) => t.id !== sourceTouchstoneId);
@@ -201,8 +217,7 @@ export function useTouchstoneHandlers(ctx) {
       const result = await callOllama(SYSTEM_TOUCHSTONE_VERIFY, userMsg, () => {}, stateRef.current.selectedModel, stateRef.current.debugMode ? addDebugEntry : null);
 
       const rejected = new Set((ts.rejectedReasons || []).map((r) => r.toLowerCase().trim()));
-      const llmReasons = (result.group_reasoning || []).filter((r) => !rejected.has(r.toLowerCase().trim())).slice(0, 5);
-      const finalReasons = [...(ts.userReasons || []), ...llmReasons].slice(0, 5);
+      const finalReasons = (result.group_reasoning || []).filter((r) => !rejected.has(r.toLowerCase().trim())).slice(0, 6);
 
       const candidateScores = new Map();
       for (const c of (result.candidates || [])) {
@@ -248,10 +263,15 @@ export function useTouchstoneHandlers(ctx) {
         if (edits.corrections !== undefined) updated.corrections = edits.corrections;
         if (edits.userReasons !== undefined) updated.userReasons = edits.userReasons;
         if (edits.rejectedReasons !== undefined) updated.rejectedReasons = edits.rejectedReasons;
-        if (edits.reasons !== undefined) updated.matchInfo = { ...updated.matchInfo, reasons: edits.reasons };
+        if (edits.instances !== undefined) updated.instances = edits.instances;
+        if (edits.matchInfo !== undefined) updated.matchInfo = edits.matchInfo;
+        else if (edits.reasons !== undefined) updated.matchInfo = { ...updated.matchInfo, reasons: edits.reasons };
         if (edits.idealText !== undefined) updated.idealText = edits.idealText;
         if (edits.manualIdealText !== undefined) updated.manualIdealText = edits.manualIdealText;
         if (edits.idealTextNotes !== undefined) updated.idealTextNotes = edits.idealTextNotes;
+        if (edits.idealTextVersions !== undefined) updated.idealTextVersions = edits.idealTextVersions;
+        if (edits.highEndCommunionResults !== undefined) updated.highEndCommunionResults = edits.highEndCommunionResults;
+        if (edits.highEndVerifyResults !== undefined) updated.highEndVerifyResults = edits.highEndVerifyResults;
         if (edits.name !== undefined) {
           updated.name = edits.name;
           const key = [...updated.bitIds].sort().join(",");

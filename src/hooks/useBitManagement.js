@@ -3,7 +3,7 @@ import { callOllama, callOllamaStream, uid } from "../utils/ollama";
 import { SYSTEM_PARSE_V2 } from "../utils/prompts";
 import { saveVaultState } from "../utils/database";
 
-export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps) {
+export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps, embeddingStore) {
   const { dispatch, stateRef, addDebugEntry } = ctx;
   const set = (field, value) => dispatch({ type: 'SET', field, value });
   const update = (field, fn) => dispatch({ type: 'UPDATE', field, fn });
@@ -12,7 +12,8 @@ export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps) {
     const s = stateRef.current;
     const updatedTopics = s.topics.filter((t) => t.id !== bitId);
     const updatedMatches = s.matches.filter((m) => m.sourceId !== bitId && m.targetId !== bitId);
-    console.log(`[Mix] Deleted empty bit ${bitId}`);
+    console.log(`[Mix] Deleted bit ${bitId}`);
+    embeddingStore?.invalidate(bitId);
     dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches } });
     try {
       await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: s.touchstones });
@@ -59,6 +60,11 @@ export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps) {
     set('streamingProgress', { status: "parsing", currentBit: 0, totalBits: 0, streamedText: "" });
     update('foundBits', () => []);
 
+    // Get the full transcript text for position reconciliation
+    const transcript = s.transcripts.find((tr) => tr.name === sourceFile || tr.id === transcriptId);
+    const cleanTranscript = transcript ? transcript.text.replace(/\n/g, " ") : "";
+    const gapText = cleanTranscript ? cleanTranscript.substring(startChar, endChar) : fullText;
+
     const foundBits = [];
     let error = null;
 
@@ -72,19 +78,51 @@ export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps) {
           },
           onBitFound: (bit, count) => {
             update('streamingProgress', (prev) => ({ ...prev, currentBit: count }));
-            const bitStart = startChar + (bit.textPosition?.startChar || 0);
-            const bitEnd = startChar + (bit.textPosition?.endChar || (bit.fullText?.length || 0));
+            const llmStart = startChar + (bit.textPosition?.startChar || 0);
+            const llmEnd = startChar + (bit.textPosition?.endChar || (bit.fullText?.length || 0));
+            const llmText = (bit.fullText || "").trim();
+
+            // Reconcile: LLM's fullText and position are both approximate.
+            // Strategy: try to find the LLM's text in the transcript, then use the transcript's text at that position.
+            let finalStart = llmStart, finalEnd = llmEnd, finalText = bit.fullText;
+
+            if (cleanTranscript && llmText) {
+              // Try exact match in transcript
+              const exactPos = cleanTranscript.indexOf(llmText);
+              if (exactPos !== -1) {
+                finalStart = exactPos;
+                finalEnd = exactPos + llmText.length;
+                finalText = llmText;
+              } else {
+                // Try exact match within the gap region (more constrained)
+                const gapExact = gapText.indexOf(llmText);
+                if (gapExact !== -1) {
+                  finalStart = startChar + gapExact;
+                  finalEnd = finalStart + llmText.length;
+                  finalText = llmText;
+                } else {
+                  // LLM text doesn't match transcript exactly — use transcript text at LLM's position
+                  // Clamp to gap bounds
+                  finalStart = Math.max(startChar, Math.min(llmStart, endChar));
+                  finalEnd = Math.max(finalStart, Math.min(llmEnd, endChar));
+                  if (finalEnd > finalStart) {
+                    finalText = cleanTranscript.substring(finalStart, finalEnd);
+                  }
+                }
+              }
+            }
+
             const newBit = {
               id: uid(),
               title: bit.title || `Untitled bit ${count}`,
               summary: bit.summary || "",
-              fullText: bit.fullText,
+              fullText: finalText,
               tags: bit.tags || [],
               keywords: bit.keywords || [],
-              textPosition: { startChar: bitStart, endChar: bitEnd },
+              textPosition: { startChar: finalStart, endChar: finalEnd },
               sourceFile,
               transcriptId,
-              editHistory: [{ timestamp: Date.now(), action: "reparse_gap", details: { startChar: bitStart, endChar: bitEnd } }],
+              editHistory: [{ timestamp: Date.now(), action: "reparse_gap", details: { startChar: finalStart, endChar: finalEnd } }],
             };
             foundBits.push(newBit);
             update('foundBits', (prev) => [...prev, newBit]);

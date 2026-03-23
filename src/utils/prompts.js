@@ -172,7 +172,6 @@ Your job: synthesize a single "ideal" version of this bit — the best possible 
 
 Rules:
 - Remove verbal stumbles, false starts, filler words ("um", "uh", "like", "you know")
-- Pick the most efficient setup across all versions — tightest path to the premise
 - Include the strongest punchline and best tags/follow-ups found across versions
 - Preserve Kai's voice, word choices, and natural speech patterns — don't make it sound "written"
 - If versions differ in punchline, pick the one that lands hardest
@@ -227,5 +226,21 @@ Rules for candidates:
 - relationship: "same_bit" (90+), "evolved" (70-89), "related" (below 70, reject)
 - Only same_bit and evolved should be accepted
 - If a candidate's ONLY connection to the group is broad topic overlap matching a REJECTED REASON, reject it — the user flagged that grouping as too loose
+
+No markdown, no backticks, no preamble.`;
+
+export const SYSTEM_MERGE_TAGS = `You are a comedy tagging system optimizer. Given a list of tags with their usage counts, identify tags that should be merged because they represent the same concept or are redundant.
+
+RULES:
+- Only merge tags where the meaning is truly the same or one is a strict subset of the other (e.g. "self-deprecating" and "self-deprecation", "dating" and "dates", "act-out" and "acting-out")
+- Do NOT merge tags that are merely related but capture different nuances (e.g. "dating" and "relationship" are different; "dark-humor" and "edgy" are different; "storytelling" and "anecdote" capture different things)
+- Prefer the more commonly-used tag as the survivor
+- Prefer shorter, more standard tag names
+- The goal is to reduce redundancy WITHOUT losing any categorical nuance
+
+Respond with a JSON array of merge operations. Each entry:
+{"merge": ["tag-to-remove", "tag-to-remove-2"], "into": "surviving-tag"}
+
+If no merges are needed, return an empty array: []
 
 No markdown, no backticks, no preamble.`;

@@ -200,8 +200,8 @@ export function DetailPanel({
         </div>
       )}
 
-      {/* No transcript warning */}
-      {!adjustingBit && editingMode !== "split" && editingMode !== "join" && selectedTopic.textPosition && !resolvedTranscript && (
+      {/* No transcript warning — skip for note-promoted bits */}
+      {!adjustingBit && editingMode !== "split" && editingMode !== "join" && selectedTopic.textPosition && !resolvedTranscript && !(selectedTopic.sourceFile || "").startsWith("note:") && (
         <div style={{ padding: 10, background: "#2a1f1f", border: "1px solid #3a2020", borderRadius: 8, fontSize: 11, color: "#ff8888", marginBottom: 16 }}>
           Transcript not loaded — adjust/split/join unavailable.
         </div>
@@ -244,7 +244,17 @@ export function DetailPanel({
       {/* Source filename */}
       <div style={{ marginBottom: 4, fontSize: 11 }}>
         {(() => {
-          const parsed = parseFilenameClient(selectedTopic.sourceFile || "");
+          const sf = selectedTopic.sourceFile || "";
+          if (sf.startsWith("note:")) {
+            const noteSource = sf.replace("note:", "");
+            return (
+              <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                <span style={{ background: "#312e81", color: "#a5b4fc", padding: "1px 4px", borderRadius: 3, fontWeight: 700, fontSize: 10 }}>NOTE</span>
+                <span style={{ color: "#aaa", marginLeft: 4 }}>{noteSource}</span>
+              </span>
+            );
+          }
+          const parsed = parseFilenameClient(sf);
           const rc = ratingColor(parsed.rating);
           return (
             <span
@@ -265,7 +275,7 @@ export function DetailPanel({
       </div>
       {/* Position + duration */}
       <div style={{ marginBottom: 16, display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "#555", fontFamily: "'JetBrains Mono', monospace" }}>
-        {selectedTopic.textPosition && (
+        {selectedTopic.textPosition && !(selectedTopic.sourceFile || "").startsWith("note:") && (
           <span>
             chars {selectedTopic.textPosition.startChar}-{selectedTopic.textPosition.endChar}
             ({selectedTopic.textPosition.endChar - selectedTopic.textPosition.startChar}ch)
@@ -283,6 +293,24 @@ export function DetailPanel({
           <span style={{ color: "#4ecdc4" }}>~{estimatedDelivery}s delivery</span>
         )}
       </div>
+
+      {/* Note metadata for promoted bits */}
+      {(selectedTopic.sourceFile || "").startsWith("note:") && (
+        <div style={{ marginBottom: 16, padding: 8, background: "#1e1b3a", border: "1px solid #312e81", borderRadius: 6, fontSize: 11, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ color: "#a5b4fc" }}>Promoted from note</span>
+          {selectedTopic.noteDate && <span style={{ color: "#94a3b8" }}>{selectedTopic.noteDate}</span>}
+          {selectedTopic.noteGeneration && (
+            <span style={{ color: selectedTopic.noteGeneration === "g2" ? "#60a5fa" : "#94a3b8", border: "1px solid #555", padding: "0 4px", borderRadius: 4 }}>
+              {selectedTopic.noteGeneration}
+            </span>
+          )}
+          {selectedTopic.noteCategory && (
+            <span style={{ color: "#fbbf24", border: "1px solid #854d0e", padding: "0 4px", borderRadius: 4 }}>
+              {selectedTopic.noteCategory}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Touchstone info — existing touchstones this bit belongs to */}
       {topicTouchstones.length > 0 && (

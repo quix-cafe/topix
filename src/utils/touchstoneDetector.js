@@ -519,6 +519,7 @@ export function deduplicateBitOwnership(touchstones, matches) {
     return best;
   };
 
+  const categoryPriority = { confirmed: 3, possible: 2, rejected: 1 };
   const getPriority = (ts) => (ts.manual ? 10 : 0) + (categoryPriority[ts._cat] || 0);
 
   // Process all touchstones, claiming bits for the best owner
@@ -538,7 +539,7 @@ export function deduplicateBitOwnership(touchstones, matches) {
         continue;
       }
       // Higher category priority (and manual flag) wins; within same priority, higher score wins
-      const existingPri = (existing.manual ? 10 : 0) + categoryPriority[existing.category];
+      const existingPri = (existing.manual ? 10 : 0) + (categoryPriority[existing.category] || 0);
       const newPri = getPriority(ts);
       if (newPri > existingPri || (newPri === existingPri && score > existing.score)) {
         claimed.set(bitId, { category: ts._cat, tsId: ts.id, score, manual: ts.manual });

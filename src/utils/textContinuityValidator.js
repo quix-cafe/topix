@@ -66,6 +66,9 @@ export function validateAllBits(bits, transcripts) {
   });
 
   bits.forEach((bit) => {
+    // Note-promoted bits have no transcript — skip validation
+    if (bit.sourceFile && bit.sourceFile.startsWith("note:")) return;
+
     const transcript = transcriptMap[bit.sourceFile] || transcriptMap[bit.transcriptId];
 
     if (!transcript) {
@@ -118,8 +121,9 @@ export function findOverlaps(bits, transcriptMap) {
   const issues = [];
   const transcriptGroups = {};
 
-  // Group bits by transcript
+  // Group bits by transcript (skip note-promoted bits)
   bits.forEach((bit) => {
+    if (bit.sourceFile && bit.sourceFile.startsWith("note:")) return;
     const key = bit.sourceFile || bit.transcriptId;
     if (!transcriptGroups[key]) {
       transcriptGroups[key] = [];

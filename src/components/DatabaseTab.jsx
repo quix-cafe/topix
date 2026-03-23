@@ -25,14 +25,23 @@ export function DatabaseTab({
   const touchstoneBitIds = useMemo(() => new Set(bitToTouchstone.keys()), [bitToTouchstone]);
 
   // Search results — when search is active, show all matching bits
+  // Supports * wildcards (e.g. "walk*cane" matches "walking with a cane")
   const searchResults = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return null;
+    let matcher;
+    if (q.includes("*")) {
+      const pattern = q.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+      const re = new RegExp(pattern);
+      matcher = (s) => re.test(s);
+    } else {
+      matcher = (s) => s.includes(q);
+    }
     return topics.filter((t) =>
-      (t.title || "").toLowerCase().includes(q) ||
-      (t.summary || "").toLowerCase().includes(q) ||
-      (t.fullText || "").toLowerCase().includes(q) ||
-      (t.sourceFile || "").toLowerCase().includes(q)
+      matcher((t.title || "").toLowerCase()) ||
+      matcher((t.summary || "").toLowerCase()) ||
+      matcher((t.fullText || "").toLowerCase()) ||
+      matcher((t.sourceFile || "").toLowerCase())
     );
   }, [topics, search]);
 

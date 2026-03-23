@@ -270,6 +270,10 @@ export class EmbeddingStore {
     }
 
     onProgress?.({ done: bits.length, total: bits.length, status: `Embedded ${bits.length} bits (${cached} were cached, ${toEmbed.length} computed)` });
+
+    // Prune stale embeddings for deleted bits
+    const validIds = new Set(bits.map(b => b.id));
+    this.prune(validIds);
   }
 
   /**
@@ -306,6 +310,25 @@ export class EmbeddingStore {
     deleteEmbeddingFromDB(bitId).catch(err =>
       console.warn(`[Embeddings] DB delete failed for ${bitId}:`, err.message)
     );
+  }
+
+  /**
+   * Remove embeddings for bits that no longer exist
+   * @param {Set|Array} validBitIds - IDs of bits that still exist
+   * @returns {number} count of pruned entries
+   */
+  prune(validBitIds) {
+    const validSet = validBitIds instanceof Set ? validBitIds : new Set(validBitIds);
+    let pruned = 0;
+    for (const bitId of this.cache.keys()) {
+      if (!validSet.has(bitId)) {
+        this.cache.delete(bitId);
+        deleteEmbeddingFromDB(bitId).catch(() => {});
+        pruned++;
+      }
+    }
+    if (pruned > 0) console.log(`[Embeddings] Pruned ${pruned} stale embeddings`);
+    return pruned;
   }
 
   /**

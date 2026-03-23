@@ -24,18 +24,22 @@ function QueueStatus() {
   );
 }
 
-export function DebugPanel({ log, onClear }) {
+export function DebugPanel({ log, onClear, docked }) {
   const [selected, setSelected] = useState(log.length > 0 ? log[log.length - 1].id : null);
+  useEffect(() => {
+    if (log.length > 0) setSelected(log[log.length - 1].id);
+  }, [log.length]);
   const entry = log.find((e) => e.id === selected) || log[log.length - 1];
 
   if (log.length === 0) {
     return (
       <div style={{
-        position: "fixed", bottom: 0, left: 0, right: 0,
+        ...(docked ? {} : { position: "fixed", bottom: 0, left: 0, right: 0 }),
         background: "#090910", borderTop: "2px solid #51cf66",
         padding: "12px 16px", fontSize: 11, color: "#555",
         fontFamily: "'JetBrains Mono', monospace",
         display: "flex", alignItems: "center", gap: 12,
+        ...(docked ? { height: "100%" } : {}),
       }}>
         <span style={{ color: "#51cf66", fontWeight: 700 }}>DEBUG</span>
         <QueueStatus />
@@ -47,10 +51,14 @@ export function DebugPanel({ log, onClear }) {
 
   return (
     <div style={{
-      position: "fixed", bottom: 0, left: 0, right: 0,
+      ...(docked ? {} : { position: "fixed", bottom: 0, left: 0, right: 0 }),
       background: "#090910", borderTop: "2px solid #51cf66",
-      maxHeight: "40vh", display: "flex", flexDirection: "column",
-      fontFamily: "'JetBrains Mono', monospace", fontSize: 11, zIndex: 1000,
+      height: docked ? "100%" : undefined,
+      maxHeight: docked ? "100%" : "40vh",
+      overflow: "hidden",
+      display: "flex", flexDirection: "column",
+      fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
+      zIndex: docked ? undefined : 1000,
     }}>
       {/* Header bar */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderBottom: "1px solid #1a1a2a", flexShrink: 0 }}>

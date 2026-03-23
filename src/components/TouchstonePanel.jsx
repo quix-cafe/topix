@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
+import { SYSTEM_SYNTHESIZE_TOUCHSTONE, SYSTEM_TOUCHSTONE_COMMUNE, SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
 
 function StyledFilename({ sourceFile, style }) {
   const p = parseFilenameClient(sourceFile || "");
@@ -23,13 +24,14 @@ const EXCLUSIVE_RELATIONSHIPS = new Set(["same_bit", "evolved"]);
 
 
 export function TouchstonePanel({
-  touchstones, bits, matches, onSelectBit, onHunt, onRectifyOverlaps, huntProgress, processing,
+  touchstones, bits, matches, notes, onSelectBit, onHunt, onRectifyOverlaps, huntProgress, processing,
   onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onCreateTouchstone,
   onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, onUpdateTouchstoneEdits,
   onCommuneTouchstone, onSynthesizeTouchstone, onMassTouchstoneCommunion, onSaintInstance,
-  initialTouchstoneId, onConsumeInitialTouchstone,
+  initialTouchstoneId, onConsumeInitialTouchstone, onGoToNote,
 }) {
-  const [selectedTouchstoneId, setSelectedTouchstoneId] = useState(null);
+  const [selectedTouchstoneId, setSelectedTouchstoneIdRaw] = useState(null);
+  const setSelectedTouchstoneId = (id) => { setSelectedTouchstoneIdRaw(id); if (id) window.scrollTo(0, 0); };
   const [autoOpenMerge, setAutoOpenMerge] = useState(false);
   const [creatingFrom, setCreatingFrom] = useState(null); // bit to seed new touchstone
   const [touchstoneFilter, setTouchstoneFilter] = useState("");
@@ -38,7 +40,8 @@ export function TouchstonePanel({
   // Navigate to a specific touchstone from external (e.g. DetailPanel)
   useEffect(() => {
     if (!initialTouchstoneId) return;
-    setSelectedTouchstoneId(initialTouchstoneId);
+    setSelectedTouchstoneIdRaw(initialTouchstoneId);
+    window.scrollTo(0, 0);
     onConsumeInitialTouchstone?.();
   }, [initialTouchstoneId]);
 
@@ -147,6 +150,8 @@ export function TouchstonePanel({
         onCommuneTouchstone={onCommuneTouchstone}
         onSynthesizeTouchstone={onSynthesizeTouchstone}
         onSaintInstance={onSaintInstance}
+        notes={notes}
+        onGoToNote={onGoToNote}
       />
     );
   }
@@ -240,23 +245,37 @@ export function TouchstonePanel({
           <>
             {fConfirmed.length > 0 && (
               <div style={{ marginBottom: 24 }}>
-                <h3 style={{ fontSize: 13, fontWeight: 600, color: "#51cf66", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
-                  Confirmed Touchstones ({fConfirmed.length})
-                </h3>
-                {fConfirmed.map((touchstone) => (
-                  <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
-                ))}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                  <h3 style={{ fontSize: 13, fontWeight: 600, color: "#51cf66", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>
+                    Confirmed Touchstones ({fConfirmed.length})
+                  </h3>
+                  {fPossible.length > 0 && (
+                    <button
+                      onClick={() => document.getElementById("touchstone-possible-section")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                      style={{ background: "none", border: "none", color: "#ffa94d", fontSize: 11, cursor: "pointer", padding: 0, fontWeight: 600 }}
+                    >
+                      {fPossible.length} possible ↓
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {fConfirmed.map((touchstone) => (
+                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                  ))}
+                </div>
               </div>
             )}
 
             {fPossible.length > 0 && (
-              <div style={{ marginBottom: 24 }}>
+              <div id="touchstone-possible-section" style={{ marginBottom: 24 }}>
                 <h3 style={{ fontSize: 13, fontWeight: 600, color: "#ffa94d", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
                   Possible Matches ({fPossible.length})
                 </h3>
-                {fPossible.map((touchstone) => (
-                  <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onConfirm={onConfirmTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
-                ))}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {fPossible.map((touchstone) => (
+                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onConfirm={onConfirmTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                  ))}
+                </div>
               </div>
             )}
 
@@ -265,9 +284,11 @@ export function TouchstonePanel({
                 <h3 style={{ fontSize: 13, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
                   Rejected ({fRejected.length})
                 </h3>
-                {fRejected.map((touchstone) => (
-                  <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRestore={onRestoreTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
-                ))}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {fRejected.map((touchstone) => (
+                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRestore={onRestoreTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                  ))}
+                </div>
               </div>
             )}
           </>
@@ -464,19 +485,22 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
         </div>
 
         {/* Right column: stats + actions */}
-        <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, minWidth: 110 }}>
-          <div style={{ background: matchColor, color: "#000", padding: "3px 10px", borderRadius: 5, fontWeight: 700, fontSize: 13 }}>
-            {avgPct}%
+        <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, minWidth: 72 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ background: matchColor, color: "#000", padding: "2px 8px", borderRadius: 4, fontWeight: 700, fontSize: 12 }}>
+              {avgPct}%
+            </div>
+            {avgDuration && <span style={{ fontSize: 9, color: "#74c0fc" }}>{formatDuration(avgDuration)}</span>}
           </div>
-          {avgDuration && <div style={{ fontSize: 10, color: "#74c0fc" }}>{formatDuration(avgDuration)}</div>}
-          <div style={{ fontSize: 10, color: "#666" }}>
+          {/* TODO: show linked-note count here (e.g. "3 notes") — filter notes by matchedTouchstoneId === touchstone.id */}
+          <div style={{ fontSize: 9, color: "#666" }}>
             {sameBitCount > 0 && <span style={{ color: "#51cf66" }}>{sameBitCount} same</span>}
-            {sameBitCount > 0 && evolvedCount > 0 && " \u00B7 "}
+            {sameBitCount > 0 && evolvedCount > 0 && " · "}
             {evolvedCount > 0 && <span style={{ color: "#ffa94d" }}>{evolvedCount} evolved</span>}
           </div>
 
-          {/* Action buttons — 2x2 grid */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: 2, width: "100%" }}>
+          {/* Action buttons — single column */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 2, width: "100%" }}>
             {onConfirm && (
               <button onClick={(e) => { e.stopPropagation(); onConfirm(touchstone.id); }}
                 style={cardBtn("#51cf6611", "#51cf6633", "#51cf66")}>Confirm</button>
@@ -515,7 +539,7 @@ function Badge({ bg, color, children }) {
   return <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: bg, color }}>{children}</span>;
 }
 
-function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBack, onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, mergeTargets, processing, autoOpenMerge, onConsumeAutoOpenMerge, onUpdateTouchstoneEdits, onCommuneTouchstone, onSynthesizeTouchstone, onSaintInstance }) {
+function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBack, onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, mergeTargets, processing, autoOpenMerge, onConsumeAutoOpenMerge, onUpdateTouchstoneEdits, onCommuneTouchstone, onSynthesizeTouchstone, onSaintInstance, notes, onGoToNote }) {
   const [renamePending, setRenamePending] = useState(null);
   const [expandedInstances, setExpandedInstances] = useState(new Set(touchstone.instances.map((i) => i.bitId)));
   const [mergeOpen, setMergeOpen] = useState(false);
@@ -529,6 +553,15 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
   const [titleDraft, setTitleDraft] = useState("");
   const [editingIdealText, setEditingIdealText] = useState(false);
   const [idealTextDraft, setIdealTextDraft] = useState("");
+  const [notesDraft, setNotesDraft] = useState("");
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [copyPromptOpen, setCopyPromptOpen] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState(null);
+  const [pasteResponseType, setPasteResponseType] = useState(null); // "pick"|"synthesize"|"commune"|"why_matched"
+  const [pasteText, setPasteText] = useState("");
+  const [sendingTo, setSendingTo] = useState(null); // "gemini"|"claude"|"ollama-high"
+  const [llmResponse, setLlmResponse] = useState(null); // { provider, type, text }
+  const [sendPromptType, setSendPromptType] = useState(null); // which prompt type submenu is open
   const isConfirmed = touchstone.category === "confirmed";
   const isPossible = touchstone.category === "possible";
   const instances = touchstone.instances || [];
@@ -550,6 +583,226 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
     return result;
   };
 
+  const buildPrompt = (type) => {
+    const instanceBits = instances.map((i) => bits.find((b) => b.id === i.bitId)).filter(Boolean);
+    if (instanceBits.length === 0) return null;
+
+    let system, user;
+    if (type === "synthesize") {
+      const instanceTexts = instanceBits.map((b, idx) =>
+        `[Instance ${idx + 1} from "${b.sourceFile}"]:\n${applyCorrections(b.fullText || b.summary)}`
+      ).join('\n\n---\n\n');
+      system = SYSTEM_SYNTHESIZE_TOUCHSTONE;
+      user = `TOUCHSTONE: "${touchstone.name}"\n\n${instanceBits.length} performance${instanceBits.length > 1 ? 's' : ''} of the same bit:\n\n${instanceTexts}`;
+    } else if (type === "commune") {
+      const userCriteria = touchstone.userReasons || [];
+      const generatedCriteria = touchstone.matchInfo?.reasons || [];
+      const allBitTexts = instanceBits.map((b) => {
+        const hasUserCriteria = userCriteria.length > 0;
+        const criteriaBlock = hasUserCriteria
+          ? `USER CRITERIA (high-confidence signals from the comedian):\n${userCriteria.map((r, idx) => `${idx + 1}. ${r}`).join('\n')}\n\nGENERATED CRITERIA (auto-generated):\n${generatedCriteria.map((r, idx) => `${idx + 1}. ${r}`).join('\n')}`
+          : `GENERATED CRITERIA:\n${generatedCriteria.map((r, idx) => `${idx + 1}. ${r}`).join('\n')}`;
+        return `TOUCHSTONE: "${touchstone.name}"\n\n${criteriaBlock}\n\nBIT TO EVALUATE:\nTitle: ${b.title}\nSource: ${b.sourceFile}\nFull text: ${applyCorrections(b.fullText || b.summary)}`;
+      }).join('\n\n========================================\n\n');
+      system = SYSTEM_TOUCHSTONE_COMMUNE;
+      user = allBitTexts;
+    } else if (type === "why_matched") {
+      const anchorBit = instanceBits[0];
+      const candidateBits = instanceBits.slice(1);
+      const anchorText = `EXISTING 1 (from "${anchorBit.sourceFile}"):\nTitle: ${applyCorrections(anchorBit.title)}\n${applyCorrections(anchorBit.fullText || anchorBit.summary)}`;
+      const candidateText = candidateBits.map((b, i) => `CANDIDATE ${i + 1} (from "${b.sourceFile}"):\nTitle: ${applyCorrections(b.title)}\n${applyCorrections(b.fullText || b.summary)}`).join('\n\n');
+      const userReasonsBlock = userReasons.length > 0
+        ? `\n\n--- USER-CONFIRMED REASONING ---\n${userReasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}` : '';
+      const rejectedBlock = rejectedReasons.length > 0
+        ? `\n\n--- REJECTED REASONING ---\n${rejectedReasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}` : '';
+      system = SYSTEM_TOUCHSTONE_VERIFY;
+      user = `TOUCHSTONE: "${touchstone.name}"\n\n--- GROUP (1 anchor instance) ---\n${anchorText}${userReasonsBlock}${rejectedBlock}\n\n--- CANDIDATES TO EVALUATE (${candidateBits.length}) ---\n${candidateText}`;
+    }
+    return { system, user };
+  };
+
+  const buildAndCopyPrompt = async (type) => {
+    const prompt = buildPrompt(type);
+    if (!prompt) return;
+    const fullPrompt = `SYSTEM:\n${prompt.system}\n\n---\n\nUSER:\n${prompt.user}`;
+    try {
+      await navigator.clipboard.writeText(fullPrompt);
+      setCopyFeedback(type);
+      setTimeout(() => setCopyFeedback(null), 2000);
+    } catch { /* fallback */ }
+    setCopyPromptOpen(false);
+  };
+
+  const tryParseJSON = (text) => {
+    const cleaned = text.replace(/```json\s?|```/g, "").trim();
+    const attempts = [cleaned];
+    // Try extracting first { ... } or [ ... ] block
+    const objMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (objMatch) attempts.push(objMatch[0]);
+    const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (arrMatch) attempts.push(arrMatch[0]);
+
+    for (const raw of attempts) {
+      try { return JSON.parse(raw); } catch {}
+      // Fix unescaped newlines/tabs inside JSON string values
+      try {
+        const fixed = raw.replace(/"(?:[^"\\]|\\.)*"/g, (m) =>
+          m.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")
+        );
+        return JSON.parse(fixed);
+      } catch {}
+    }
+    // Last resort: extract fields manually for synthesize responses
+    // Handles cases where inner quotes break JSON parsing
+    const idealMatch = cleaned.match(/"idealText"\s*:\s*"([\s\S]*?)"\s*,\s*"notes"\s*:\s*"([\s\S]*?)"\s*\}?\s*$/);
+    if (idealMatch) {
+      return { idealText: idealMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"'), notes: idealMatch[2].replace(/\\n/g, "\n").replace(/\\"/g, '"') };
+    }
+    // Try splitting on known field boundaries
+    const idealIdx = cleaned.indexOf('"idealText"');
+    const notesIdx = cleaned.indexOf('"notes"');
+    if (idealIdx !== -1 && notesIdx !== -1) {
+      try {
+        const between = cleaned.substring(idealIdx, notesIdx);
+        const valMatch = between.match(/"idealText"\s*:\s*"([\s\S]*)"\s*,?\s*$/);
+        const notesRest = cleaned.substring(notesIdx);
+        const notesMatch = notesRest.match(/"notes"\s*:\s*"([\s\S]*)"\s*\}?\s*$/);
+        if (valMatch && notesMatch) {
+          return { idealText: valMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"'), notes: notesMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"') };
+        }
+      } catch {}
+    }
+    return null;
+  };
+
+  const applyParsedResponse = (responseText, type, source) => {
+    const parsed = tryParseJSON(responseText);
+
+    if (type === "synthesize") {
+      const idealText = parsed?.idealText || parsed?.ideal_text || responseText;
+      const notes = parsed?.notes || "";
+      setLlmResponse({ provider: source, type, text: idealText, parsed: true });
+      const versions = [...(touchstone.idealTextVersions || [])];
+      versions.push({ idealText, notes, model: source, source: source === "paste" ? "paste" : "send-to", date: new Date().toISOString() });
+      onUpdateTouchstoneEdits?.(touchstone.id, { idealTextVersions: versions });
+
+    } else if (type === "commune") {
+      if (parsed && typeof parsed.generated_criteria_score === "number") {
+        const userScore = typeof parsed.user_criteria_score === "number" ? parsed.user_criteria_score : null;
+        const genScore = parsed.generated_criteria_score;
+        const hasUserCriteria = userScore !== null;
+        const finalScore = hasUserCriteria ? Math.round(userScore * 0.51 + genScore * 0.49) : genScore;
+        const status = finalScore >= 70 ? "blessed" : finalScore >= 40 ? "damned" : "removed";
+        const communionResult = {
+          provider: source,
+          userScore,
+          generatedScore: genScore,
+          finalScore,
+          status,
+          reasoning: parsed.reasoning || "",
+          date: new Date().toISOString(),
+        };
+        const prevResults = [...(touchstone.highEndCommunionResults || [])];
+        prevResults.push(communionResult);
+        onUpdateTouchstoneEdits?.(touchstone.id, { highEndCommunionResults: prevResults });
+        setLlmResponse({ provider: source, type, text: `Score: ${finalScore} (user: ${userScore ?? "n/a"}, gen: ${genScore}) → ${status}\n\n${parsed.reasoning || ""}`, parsed: true, communionResult });
+      } else {
+        setLlmResponse({ provider: source, type, text: responseText });
+      }
+
+    } else if (type === "why_matched") {
+      if (parsed && parsed.group_reasoning) {
+        const reasoning = Array.isArray(parsed.group_reasoning) ? parsed.group_reasoning : [parsed.group_reasoning];
+        const rejectedSet = new Set((rejectedReasons || []).map((r) => r.toLowerCase().trim()));
+        const llmReasons = reasoning.filter((r) => !rejectedSet.has(r.toLowerCase().trim())).slice(0, 5);
+        const finalReasons = llmReasons.slice(0, 6);
+
+        const instanceBits = instances.map((i) => bits.find((b) => b.id === i.bitId)).filter(Boolean);
+        const anchorBit = instanceBits[0];
+        const candidateBits = instanceBits.slice(1);
+        const candidateScores = new Map();
+        for (const c of (parsed.candidates || [])) {
+          if (typeof c.candidate === 'number' && typeof c.confidence === 'number') {
+            const idx = c.candidate - 1;
+            if (idx >= 0 && idx < candidateBits.length) {
+              candidateScores.set(candidateBits[idx].id, { confidence: c.confidence, relationship: c.relationship || 'same_bit' });
+            }
+          }
+        }
+
+        const updatedInstances = instances.map((inst) => {
+          if (inst.bitId === anchorBit?.id) return { ...inst, confidence: 1, relationship: 'same_bit' };
+          const score = candidateScores.get(inst.bitId);
+          if (!score) return inst;
+          return { ...inst, confidence: score.confidence, relationship: score.relationship };
+        });
+        const avgConf = updatedInstances.length > 0 ? updatedInstances.reduce((s, i) => s + (i.confidence || 0), 0) / updatedInstances.length : 0;
+
+        const verifyResult = { provider: source, candidates: parsed.candidates || [], group_reasoning: reasoning, date: new Date().toISOString() };
+        const prevVerify = [...(touchstone.highEndVerifyResults || [])];
+        prevVerify.push(verifyResult);
+        onUpdateTouchstoneEdits?.(touchstone.id, {
+          reasons: finalReasons.length > 0 ? finalReasons : undefined,
+          highEndVerifyResults: prevVerify,
+          instances: updatedInstances,
+          matchInfo: {
+            ...(touchstone.matchInfo || {}),
+            reasons: finalReasons.length > 0 ? finalReasons : touchstone.matchInfo?.reasons || [],
+            totalMatches: updatedInstances.length,
+            sameBitCount: updatedInstances.filter((i) => i.relationship === "same_bit").length,
+            evolvedCount: updatedInstances.filter((i) => i.relationship === "evolved").length,
+            avgConfidence: avgConf,
+            avgMatchPercentage: Math.round(avgConf * 100),
+          },
+        });
+
+        const lines = [`Group reasoning (${source}):`];
+        reasoning.forEach((r, i) => lines.push(`${i + 1}. ${r}`));
+        if (parsed.candidates) {
+          lines.push("", "Candidates:");
+          parsed.candidates.forEach((c) => {
+            lines.push(`  #${c.candidate}: ${c.accepted ? "✓" : "✗"} ${c.relationship} (${Math.round(c.confidence * 100)}%)`);
+          });
+        }
+        setLlmResponse({ provider: source, type, text: lines.join("\n"), parsed: true, verifyResult: parsed });
+      } else {
+        setLlmResponse({ provider: source, type, text: responseText });
+      }
+    } else {
+      setLlmResponse({ provider: source, type, text: responseText });
+    }
+  };
+
+  const handlePasteSubmit = () => {
+    if (!pasteText.trim() || !pasteResponseType || pasteResponseType === "pick") return;
+    applyParsedResponse(pasteText.trim(), pasteResponseType, "paste");
+    setPasteResponseType(null);
+    setPasteText("");
+  };
+
+  const sendToProvider = async (provider, type) => {
+    const prompt = buildPrompt(type);
+    if (!prompt) return;
+    setSendingTo(provider);
+    setSendPromptType(null);
+    setCopyPromptOpen(false);
+    setLlmResponse(null);
+    try {
+      const res = await fetch("/api/llm/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, system: prompt.system, user: prompt.user }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "API call failed");
+      const responseText = data.result;
+      applyParsedResponse(responseText, type, provider);
+    } catch (e) {
+      setLlmResponse({ provider, type, text: `Error: ${e.message}` });
+    }
+    setSendingTo(null);
+  };
+
   const addCorrection = () => {
     const from = newCorrFrom.trim();
     const to = newCorrTo.trim();
@@ -566,24 +819,22 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
   const addUserReason = () => {
     const reason = newReason.trim();
     if (!reason) return;
+    if (userReasons.length >= 6) return;
     const updatedUserReasons = [...userReasons, reason];
-    const updatedReasons = [reason, ...(touchstone.matchInfo?.reasons || [])].slice(0, 5);
-    onUpdateTouchstoneEdits?.(touchstone.id, { userReasons: updatedUserReasons, reasons: updatedReasons });
+    onUpdateTouchstoneEdits?.(touchstone.id, { userReasons: updatedUserReasons });
     setNewReason("");
   };
 
-  const removeReason = (reason, idx) => {
-    // If it's a user reason, remove from userReasons
+  const removeReason = (reason, llmIdx) => {
     const isUser = userReasons.includes(reason);
-    const updatedUserReasons = isUser ? userReasons.filter((r) => r !== reason) : userReasons;
-    // Add to rejectedReasons so it won't come back on refresh
-    const updatedRejected = isUser ? rejectedReasons : [...rejectedReasons, reason];
-    const updatedReasons = (touchstone.matchInfo?.reasons || []).filter((_, i) => i !== idx);
-    onUpdateTouchstoneEdits?.(touchstone.id, {
-      userReasons: updatedUserReasons,
-      rejectedReasons: updatedRejected,
-      reasons: updatedReasons,
-    });
+    if (isUser) {
+      // Remove from userReasons only
+      onUpdateTouchstoneEdits?.(touchstone.id, { userReasons: userReasons.filter((r) => r !== reason) });
+    } else {
+      // Remove LLM reason and add to rejectedReasons so it won't come back
+      const updatedReasons = (touchstone.matchInfo?.reasons || []).filter((r) => r !== reason);
+      onUpdateTouchstoneEdits?.(touchstone.id, { rejectedReasons: [...rejectedReasons, reason], reasons: updatedReasons });
+    }
   };
 
   const unRejectReason = (reason) => {
@@ -740,7 +991,157 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
               Reject
             </button>
           )}
+          <div style={{ position: "relative" }}>
+            <button onClick={() => { setCopyPromptOpen(!copyPromptOpen); setSendPromptType(null); setPasteResponseType(null); }}
+              style={{ background: copyFeedback ? "#51cf6611" : "none", border: `1px solid ${copyFeedback ? "#51cf6633" : "#333"}`, color: copyFeedback ? "#51cf66" : "#aaa", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              {copyFeedback ? "Copied!" : "Copy Prompt"}
+            </button>
+            {copyPromptOpen && (
+              <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#1a1a2e", border: "1px solid #333", borderRadius: 6, padding: 4, zIndex: 100, minWidth: 140 }}>
+                <button onClick={() => buildAndCopyPrompt("synthesize")} style={{ display: "block", width: "100%", background: "none", border: "none", color: "#74c0fc", padding: "6px 10px", fontSize: 11, cursor: "pointer", textAlign: "left", borderRadius: 4, fontWeight: 600 }}
+                  onMouseEnter={(e) => e.target.style.background = "#74c0fc11"} onMouseLeave={(e) => e.target.style.background = "none"}>
+                  Synthesize
+                </button>
+                <button onClick={() => buildAndCopyPrompt("commune")} style={{ display: "block", width: "100%", background: "none", border: "none", color: "#c4b5fd", padding: "6px 10px", fontSize: 11, cursor: "pointer", textAlign: "left", borderRadius: 4, fontWeight: 600 }}
+                  onMouseEnter={(e) => e.target.style.background = "#c4b5fd11"} onMouseLeave={(e) => e.target.style.background = "none"}>
+                  Commune
+                </button>
+                <button onClick={() => buildAndCopyPrompt("why_matched")} disabled={instances.length < 2} style={{ display: "block", width: "100%", background: "none", border: "none", color: instances.length < 2 ? "#555" : "#ffa94d", padding: "6px 10px", fontSize: 11, cursor: instances.length < 2 ? "default" : "pointer", textAlign: "left", borderRadius: 4, fontWeight: 600 }}
+                  onMouseEnter={(e) => { if (instances.length >= 2) e.target.style.background = "#ffa94d11"; }} onMouseLeave={(e) => e.target.style.background = "none"}>
+                  Why Matched
+                </button>
+              </div>
+            )}
+          </div>
+          {/* Paste Response */}
+          <div style={{ position: "relative" }}>
+            <button onClick={() => { setPasteResponseType(pasteResponseType ? null : "pick"); setCopyPromptOpen(false); setSendPromptType(null); }}
+              style={{ background: pasteResponseType ? "#51cf6611" : "none", border: `1px solid ${pasteResponseType ? "#51cf6633" : "#333"}`, color: pasteResponseType ? "#51cf66" : "#aaa", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              Paste Response
+            </button>
+            {pasteResponseType === "pick" && (
+              <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#1a1a2e", border: "1px solid #333", borderRadius: 6, padding: 4, zIndex: 100, minWidth: 140 }}>
+                <div style={{ fontSize: 10, color: "#555", padding: "4px 10px", borderBottom: "1px solid #252538", marginBottom: 4 }}>Parse response as:</div>
+                {["synthesize", "commune", ...(instances.length >= 2 ? ["why_matched"] : [])].map((type) => (
+                  <button key={type} onClick={() => { setPasteResponseType(type); setPasteText(""); }}
+                    style={{ display: "block", width: "100%", background: "none", border: "none", color: type === "synthesize" ? "#74c0fc" : type === "commune" ? "#c4b5fd" : "#ffa94d", padding: "6px 10px", fontSize: 11, cursor: "pointer", textAlign: "left", borderRadius: 4, fontWeight: 600 }}
+                    onMouseEnter={(e) => e.target.style.background = "#ffffff08"} onMouseLeave={(e) => e.target.style.background = "none"}>
+                    {type === "why_matched" ? "Why Matched" : type.charAt(0).toUpperCase() + type.slice(1)}
+                  </button>
+                ))}
+              </div>
+            )}
+            {pasteResponseType && pasteResponseType !== "pick" && (
+              <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#1a1a2e", border: "1px solid #333", borderRadius: 6, padding: 8, zIndex: 100, minWidth: 320 }}>
+                <div style={{ fontSize: 10, color: "#555", marginBottom: 6 }}>
+                  Paste <span style={{ color: pasteResponseType === "synthesize" ? "#74c0fc" : pasteResponseType === "commune" ? "#c4b5fd" : "#ffa94d", fontWeight: 600 }}>
+                    {pasteResponseType === "why_matched" ? "Why Matched" : pasteResponseType.charAt(0).toUpperCase() + pasteResponseType.slice(1)}
+                  </span> JSON response:
+                </div>
+                <textarea
+                  value={pasteText}
+                  onChange={(e) => setPasteText(e.target.value)}
+                  placeholder='{"idealText": "...", "notes": "..."}'
+                  style={{ width: "100%", minHeight: 120, background: "#0d0d16", border: "1px solid #333", borderRadius: 4, color: "#ccc", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", padding: 8, resize: "vertical", boxSizing: "border-box" }}
+                />
+                <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "flex-end" }}>
+                  <button onClick={() => { setPasteResponseType("pick"); setPasteText(""); }}
+                    style={{ background: "none", border: "1px solid #333", color: "#666", borderRadius: 4, padding: "3px 10px", fontSize: 10, cursor: "pointer" }}>
+                    Back
+                  </button>
+                  <button onClick={handlePasteSubmit} disabled={!pasteText.trim()}
+                    style={{ background: pasteText.trim() ? "#51cf6622" : "none", border: `1px solid ${pasteText.trim() ? "#51cf6644" : "#333"}`, color: pasteText.trim() ? "#51cf66" : "#555", borderRadius: 4, padding: "3px 10px", fontSize: 10, cursor: pasteText.trim() ? "pointer" : "default", fontWeight: 600 }}>
+                    Parse
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          {/* Send to... */}
+          <div style={{ position: "relative" }}>
+            <button onClick={() => { setSendPromptType(sendPromptType ? null : "pick"); setCopyPromptOpen(false); setPasteResponseType(null); }}
+              disabled={!!sendingTo}
+              style={{ background: sendingTo ? "#ffa94d11" : "none", border: "1px solid #333", color: sendingTo ? "#ffa94d" : "#aaa", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: sendingTo ? "wait" : "pointer", fontWeight: 600 }}>
+              {sendingTo ? `Sending to ${sendingTo}...` : "Send to..."}
+            </button>
+            {sendPromptType === "pick" && (
+              <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "#1a1a2e", border: "1px solid #333", borderRadius: 6, padding: 4, zIndex: 100, minWidth: 200 }}>
+                <div style={{ fontSize: 10, color: "#555", padding: "4px 10px", borderBottom: "1px solid #252538", marginBottom: 4 }}>Choose prompt, then provider</div>
+                {["synthesize", "commune", ...(instances.length >= 2 ? ["why_matched"] : [])].map((type) => (
+                  <button key={type} onClick={() => setSendPromptType(type)}
+                    style={{ display: "block", width: "100%", background: "none", border: "none", color: type === "synthesize" ? "#74c0fc" : type === "commune" ? "#c4b5fd" : "#ffa94d", padding: "6px 10px", fontSize: 11, cursor: "pointer", textAlign: "left", borderRadius: 4, fontWeight: 600 }}
+                    onMouseEnter={(e) => e.target.style.background = "#ffffff08"} onMouseLeave={(e) => e.target.style.background = "none"}>
+                    {type === "why_matched" ? "Why Matched" : type.charAt(0).toUpperCase() + type.slice(1)}
+                  </button>
+                ))}
+              </div>
+            )}
+            {sendPromptType && sendPromptType !== "pick" && (
+              <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "#1a1a2e", border: "1px solid #333", borderRadius: 6, padding: 4, zIndex: 100, minWidth: 180 }}>
+                <div style={{ fontSize: 10, color: "#555", padding: "4px 10px", borderBottom: "1px solid #252538", marginBottom: 4 }}>
+                  Send "{sendPromptType}" to:
+                </div>
+                {[
+                  { id: "gemini", label: "Gemini Pro", color: "#4285f4" },
+                  { id: "claude", label: "Claude Sonnet", color: "#c4946a" },
+                  { id: "ollama-high", label: "Ollama (high-end)", color: "#51cf66" },
+                ].map(({ id, label, color }) => (
+                  <button key={id} onClick={() => sendToProvider(id, sendPromptType)}
+                    style={{ display: "block", width: "100%", background: "none", border: "none", color, padding: "6px 10px", fontSize: 11, cursor: "pointer", textAlign: "left", borderRadius: 4, fontWeight: 600 }}
+                    onMouseEnter={(e) => e.target.style.background = color + "11"} onMouseLeave={(e) => e.target.style.background = "none"}>
+                    {label}
+                  </button>
+                ))}
+                <button onClick={() => setSendPromptType("pick")}
+                  style={{ display: "block", width: "100%", background: "none", border: "none", color: "#666", padding: "4px 10px", fontSize: 10, cursor: "pointer", textAlign: "left", borderRadius: 4, marginTop: 2 }}
+                  onMouseEnter={(e) => e.target.style.background = "#ffffff08"} onMouseLeave={(e) => e.target.style.background = "none"}>
+                  Back
+                </button>
+              </div>
+            )}
+          </div>
         </div>
+
+        {/* LLM Response panel */}
+        {llmResponse && (
+          <div style={{ marginBottom: 12, padding: 12, background: "#0d0d16", borderRadius: 8, border: `1px solid ${llmResponse.parsed ? "#51cf6644" : "#333"}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#888" }}>
+                Response from <span style={{ color: llmResponse.provider === "gemini" ? "#4285f4" : llmResponse.provider === "claude" ? "#c4946a" : "#51cf66" }}>{llmResponse.provider}</span>
+                <span style={{ color: "#555" }}> ({llmResponse.type})</span>
+                {llmResponse.parsed && <span style={{ color: "#51cf66", marginLeft: 6 }}>parsed</span>}
+              </span>
+              <div style={{ display: "flex", gap: 6 }}>
+                {llmResponse.type === "synthesize" && llmResponse.parsed && (
+                  <button onClick={() => {
+                    // Use this synthesis as the active ideal text
+                    const versions = touchstone.idealTextVersions || [];
+                    const latest = versions[versions.length - 1];
+                    if (latest) {
+                      onUpdateTouchstoneEdits?.(touchstone.id, { idealText: latest.idealText, idealTextNotes: latest.notes || "", manualIdealText: false });
+                    }
+                  }}
+                    style={{ background: "#51cf6622", border: "1px solid #51cf6644", color: "#51cf66", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
+                    Use as ideal text
+                  </button>
+                )}
+                <button onClick={async () => {
+                  try { await navigator.clipboard.writeText(llmResponse.text); } catch {}
+                }}
+                  style={{ background: "none", border: "1px solid #333", color: "#aaa", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}>
+                  Copy
+                </button>
+                <button onClick={() => setLlmResponse(null)}
+                  style={{ background: "none", border: "1px solid #333", color: "#666", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}>
+                  Close
+                </button>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: "#ccc", whiteSpace: "pre-wrap", maxHeight: 400, overflowY: "auto", lineHeight: 1.5 }}>
+              {llmResponse.text}
+            </div>
+          </div>
+        )}
 
         {/* Merge picker */}
         {mergeOpen && (
@@ -814,81 +1215,225 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
         )}
       </div>
 
-      {/* Ideal Text */}
-      {(touchstone.idealText || onSynthesizeTouchstone) && (
-        <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#74c0fc", textTransform: "uppercase", letterSpacing: 1 }}>
-              Ideal Text
-              {touchstone.manualIdealText && <span style={{ color: "#c4b5fd", marginLeft: 6, fontWeight: 400, textTransform: "none" }}>(manually edited)</span>}
-              {touchstone.idealText && !touchstone.manualIdealText && <span style={{ color: "#666", marginLeft: 6, fontWeight: 400, textTransform: "none" }}>(synthesized)</span>}
-            </div>
-            <div style={{ display: "flex", gap: 4 }}>
-              {touchstone.idealText && !editingIdealText && (
+      {/* Ideal Text + Notes (always paired) */}
+      <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#74c0fc", textTransform: "uppercase", letterSpacing: 1 }}>
+            Ideal Text
+            {touchstone.manualIdealText && <span style={{ color: "#c4b5fd", marginLeft: 6, fontWeight: 400, textTransform: "none" }}>(manually edited)</span>}
+            {touchstone.idealText && !touchstone.manualIdealText && <span style={{ color: "#666", marginLeft: 6, fontWeight: 400, textTransform: "none" }}>(synthesized)</span>}
+          </div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {!editingIdealText && (
+              <button
+                onClick={() => { setIdealTextDraft(touchstone.idealText || ""); setNotesDraft(touchstone.idealTextNotes || ""); setEditingIdealText(true); }}
+                style={{ background: "none", border: "1px solid #333", color: "#c4b5fd", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontWeight: 600 }}
+              >
+                Edit
+              </button>
+            )}
+            {(touchstone.idealTextVersions || []).length > 0 && (
+              <button
+                onClick={() => setVersionsOpen(!versionsOpen)}
+                style={{ background: "none", border: "1px solid #333", color: versionsOpen ? "#74c0fc" : "#666", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontWeight: 600 }}
+              >
+                Versions ({(touchstone.idealTextVersions || []).length})
+              </button>
+            )}
+          </div>
+        </div>
+        {editingIdealText ? (
+          <div>
+            <textarea
+              value={idealTextDraft}
+              onChange={(e) => setIdealTextDraft(e.target.value)}
+              autoFocus
+              placeholder="Write or paste the ideal version of this bit..."
+              style={{ width: "100%", minHeight: 200, padding: 12, background: "#0a0a14", borderRadius: 6, border: "1px solid #c4b5fd44", fontSize: 12, color: "#ccc", lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "'JetBrains Mono', 'Fira Code', monospace", resize: "vertical", boxSizing: "border-box" }}
+            />
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: 1, marginTop: 10, marginBottom: 4 }}>Notes</div>
+            <textarea
+              value={notesDraft}
+              onChange={(e) => setNotesDraft(e.target.value)}
+              placeholder="Notes about this version (what you changed, why, which elements chosen)..."
+              style={{ width: "100%", minHeight: 50, padding: 8, background: "#0a0a14", borderRadius: 4, border: "1px solid #333", fontSize: 11, color: "#aaa", lineHeight: 1.5, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }}
+            />
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <button
+                onClick={() => {
+                  const versions = [...(touchstone.idealTextVersions || [])];
+                  const manualIdx = versions.findIndex(v => v.source === "manual");
+                  const manualVersion = { idealText: idealTextDraft, notes: notesDraft, model: "manual", source: "manual", date: new Date().toISOString() };
+                  if (manualIdx >= 0) { versions[manualIdx] = manualVersion; } else { versions.push(manualVersion); }
+                  onUpdateTouchstoneEdits?.(touchstone.id, { idealText: idealTextDraft, idealTextNotes: notesDraft, manualIdealText: true, idealTextVersions: versions });
+                  setEditingIdealText(false);
+                }}
+                style={{ background: "#51cf6622", border: "1px solid #51cf6644", color: "#51cf66", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setEditingIdealText(false)}
+                style={{ background: "none", border: "1px solid #333", color: "#888", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}
+              >
+                Cancel
+              </button>
+              {touchstone.manualIdealText && (
                 <button
-                  onClick={() => { setIdealTextDraft(touchstone.idealText); setEditingIdealText(true); }}
-                  style={{ background: "none", border: "1px solid #333", color: "#c4b5fd", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontWeight: 600 }}
+                  onClick={() => {
+                    onUpdateTouchstoneEdits?.(touchstone.id, { manualIdealText: false });
+                    setEditingIdealText(false);
+                  }}
+                  style={{ background: "none", border: "1px solid #ffa94d33", color: "#ffa94d", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600, marginLeft: "auto" }}
+                  title="Allow synthesis to overwrite this text"
                 >
-                  Edit
+                  Unlock for synthesis
                 </button>
               )}
             </div>
           </div>
-          {editingIdealText ? (
-            <div>
-              <textarea
-                value={idealTextDraft}
-                onChange={(e) => setIdealTextDraft(e.target.value)}
-                autoFocus
-                style={{ width: "100%", minHeight: 200, padding: 12, background: "#0a0a14", borderRadius: 6, border: "1px solid #c4b5fd44", fontSize: 12, color: "#ccc", lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "'JetBrains Mono', 'Fira Code', monospace", resize: "vertical", boxSizing: "border-box" }}
-              />
-              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                <button
-                  onClick={() => {
-                    onUpdateTouchstoneEdits?.(touchstone.id, { idealText: idealTextDraft, manualIdealText: true, idealTextNotes: "Manually edited" });
-                    setEditingIdealText(false);
-                  }}
-                  style={{ background: "#51cf6622", border: "1px solid #51cf6644", color: "#51cf66", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}
-                >
-                  Save
-                </button>
-                <button
-                  onClick={() => setEditingIdealText(false)}
-                  style={{ background: "none", border: "1px solid #333", color: "#888", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}
-                >
-                  Cancel
-                </button>
-                {touchstone.manualIdealText && (
-                  <button
-                    onClick={() => {
-                      onUpdateTouchstoneEdits?.(touchstone.id, { manualIdealText: false });
-                      setEditingIdealText(false);
-                    }}
-                    style={{ background: "none", border: "1px solid #ffa94d33", color: "#ffa94d", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600, marginLeft: "auto" }}
-                    title="Allow synthesis to overwrite this text"
-                  >
-                    Unlock for synthesis
-                  </button>
+        ) : touchstone.idealText ? (
+          <>
+            <div style={{ padding: 12, background: "#0a0a14", borderRadius: 6, border: "1px solid #1a1a2a", fontSize: 12, color: "#ccc", lineHeight: 1.7, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "'JetBrains Mono', 'Fira Code', monospace", maxHeight: 500, overflowY: "auto", userSelect: "text" }}>
+              {touchstone.idealText}
+            </div>
+            {touchstone.idealTextNotes && (
+              <div
+                onClick={() => { setIdealTextDraft(touchstone.idealText || ""); setNotesDraft(touchstone.idealTextNotes); setEditingIdealText(true); }}
+                style={{ fontSize: 11, color: "#666", fontStyle: "italic", marginTop: 8, lineHeight: 1.5, cursor: "pointer" }}
+                title="Click to edit"
+              >
+                {touchstone.idealTextNotes}
+              </div>
+            )}
+            {!touchstone.idealTextNotes && (
+              <button
+                onClick={() => { setIdealTextDraft(touchstone.idealText || ""); setNotesDraft(""); setEditingIdealText(true); }}
+                style={{ background: "none", border: "none", color: "#444", fontSize: 10, cursor: "pointer", fontStyle: "italic", padding: 0, marginTop: 6 }}
+              >
+                + add notes
+              </button>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: "#555", fontStyle: "italic" }}>No ideal text yet. Click Edit to write one, or use Synthesize to generate one.</div>
+        )}
+
+        {/* Version History */}
+        {versionsOpen && (touchstone.idealTextVersions || []).length > 0 && (
+          <div style={{ marginTop: 12, borderTop: "1px solid #1a1a2a", paddingTop: 10 }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Version History</div>
+            {[...(touchstone.idealTextVersions || [])].reverse().map((v, idx) => {
+              const sourceColor = v.source === "manual" ? "#c4b5fd" : v.model === "gemini" ? "#4285f4" : v.model === "claude" ? "#c4946a" : "#51cf66";
+              const sourceLabel = v.source === "manual" ? "Manual edit" : v.source === "send-to" ? `Send to ${v.model}` : `Synthesis (${v.model})`;
+              const isActive = touchstone.idealText === v.idealText && touchstone.idealTextNotes === (v.notes || "");
+              return (
+                <div key={idx} style={{ marginBottom: 10, padding: 10, background: "#0a0a14", borderRadius: 6, border: `1px solid ${isActive ? "#51cf6644" : "#1a1a2a"}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: sourceColor }}>
+                      {sourceLabel}
+                      {isActive && <span style={{ color: "#51cf66", marginLeft: 6, fontWeight: 400 }}>active</span>}
+                    </span>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <span style={{ fontSize: 9, color: "#555" }}>{v.date ? new Date(v.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</span>
+                      {!isActive && (
+                        <button
+                          onClick={() => {
+                            onUpdateTouchstoneEdits?.(touchstone.id, { idealText: v.idealText, idealTextNotes: v.notes || "", manualIdealText: v.source === "manual" });
+                          }}
+                          style={{ background: "none", border: "1px solid #333", color: "#74c0fc", borderRadius: 4, padding: "1px 6px", fontSize: 9, cursor: "pointer", fontWeight: 600 }}
+                        >
+                          Use this
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          const allVersions = [...(touchstone.idealTextVersions || [])];
+                          const realIdx = allVersions.length - 1 - idx;
+                          allVersions.splice(realIdx, 1);
+                          const edits = { idealTextVersions: allVersions };
+                          if (isActive && allVersions.length > 0) {
+                            const last = allVersions[allVersions.length - 1];
+                            edits.idealText = last.idealText;
+                            edits.idealTextNotes = last.notes || "";
+                            edits.manualIdealText = last.source === "manual";
+                          } else if (isActive) {
+                            edits.idealText = "";
+                            edits.idealTextNotes = "";
+                            edits.manualIdealText = false;
+                          }
+                          onUpdateTouchstoneEdits?.(touchstone.id, edits);
+                        }}
+                        style={{ background: "none", border: "1px solid #ff6b6b33", color: "#ff6b6b", borderRadius: 4, padding: "1px 6px", fontSize: 9, cursor: "pointer" }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#aaa", lineHeight: 1.5, whiteSpace: "pre-wrap", maxHeight: 120, overflowY: "auto", fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}>
+                    {v.idealText}
+                  </div>
+                  {v.notes && <div style={{ fontSize: 10, color: "#555", fontStyle: "italic", marginTop: 4 }}>{v.notes}</div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Matched notes */}
+      {(() => {
+        const matchedNotes = (notes || []).filter(n => n.matchedTouchstoneId === touchstone.id);
+        if (matchedNotes.length === 0) return null;
+        return (
+          <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+              Notes ({matchedNotes.length})
+            </div>
+            {matchedNotes.map(note => (
+              <div
+                key={note.id}
+                onClick={() => onGoToNote?.(note)}
+                style={{
+                  padding: "6px 10px",
+                  background: "#0a0a14",
+                  borderRadius: 5,
+                  border: "1px solid #1a1a2a",
+                  marginBottom: 4,
+                  cursor: onGoToNote ? "pointer" : "default",
+                  transition: "border-color 0.15s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = "#da77f2"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a1a2a"; }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 12, color: "#ddd", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {note.title || note.text?.substring(0, 60) || "Untitled"}
+                  </span>
+                  {(note.tags || []).length > 0 && (
+                    <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "#da77f218", color: "#da77f2", border: "1px solid #da77f233", flexShrink: 0 }}>
+                      {note.tags[0]}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "#1a1a2a", color: "#888", flexShrink: 0 }}>
+                    {note.source}
+                  </span>
+                  {note.matchScore != null && (
+                    <span style={{ fontSize: 9, color: "#6ee7b7", flexShrink: 0 }}>
+                      {Math.round(note.matchScore * 100)}%
+                    </span>
+                  )}
+                </div>
+                {note.text && (
+                  <div style={{ fontSize: 11, color: "#777", marginTop: 3, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {note.text.substring(0, 120)}
+                  </div>
                 )}
               </div>
-            </div>
-          ) : touchstone.idealText ? (
-            <>
-              <div style={{ padding: 12, background: "#0a0a14", borderRadius: 6, border: "1px solid #1a1a2a", fontSize: 12, color: "#ccc", lineHeight: 1.7, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "'JetBrains Mono', 'Fira Code', monospace", maxHeight: 500, overflowY: "auto", userSelect: "text" }}>
-                {touchstone.idealText}
-              </div>
-              {touchstone.idealTextNotes && (
-                <div style={{ fontSize: 11, color: "#666", fontStyle: "italic", marginTop: 8, lineHeight: 1.5 }}>
-                  {touchstone.idealTextNotes}
-                </div>
-              )}
-            </>
-          ) : (
-            <div style={{ fontSize: 12, color: "#555", fontStyle: "italic" }}>No ideal text yet. Use Synthesize to generate one.</div>
-          )}
-        </div>
-      )}
-
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Match details & reasoning */}
       <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
@@ -926,26 +1471,48 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
                 )}
               </div>
             </div>
-            {(touchstone.matchInfo?.reasons || []).slice(0, 5).map((reason, idx) => {
-              const isUser = userReasons.includes(reason);
+            {(() => {
+              const llmReasons = (touchstone.matchInfo?.reasons || []).filter((r) => !userReasons.includes(r));
+              const llmSlots = Math.max(0, 6 - userReasons.length);
+              const displayLlm = llmReasons.slice(0, llmSlots);
               return (
-                <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "3px 0" }}>
-                  <div style={{ flex: 1, fontSize: 11, color: isUser ? "#ffa94d" : "#aaa", fontStyle: "italic", lineHeight: 1.5 }}>
-                    {isUser && <span style={{ fontSize: 9, color: "#ffa94d", fontWeight: 600, marginRight: 4, fontStyle: "normal" }}>USER</span>}
-                    {reason}
-                  </div>
-                  {onUpdateTouchstoneEdits && (
-                    <button
-                      onClick={() => removeReason(reason, idx)}
-                      title={isUser ? "Remove your reason" : "Remove this reason (won't come back on refresh)"}
-                      style={{ background: "none", border: "none", color: "#ff6b6b", fontSize: 12, cursor: "pointer", padding: "0 2px", flexShrink: 0, lineHeight: 1 }}
-                    >
-                      &times;
-                    </button>
-                  )}
-                </div>
+                <>
+                  {userReasons.map((reason, idx) => (
+                    <div key={`u-${idx}`} style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "3px 0" }}>
+                      <div style={{ flex: 1, fontSize: 11, color: "#ffa94d", fontStyle: "italic", lineHeight: 1.5 }}>
+                        <span style={{ fontSize: 9, color: "#ffa94d", fontWeight: 600, marginRight: 4, fontStyle: "normal" }}>USER</span>
+                        {reason}
+                      </div>
+                      {onUpdateTouchstoneEdits && (
+                        <button
+                          onClick={() => removeReason(reason, -1)}
+                          title="Remove your reason"
+                          style={{ background: "none", border: "none", color: "#ff6b6b", fontSize: 12, cursor: "pointer", padding: "0 2px", flexShrink: 0, lineHeight: 1 }}
+                        >
+                          &times;
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {displayLlm.map((reason, idx) => (
+                    <div key={`l-${idx}`} style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "3px 0" }}>
+                      <div style={{ flex: 1, fontSize: 11, color: "#aaa", fontStyle: "italic", lineHeight: 1.5 }}>
+                        {reason}
+                      </div>
+                      {onUpdateTouchstoneEdits && (
+                        <button
+                          onClick={() => removeReason(reason, idx)}
+                          title="Remove this reason (won't come back on refresh)"
+                          style={{ background: "none", border: "none", color: "#ff6b6b", fontSize: 12, cursor: "pointer", padding: "0 2px", flexShrink: 0, lineHeight: 1 }}
+                        >
+                          &times;
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </>
               );
-            })}
+            })()}
             {/* Add reason */}
             {onUpdateTouchstoneEdits && (
               <div style={{ display: "flex", gap: 4, marginTop: 6 }}>

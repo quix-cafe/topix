@@ -237,7 +237,7 @@ export function SyncTab({
               )}
             </div>
           </div>
-          {transcripts.map((tr) => {
+          {[...transcripts].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map((tr) => {
             const parsed = topics.filter((t) => t.sourceFile === tr.name || t.transcriptId === tr.id);
             return (
               <div

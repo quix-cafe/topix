@@ -12,7 +12,7 @@ import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filename
  * - Multiple selected bits highlight overlapping regions
  * - "View" toggles expanded full text without leaving the page
  */
-export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplitBit, onTakeOverlap, onDeleteBit, onScrollBoundary, onGenerateTitle, onConfirmRename, onAddPhantomBit, onReParseGap, onViewBitDetail, initialTranscript, initialBitId, initialGap, onConsumeInitialTranscript, approvedGaps, onApproveGap, onBack, onGoToPlay }) {
+export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplitBit, onTakeOverlap, onDeleteBit, onScrollBoundary, onGenerateTitle, onConfirmRename, onAddPhantomBit, onReParseGap, onViewBitDetail, initialTranscript, initialBitId, initialGap, onConsumeInitialTranscript, approvedGaps, onApproveGap, onBack, onGoToPlay, hideHeader, scrollToBitId, onConsumeScrollToBit }) {
   const [selectedTranscript, setSelectedTranscript] = useState(null);
 
   const [pendingScrollBitId, setPendingScrollBitId] = useState(null);
@@ -35,6 +35,16 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
     }
     onConsumeInitialTranscript?.();
   }, [initialTranscript]);
+
+  // Timeline click: scroll to and select a bit
+  useEffect(() => {
+    if (!scrollToBitId) return;
+    setSelectedIds(new Set([scrollToBitId]));
+    setExpandedIds((prev) => new Set(prev).add(scrollToBitId));
+    setPendingScrollBitId(scrollToBitId);
+    onConsumeScrollToBit?.();
+  }, [scrollToBitId]);
+
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [joinTitle, setJoinTitle] = useState("");
@@ -460,78 +470,102 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
 
   return (
     <div ref={mixRootRef}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <div>
-          <button
-            onClick={() => { if (onBack) { onBack(); } else { setSelectedTranscript(null); setSelectedIds(new Set()); setExpandedIds(new Set()); } }}
-            style={{
-              background: "none", border: "none", color: "#ffa94d",
-              fontSize: 13, cursor: "pointer", fontWeight: 600, padding: 0,
-            }}
-          >
-            &larr; Back
-          </button>
-          <div style={{ margin: "8px 0 0", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            {(() => {
-              const p = parseFilenameClient(selectedTranscript.name);
-              const rc = ratingColor(p.rating);
-              return (
-                <h3 style={{ fontSize: 16, fontWeight: 700, color: "#eee", margin: 0, display: "inline-flex", alignItems: "center", gap: 6 }}>
-                  {p.rating && <span style={{ ...RATING_FONT, fontSize: 11, padding: "2px 5px", borderRadius: 3, background: rc.bg, color: rc.fg }}>{p.rating}</span>}
-                  <span>{p.title}</span>
-                  {p.duration && <span style={{ fontSize: 12, color: "#74c0fc", fontWeight: 400 }}>{p.duration}</span>}
-                </h3>
-              );
-            })()}
-            {onGoToPlay && (
+      {/* Header — hidden when parent provides its own */}
+      {!hideHeader ? (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div>
+            <button
+              onClick={() => { if (onBack) { onBack(); } else { setSelectedTranscript(null); setSelectedIds(new Set()); setExpandedIds(new Set()); } }}
+              style={{
+                background: "none", border: "none", color: "#ffa94d",
+                fontSize: 13, cursor: "pointer", fontWeight: 600, padding: 0,
+              }}
+            >
+              &larr; Back
+            </button>
+            <div style={{ margin: "8px 0 0", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {(() => {
+                const p = parseFilenameClient(selectedTranscript.name);
+                const rc = ratingColor(p.rating);
+                return (
+                  <h3 style={{ fontSize: 16, fontWeight: 700, color: "#eee", margin: 0, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    {p.rating && <span style={{ ...RATING_FONT, fontSize: 11, padding: "2px 5px", borderRadius: 3, background: rc.bg, color: rc.fg }}>{p.rating}</span>}
+                    <span>{p.title}</span>
+                    {p.duration && <span style={{ fontSize: 12, color: "#74c0fc", fontWeight: 400 }}>{p.duration}</span>}
+                  </h3>
+                );
+              })()}
+              {onGoToPlay && (
+                <button
+                  onClick={onGoToPlay}
+                  style={{
+                    padding: "3px 10px", background: "#6c5ce718", color: "#a78bfa",
+                    border: "1px solid #6c5ce733", borderRadius: 4, fontSize: 10,
+                    fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
+                  }}
+                >
+                  Play
+                </button>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: "#666", marginTop: 6, display: "flex", alignItems: "left", gap: 6 }}>
+              <span style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "left" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#4ecdc4" }}>{sortedBits.length} bits</span>
+                {(() => {
+                  const textLen = selectedTranscript.text?.length || 0;
+                  if (!textLen || sortedBits.length === 0) return null;
+                  let coveredChars = 0, lastEnd = 0;
+                  const positioned = sortedBits.filter(b => b.textPosition?.startChar != null && b.textPosition?.endChar != null);
+                  for (const bit of positioned) {
+                    const s = Math.max(bit.textPosition.startChar, lastEnd);
+                    const e = bit.textPosition.endChar;
+                    if (e > s) { coveredChars += e - s; lastEnd = e; }
+                  }
+                  const cov = Math.round((coveredChars / textLen) * 100);
+                  return <span style={{ fontSize: 13, fontWeight: 700, color: cov >= 80 ? "#51cf66" : cov >= 50 ? "#ffa94d" : "#ff6b6b" }}>{cov}% cov</span>;
+                })()}
+                {(() => {
+                  const inTs = sortedBits.filter(b => (bitTouchstoneMap.get(b.id) || []).length > 0).length;
+                  if (inTs === 0) return null;
+                  const pct = Math.round((inTs / sortedBits.length) * 100);
+                  return <span style={{ fontSize: 13, fontWeight: 700, color: "#a78bfa" }}>{pct}% TS</span>;
+                })()}
+              </span>
+            </div>
+          </div>
+          {selectedBits.length > 0 && (
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 11, color: "#4ecdc4", marginBottom: 4 }}>
+                {selectedBits.length} selected
+                {overlapRanges.length > 0 && (
+                  <span style={{ color: "#ff6b6b", marginLeft: 6 }}>
+                    {overlapRanges.length} overlap{overlapRanges.length !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
               <button
-                onClick={onGoToPlay}
+                onClick={() => setSelectedIds(new Set())}
                 style={{
-                  padding: "3px 10px", background: "#6c5ce718", color: "#a78bfa",
-                  border: "1px solid #6c5ce733", borderRadius: 4, fontSize: 10,
-                  fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
+                  background: "none", border: "1px solid #333", color: "#888",
+                  fontSize: 10, cursor: "pointer", borderRadius: 4, padding: "4px 8px",
                 }}
               >
-                Play
+                Clear
               </button>
-            )}
-          </div>
-          <div style={{ fontSize: 11, color: "#666", marginTop: 6, display: "flex", alignItems: "left", gap: 6 }}>
-            <span style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "left" }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#4ecdc4" }}>{sortedBits.length} bits</span>
-              {(() => {
-                const textLen = selectedTranscript.text?.length || 0;
-                if (!textLen || sortedBits.length === 0) return null;
-                let coveredChars = 0, lastEnd = 0;
-                const positioned = sortedBits.filter(b => b.textPosition?.startChar != null && b.textPosition?.endChar != null);
-                for (const bit of positioned) {
-                  const s = Math.max(bit.textPosition.startChar, lastEnd);
-                  const e = bit.textPosition.endChar;
-                  if (e > s) { coveredChars += e - s; lastEnd = e; }
-                }
-                const cov = Math.round((coveredChars / textLen) * 100);
-                return <span style={{ fontSize: 13, fontWeight: 700, color: cov >= 80 ? "#51cf66" : cov >= 50 ? "#ffa94d" : "#ff6b6b" }}>{cov}% cov</span>;
-              })()}
-              {(() => {
-                const inTs = sortedBits.filter(b => (bitTouchstoneMap.get(b.id) || []).length > 0).length;
-                if (inTs === 0) return null;
-                const pct = Math.round((inTs / sortedBits.length) * 100);
-                return <span style={{ fontSize: 13, fontWeight: 700, color: "#a78bfa" }}>{pct}% TS</span>;
-              })()}
-            </span>
-          </div>
+            </div>
+          )}
         </div>
-        {selectedBits.length > 0 && (
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 11, color: "#4ecdc4", marginBottom: 4 }}>
+      ) : selectedBits.length > 0 ? (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: "#4ecdc4" }}>
               {selectedBits.length} selected
               {overlapRanges.length > 0 && (
                 <span style={{ color: "#ff6b6b", marginLeft: 6 }}>
                   {overlapRanges.length} overlap{overlapRanges.length !== 1 ? "s" : ""}
                 </span>
               )}
-            </div>
+            </span>
             <button
               onClick={() => setSelectedIds(new Set())}
               style={{
@@ -542,8 +576,8 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
               Clear
             </button>
           </div>
-        )}
-      </div>
+        </div>
+      ) : null}
 
       {/* Join bar — fixed to viewport top */}
       {selectedBits.length >= 2 && (
@@ -621,6 +655,8 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
         const isGapExpanded = expandedGaps.has(gapKey);
         const isAdding = addingGaps.has(gapKey);
         const gapText = isGapExpanded ? selectedTranscript.text.substring(0, firstStart).trim() : "";
+        const leadApproveKey = `${selectedTranscript.name}:0-${firstStart}`;
+        const isLeadApproved = (approvedGaps || []).includes(leadApproveKey);
         return (
           <div id={`mix-gap-${gapKey}`}>
             <div
@@ -628,7 +664,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
               onClick={() => setExpandedGaps((prev) => { const next = new Set(prev); if (next.has(gapKey)) next.delete(gapKey); else next.add(gapKey); return next; })}
             >
               <div style={{ flex: 1, height: 1, background: "#c4b5fd33" }} />
-              <span style={{ padding: "0 8px" }}>{firstStart} char gap (start) {isGapExpanded ? "▾" : "▸"}</span>
+              <span style={{ padding: "0 8px" }}>{firstStart} char gap (start) {isGapExpanded ? "▾" : "▸"}{!isGapExpanded && isLeadApproved && <span style={{ color: "#51cf66", marginLeft: 6 }}>✓</span>}</span>
               <div style={{ flex: 1, height: 1, background: "#c4b5fd33" }} />
             </div>
             {isGapExpanded && gapText && (
@@ -930,6 +966,8 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                 const gapText = isPhantom && isGapExpanded && selectedTranscript
                   ? selectedTranscript.text.substring(gapInfo.gapStart, gapInfo.gapEnd).trim()
                   : "";
+                const gapApproveKey = isPhantom && selectedTranscript ? `${selectedTranscript.name}:${gapInfo.gapStart}-${gapInfo.gapEnd}` : null;
+                const isGapApproved = gapApproveKey && (approvedGaps || []).includes(gapApproveKey);
 
                 return (
                   <div id={`mix-gap-${gapKey}`}>
@@ -956,6 +994,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                         {gapInfo.type === "overlap" ? `${gapInfo.chars} char overlap` :
                          gapInfo.type === "adjacent" ? `${gapInfo.chars} chars` :
                          `${gapInfo.chars} char gap ${isGapExpanded ? "▾" : "▸"}`}
+                        {isPhantom && !isGapExpanded && isGapApproved && <span style={{ color: "#51cf66", marginLeft: 6 }}>✓</span>}
                       </span>
                       <div style={{
                         flex: 1, height: 1,
@@ -1048,6 +1087,8 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
           const isGapExpanded = expandedGaps.has(gapKey);
           const isAdding = addingGaps.has(gapKey);
           const gapText = isGapExpanded ? cleanText.substring(lastEnd).trim() : "";
+          const trailApproveKey = `${selectedTranscript.name}:${lastEnd}-${cleanText.length}`;
+          const isTrailApproved = (approvedGaps || []).includes(trailApproveKey);
           return (
             <div id={`mix-gap-${gapKey}`}>
               <div
@@ -1055,7 +1096,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                 onClick={() => setExpandedGaps((prev) => { const next = new Set(prev); if (next.has(gapKey)) next.delete(gapKey); else next.add(gapKey); return next; })}
               >
                 <div style={{ flex: 1, height: 1, background: "#c4b5fd33" }} />
-                <span style={{ padding: "0 8px" }}>{trailingSize} char gap (end) {isGapExpanded ? "▾" : "▸"}</span>
+                <span style={{ padding: "0 8px" }}>{trailingSize} char gap (end) {isGapExpanded ? "▾" : "▸"}{!isGapExpanded && isTrailApproved && <span style={{ color: "#51cf66", marginLeft: 6 }}>✓</span>}</span>
                 <div style={{ flex: 1, height: 1, background: "#c4b5fd33" }} />
               </div>
               {isGapExpanded && gapText && (

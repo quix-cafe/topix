@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = "comedy-parser-vault";
-const DB_VERSION = 3; // v3: adds embeddings store
+const DB_VERSION = 4; // v4: adds notes store
 
 const STORES = {
   transcripts: "transcripts",
@@ -58,6 +58,16 @@ function initDatabase() {
       if (oldVersion < 3) {
         if (!db.objectStoreNames.contains("embeddings")) {
           db.createObjectStore("embeddings", { keyPath: "id" });
+        }
+      }
+
+      // v3 → v4: add notes store
+      if (oldVersion < 4) {
+        if (!db.objectStoreNames.contains("notes")) {
+          const store = db.createObjectStore("notes", { keyPath: "id" });
+          store.createIndex("source", "source", { unique: false });
+          store.createIndex("generation", "generation", { unique: false });
+          store.createIndex("date", "date", { unique: false });
         }
       }
     };
@@ -181,6 +191,104 @@ export async function loadTopics() {
  */
 export async function saveMatches(matches) {
   await syncStore(STORES.matches, matches);
+}
+
+/**
+ * Save notes to database
+ */
+export async function saveNotes(notes) {
+  const db = await getDB();
+  const tx = db.transaction(["notes"], "readwrite");
+  const store = tx.objectStore("notes");
+  store.clear();
+  const ts = Date.now();
+  for (const note of notes) {
+    store.put({ ...note, timestamp: ts });
+  }
+  await new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Load notes from database
+ */
+export async function loadNotes() {
+  const db = await getDB();
+  if (!db.objectStoreNames.contains("notes")) return [];
+  const store = db.transaction(["notes"], "readonly").objectStore("notes");
+  return new Promise((resolve, reject) => {
+    const request = store.getAll();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result || []);
+  });
+}
+
+/**
+ * Save note list metadata (list categories like setlist/set)
+ */
+export async function saveNoteListMeta(listMeta) {
+  const db = await getDB();
+  const tx = db.transaction([STORES.metadata], "readwrite");
+  tx.objectStore(STORES.metadata).put({ id: "note-list-meta", data: listMeta });
+  await new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Load note list metadata
+ */
+export async function loadNoteListMeta() {
+  const db = await getDB();
+  const store = db.transaction([STORES.metadata], "readonly").objectStore(STORES.metadata);
+  return new Promise((resolve, reject) => {
+    const request = store.get("note-list-meta");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result?.data || {});
+  });
+}
+
+/**
+ * Save removed journal sourceFiles set
+ */
+export async function saveRemovedJournals(sourceFiles) {
+  const db = await getDB();
+  const tx = db.transaction([STORES.metadata], "readwrite");
+  tx.objectStore(STORES.metadata).put({ id: "removed-journals", data: [...sourceFiles] });
+  await new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Load removed journal sourceFiles set
+ */
+export async function loadRemovedJournals() {
+  const db = await getDB();
+  const store = db.transaction([STORES.metadata], "readonly").objectStore(STORES.metadata);
+  return new Promise((resolve, reject) => {
+    const request = store.get("removed-journals");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(new Set(request.result?.data || []));
+  });
+}
+
+/**
+ * Clear all notes from database
+ */
+export async function clearNotes() {
+  const db = await getDB();
+  if (!db.objectStoreNames.contains("notes")) return;
+  const tx = db.transaction(["notes"], "readwrite");
+  tx.objectStore("notes").clear();
+  await new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 /**
@@ -310,6 +418,7 @@ export async function loadVaultState() {
     topics: await loadTopics(),
     matches: await loadMatches(),
     touchstones: await loadTouchstones(),
+    notes: await loadNotes(),
   };
 }
 

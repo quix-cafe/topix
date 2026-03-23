@@ -18,6 +18,14 @@ const execPromise = promisify(exec);
 const PORT = process.env.PORT || 3001;
 const AUDIO_DIR = "/home/kai/ownCloud/Comedy/Audio";
 const REGISTRY_FILE = path.join(AUDIO_DIR, "audio_registry.json");
+const CONFIG_FILE = path.join(import.meta.dirname, ".topix-config.json");
+
+async function loadConfig() {
+  try { return JSON.parse(await fs.readFile(CONFIG_FILE, "utf-8")); } catch { return {}; }
+}
+async function saveConfig(config) {
+  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+}
 
 // --- Registry helpers ---
 
@@ -171,7 +179,34 @@ const server = http.createServer(async (req, res) => {
 
     // List all files from registry (enriched for Play tab)
     if (req.url === "/api/transcripts" && req.method === "GET") {
+      // Auto-discover .m4a files on disk that aren't in the registry
       const registry = await loadRegistry();
+      const knownAudioFiles = new Set(Object.values(registry).map(r => r.audio_filename));
+      const dirFiles = await fs.readdir(AUDIO_DIR);
+      const newM4as = dirFiles.filter(f => f.endsWith(AUDIO_EXT) && !knownAudioFiles.has(f));
+      if (newM4as.length > 0) {
+        const fullPaths = newM4as.map(f => path.join(AUDIO_DIR, f));
+        const hashes = await hashFiles(fullPaths);
+        const durations = await Promise.all(fullPaths.map(p => getAudioDuration(p)));
+        await withRegistry(async (reg) => {
+          for (let i = 0; i < newM4as.length; i++) {
+            const fp = fullPaths[i];
+            const h = hashes[fp];
+            if (!h || reg[h]) continue;
+            reg[h] = {
+              hash: h,
+              audio_filename: newM4as[i],
+              transcript_filename: transcriptName(newM4as[i]),
+              duration_seconds: durations[i] || 0,
+              transcript_hash: null,
+            };
+          }
+        });
+        // Reload after mutation
+        Object.assign(registry, await loadRegistry());
+        console.log(`[Registry] Auto-discovered ${newM4as.length} new audio file(s):`, newM4as);
+      }
+
       const entries = [];
       const toRemove = [];
 
@@ -512,6 +547,242 @@ const server = http.createServer(async (req, res) => {
         json(res, 200, { success: true });
       } catch (e) {
         json(res, e.statusCode || 500, { error: e.message });
+      }
+      return;
+    }
+
+    // ── Notes API ──────────────────────────────────────────────────
+
+    // GET /api/notes/clickup — Parse ClickUp CSV
+    if (req.url === "/api/notes/clickup" && req.method === "GET") {
+      try {
+        const csvPath = "/home/kai/ownCloud/Comedy/clickup/data.csv";
+        const raw = await fs.readFile(csvPath, "utf-8");
+        const lines = raw.split("\n");
+        // Skip header row
+        const notes = [];
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          // Parse CSV with quoted fields: Task Name, Date Created Text, List Name
+          const fields = [];
+          let current = "", inQuotes = false;
+          for (let c = 0; c < line.length; c++) {
+            if (line[c] === '"') {
+              if (inQuotes && line[c + 1] === '"') { current += '"'; c++; }
+              else inQuotes = !inQuotes;
+            } else if (line[c] === ',' && !inQuotes) {
+              fields.push(current); current = "";
+            } else {
+              current += line[c];
+            }
+          }
+          fields.push(current);
+          const [taskName, dateText, listName] = fields;
+          if (!taskName) continue;
+          // Parse date MM/DD/YY → YYYY-MM-DD
+          let date = "";
+          if (dateText) {
+            const parts = dateText.split("/");
+            if (parts.length === 3) {
+              const yr = parseInt(parts[2], 10);
+              date = `${yr < 50 ? 2000 + yr : 1900 + yr}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
+            }
+          }
+          const tags = (listName && listName !== "!") ? [listName] : [];
+          notes.push({ text: taskName, title: taskName.slice(0, 80), date, tags, source: "clickup" });
+        }
+        json(res, 200, { notes });
+      } catch (e) {
+        json(res, 500, { error: e.message });
+      }
+      return;
+    }
+
+    // GET /api/notes/keep — Read Keep markdown files
+    if (req.url === "/api/notes/keep" && req.method === "GET") {
+      try {
+        const keepDir = "/home/kai/ownCloud/skydown/keep";
+        const files = (await fs.readdir(keepDir)).filter(f => f.endsWith(".md"));
+        const notes = [];
+        for (const file of files) {
+          const content = await fs.readFile(path.join(keepDir, file), "utf-8");
+          const title = file.replace(/\.md$/, "");
+          // Try to extract date from "Untitled - YYYY-MM-DD" header
+          let date = "";
+          const dateMatch = content.match(/^Untitled\s*-\s*(\d{4}-\d{2}-\d{2})/m);
+          if (dateMatch) date = dateMatch[1];
+          // Content: everything after first line (header)
+          const lines = content.split("\n");
+          const text = lines.slice(1).join("\n").trim() || lines[0] || "";
+          notes.push({ text, title, date, tags: [], source: "keep", sourceFile: file });
+        }
+        json(res, 200, { notes });
+      } catch (e) {
+        json(res, 500, { error: e.message });
+      }
+      return;
+    }
+
+    // GET /api/notes/journals — Read journal markdown files
+    if (req.url === "/api/notes/journals" && req.method === "GET") {
+      try {
+        const journalDir = "/home/kai/ownCloud/skydown/journals";
+        const files = (await fs.readdir(journalDir)).filter(f => /^\d{4}[-_]\d{2}[-_]\d{2}\.md$/.test(f));
+        const notes = [];
+        for (const file of files) {
+          const content = await fs.readFile(path.join(journalDir, file), "utf-8");
+          const date = file.replace(/\.md$/, "").replace(/_/g, "-");
+          const stat = await fs.stat(path.join(journalDir, file));
+          notes.push({ text: content, title: file.replace(/\.md$/, ""), date, tags: [], source: "journal", sourceFile: file, mtime: stat.mtimeMs });
+        }
+        json(res, 200, { notes });
+      } catch (e) {
+        json(res, 500, { error: e.message });
+      }
+      return;
+    }
+
+    // ── LLM Config & Proxy ─────────────────────────────────────────
+
+    // GET /api/llm/config — return saved API keys (masked) and models
+    if (req.url === "/api/llm/config" && req.method === "GET") {
+      const config = await loadConfig();
+      json(res, 200, {
+        geminiKey: config.geminiKey ? "••••" + config.geminiKey.slice(-4) : "",
+        claudeKey: config.claudeKey ? "••••" + config.claudeKey.slice(-4) : "",
+        ollamaHighModel: config.ollamaHighModel || "",
+      });
+      return;
+    }
+
+    // POST /api/llm/config — save API keys and model settings
+    if (req.url === "/api/llm/config" && req.method === "POST") {
+      const body = await parseBody(req);
+      const config = await loadConfig();
+      if (body.geminiKey !== undefined && !body.geminiKey.startsWith("••••")) config.geminiKey = body.geminiKey;
+      if (body.claudeKey !== undefined && !body.claudeKey.startsWith("••••")) config.claudeKey = body.claudeKey;
+      if (body.ollamaHighModel !== undefined) config.ollamaHighModel = body.ollamaHighModel;
+      await saveConfig(config);
+      json(res, 200, { success: true });
+      return;
+    }
+
+    // POST /api/passthru/start — start the passthru server (server.py) if not running
+    if (req.url === "/api/passthru/start" && req.method === "POST") {
+      try {
+        // Check if already running
+        try {
+          const healthRes = await fetch("http://localhost:8899/health", { signal: AbortSignal.timeout(3000) });
+          if (healthRes.ok) {
+            json(res, 200, { status: "already_running" });
+            return;
+          }
+        } catch {}
+
+        // Launch server.py
+        const serverPy = path.join(import.meta.dirname, "server.py");
+        const proc = spawn("python", [serverPy], {
+          cwd: import.meta.dirname,
+          stdio: "ignore",
+          detached: true,
+        });
+        proc.unref();
+        console.log(`[Passthru] Launched server.py (pid=${proc.pid})`);
+        json(res, 200, { status: "started", pid: proc.pid });
+      } catch (e) {
+        json(res, 500, { error: e.message });
+      }
+      return;
+    }
+
+    // POST /api/llm/call — proxy a prompt to Gemini, Claude, or Ollama high-end
+    // Claude and Gemini route through the passthru server (web UI automation)
+    if (req.url === "/api/llm/call" && req.method === "POST") {
+      const body = await parseBody(req);
+      const { provider, system, user } = body;
+      const config = await loadConfig();
+
+      try {
+        let result;
+
+        if (provider === "gemini" || provider === "claude") {
+          // Route through passthru server (browser automation)
+          // Ensure passthru is running
+          let passthruUp = false;
+          try {
+            const healthRes = await fetch("http://localhost:8899/health", { signal: AbortSignal.timeout(3000) });
+            passthruUp = healthRes.ok;
+          } catch {}
+
+          if (!passthruUp) {
+            // Try to start it
+            const serverPy = path.join(import.meta.dirname, "server.py");
+            const proc = spawn("python", [serverPy], {
+              cwd: import.meta.dirname,
+              stdio: "ignore",
+              detached: true,
+            });
+            proc.unref();
+            console.log(`[Passthru] Auto-launching server.py (pid=${proc.pid})`);
+            // Wait for it to come up
+            for (let i = 0; i < 20; i++) {
+              await new Promise(r => setTimeout(r, 1000));
+              try {
+                const h = await fetch("http://localhost:8899/health", { signal: AbortSignal.timeout(2000) });
+                if (h.ok) { passthruUp = true; break; }
+              } catch {}
+            }
+            if (!passthruUp) throw new Error("Passthru server failed to start");
+          }
+
+          // Build prompt combining system + user
+          let prompt = user;
+          if (system) prompt = `${system}\n\n${user}`;
+
+          const apiRes = await fetch("http://localhost:8899/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ provider, prompt }),
+          });
+          if (!apiRes.ok) {
+            const err = await apiRes.text();
+            throw new Error(`Passthru ${provider} error ${apiRes.status}: ${err}`);
+          }
+          const data = await apiRes.json();
+          result = data.response || "";
+
+        } else if (provider === "ollama-high") {
+          const model = config.ollamaHighModel;
+          if (!model) throw new Error("No high-end Ollama model configured");
+          const apiRes = await fetch("http://localhost:11434/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model,
+              messages: [
+                { role: "system", content: system },
+                { role: "user", content: user },
+              ],
+              stream: false,
+              think: false,
+              options: { num_predict: 8192, num_ctx: 32768 },
+            }),
+          });
+          if (!apiRes.ok) {
+            const err = await apiRes.text();
+            throw new Error(`Ollama API ${apiRes.status}: ${err}`);
+          }
+          const data = await apiRes.json();
+          result = data.message?.content || "";
+
+        } else {
+          throw new Error(`Unknown provider: ${provider}`);
+        }
+
+        json(res, 200, { result });
+      } catch (e) {
+        json(res, 500, { error: e.message });
       }
       return;
     }

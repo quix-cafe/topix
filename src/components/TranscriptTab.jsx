@@ -17,7 +17,7 @@ const ROW_DURATION = 900; // 10 min in seconds
  * PageTimeline - Interactive horizontal bit lane for a single transcript's page view.
  * Shows bit segments sized by word count, colored by touchstone, with hover details.
  */
-function PageTimeline({ timeline, onViewBitDetail, topics }) {
+function PageTimeline({ timeline, onViewBitDetail, onSelectBit, topics }) {
   const [hoveredIdx, setHoveredIdx] = useState(null);
   const hoveredBit = hoveredIdx !== null ? timeline.bits[hoveredIdx] : null;
 
@@ -48,8 +48,12 @@ function PageTimeline({ timeline, onViewBitDetail, topics }) {
               onMouseEnter={() => setHoveredIdx(bIdx)}
               onMouseLeave={() => setHoveredIdx(null)}
               onClick={() => {
-                const fullBit = topics.find(t => t.id === bit.id);
-                if (fullBit && onViewBitDetail) onViewBitDetail(fullBit);
+                if (onSelectBit) {
+                  onSelectBit(bit.id);
+                } else {
+                  const fullBit = topics.find(t => t.id === bit.id);
+                  if (fullBit && onViewBitDetail) onViewBitDetail(fullBit);
+                }
               }}
               style={{
                 width: `${pct}%`,
@@ -138,6 +142,7 @@ export function TranscriptTab({
   const sortCol = sortColProp ?? localSortCol;
   const sortDir = sortDirProp ?? localSortDir;
   const [searchFilter, setSearchFilter] = useState("");
+  const [timelineScrollBitId, setTimelineScrollBitId] = useState(null);
   const prevSelectedRef = useRef(null);
   const listScrollY = useRef(0);
 
@@ -277,7 +282,7 @@ export function TranscriptTab({
     const dir = sortDir === "asc" ? 1 : -1;
     sorted.sort((a, b) => {
       switch (sortCol) {
-        case "file": return dir * a.tr.name.localeCompare(b.tr.name);
+        case "file": return dir * (a.parsed.title || a.tr.name).localeCompare(b.parsed.title || b.tr.name, undefined, { numeric: true });
         case "size": return dir * (a.wordCount - b.wordCount);
         case "bits": return dir * (a.bitsParsed.length - b.bitsParsed.length);
         case "coverage": return dir * (a.coverage - b.coverage);
@@ -359,22 +364,40 @@ export function TranscriptTab({
           >
             Back
           </button>
+          {onGoToPlay && (
+            <button
+              onClick={() => onGoToPlay(selectedTranscript)}
+              style={{ padding: "6px 12px", background: "#6c5ce718", color: "#a78bfa", border: "1px solid #6c5ce733", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+            >
+              Play
+            </button>
+          )}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ color: "#ddd", fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {selectedParsed.title || selectedTranscript.name.replace(/\.\w+$/, "")}
-            </div>
-            <div style={{ display: "flex", gap: 12, fontSize: 10, color: "#666", marginTop: 2 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {selectedParsed.rating && (
-                <span style={{ ...RATING_FONT, padding: "0 4px", borderRadius: 2, background: ratingColor(selectedParsed.rating).bg, color: ratingColor(selectedParsed.rating).fg }}>
+                <span style={{ ...RATING_FONT, fontSize: 11, padding: "2px 5px", borderRadius: 3, background: ratingColor(selectedParsed.rating).bg, color: ratingColor(selectedParsed.rating).fg }}>
                   {selectedParsed.rating}
                 </span>
               )}
-              {selectedParsed.duration && <span style={{ color: "#74c0fc" }}>{selectedParsed.duration}</span>}
-              {selectedRow && <span>{selectedRow.bitsParsed.length} bits</span>}
-              {selectedRow && selectedRow.bitsParsed.length > 0 && <span style={{ color: selectedRow.coverage >= 80 ? "#51cf66" : selectedRow.coverage >= 50 ? "#ffa94d" : "#ff6b6b" }}>{selectedRow.coverage}% coverage</span>}
+              <span style={{ color: "#ddd", fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {selectedParsed.title || selectedTranscript.name.replace(/\.\w+$/, "")}
+              </span>
+              {selectedParsed.duration && <span style={{ fontSize: 12, color: "#74c0fc" }}>{selectedParsed.duration}</span>}
+            </div>
+            <div style={{ display: "flex", gap: 10, fontSize: 13, fontWeight: 700, marginTop: 4 }}>
+              {selectedRow && <span style={{ color: "#4ecdc4" }}>{selectedRow.bitsParsed.length} bits</span>}
+              {selectedRow && selectedRow.bitsParsed.length > 0 && <span style={{ color: selectedRow.coverage >= 80 ? "#51cf66" : selectedRow.coverage >= 50 ? "#ffa94d" : "#ff6b6b" }}>{selectedRow.coverage}% cov</span>}
+              {selectedRow && (() => {
+                const trBits = topics.filter(t => t.sourceFile === selectedTranscript.name || t.transcriptId === selectedTranscript.id);
+                const allTs = [...(touchstones?.confirmed || []), ...(touchstones?.possible || [])];
+                const inTs = trBits.filter(b => allTs.some(ts => (ts.instances || []).some(inst => inst.bitId === b.id))).length;
+                if (inTs === 0 || trBits.length === 0) return null;
+                const pct = Math.round((inTs / trBits.length) * 100);
+                return <span style={{ color: "#a78bfa" }}>{pct}% TS</span>;
+              })()}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 4 }}>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             <button onClick={() => onHuntTranscript?.(selectedTranscript)} disabled={processing || !selectedRow?.bitsParsed.length} style={actionBtnStyle("#da77f2", { disabled: processing || !selectedRow?.bitsParsed.length })}>Hunt</button>
             <button onClick={() => reParseTranscript(selectedTranscript)} disabled={processing} style={actionBtnStyle("#ffa94d", { disabled: processing })}>Re-parse</button>
             <button onClick={() => purgeTranscriptData(selectedTranscript)} disabled={processing} style={actionBtnStyle("#ff6b6b", { disabled: processing })}>Purge</button>
@@ -383,11 +406,12 @@ export function TranscriptTab({
         {/* Set Timeline */}
         {selectedRow && selectedRow.timeline.bits.length > 0 && <PageTimeline
           timeline={selectedRow.timeline}
-          onViewBitDetail={onViewBitDetail}
+          onSelectBit={(bitId) => setTimelineScrollBitId(bitId)}
           topics={topics}
         />}
 
         <MixPanel
+          hideHeader
           onGoToPlay={onGoToPlay ? () => onGoToPlay(selectedTranscript) : null}
           topics={topics}
           transcripts={transcripts}
@@ -402,6 +426,8 @@ export function TranscriptTab({
           onAddPhantomBit={onAddPhantomBit}
           onReParseGap={onReParseGap}
           onViewBitDetail={onViewBitDetail}
+          scrollToBitId={timelineScrollBitId}
+          onConsumeScrollToBit={() => setTimelineScrollBitId(null)}
           initialTranscript={selectedTranscript}
           initialBitId={mixTranscriptInit?.id === selectedTranscript.id ? mixBitInit : null}
           initialGap={mixTranscriptInit?.id === selectedTranscript.id ? mixGapInit : null}

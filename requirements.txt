@@ -1,0 +1,6 @@
+aiofiles
+colorama
+rich
+watchdog
+whisper
+xxhash

@@ -1,5 +1,6 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
-import { uid, getAvailableModels } from "./utils/ollama";
+import { uid, getAvailableModels, callOllama } from "./utils/ollama";
+import { SYSTEM_MERGE_TAGS } from "./utils/prompts";
 import { validateAllBits } from "./utils/textContinuityValidator";
 import { TouchstonePanel } from "./components/TouchstonePanel";
 import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
@@ -27,6 +28,9 @@ import { useCommunion } from "./hooks/useCommunion";
 import { useParsing } from "./hooks/useParsing";
 import { useTranscriptOps } from "./hooks/useTranscriptOps";
 import { useTouchstoneHandlers } from "./hooks/useTouchstoneHandlers";
+import { useNotes } from "./hooks/useNotes";
+import NotesTab from "./components/NotesTab";
+import LLMConfigPanel from "./components/LLMConfigPanel";
 
 const initialState = {
   transcripts: [],
@@ -53,9 +57,11 @@ const initialState = {
   huntProgress: null,
   embeddingModel: "mxbai-embed-large",
   embeddingStatus: { cached: 0, total: 0 },
+  notes: [],
   vaultReady: false,
   transcriptSortCol: "file",
   transcriptSortDir: "asc",
+  tagMergeResult: null,
 };
 
 // Todo: add browser back/forward navigation support. if a different tab or different 'subtab' page is accessed, allow me to go back to the previous view. it might be good to encode every part of the interface to a URL view, so that I can also share links to specific views (e.g. a specific topic, or the network graph with a search query applied).
@@ -119,7 +125,8 @@ export default function ComedyParser() {
     foundBits, selectedTranscript, adjustingBit, validationResult,
     editingMode, touchstones, dbStats, lastSave,
     selectedModel, availableModels, shouldStop, debugMode,
-    debugLog, huntProgress, embeddingModel, embeddingStatus, vaultReady,
+    debugLog, huntProgress, embeddingModel, embeddingStatus, notes, vaultReady,
+    tagMergeResult,
   } = state;
 
   const set = (field, value) => dispatch({ type: 'SET', field, value });
@@ -147,6 +154,7 @@ export default function ComedyParser() {
   const [mixGapInit, setMixGapInit] = useState(null);
   const [touchstoneInit, setTouchstoneInit] = useState(null);
   touchstoneInitSetter.current = setTouchstoneInit;
+  const [noteNav, setNoteNav] = useState(null); // {source, tag} for cross-tab note navigation
   const [playInitFile, setPlayInitFile] = useState(null);
   const [nowPlaying, setNowPlaying] = useState(null);
   const [audioIsPlaying, setAudioIsPlaying] = useState(false);
@@ -214,6 +222,7 @@ export default function ComedyParser() {
           transcripts,
           matches: saved.matches || [],
           touchstones: saved.touchstones || { confirmed: [], possible: [] },
+          notes: saved.notes || [],
         }});
       }
       set('vaultReady', true);
@@ -291,11 +300,234 @@ export default function ComedyParser() {
   matchBitLiveRef.current = matchBitLive;
 
   const bitOps = useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate);
-  const bitMgmt = useBitManagement(ctx, matchBitLiveRef, setApprovedGaps);
+  const bitMgmt = useBitManagement(ctx, matchBitLiveRef, setApprovedGaps, embeddingStore);
   const communion = useCommunion(ctx);
   const parsing = useParsing(ctx, matchBitLiveRef);
   const transcriptOps = useTranscriptOps(ctx, loadSavedData);
   const tsHandlers = useTouchstoneHandlers(ctx);
+  const noteOps = useNotes(ctx);
+
+  // Promote a note into a bit + confirmed touchstone (sainted)
+  const handlePromoteNote = useCallback(async (noteId, touchstoneName) => {
+    const note = stateRef.current.notes.find(n => n.id === noteId);
+    if (!note) return;
+    const bitId = uid();
+    const bit = {
+      id: bitId,
+      title: touchstoneName || note.title || note.text.slice(0, 60),
+      fullText: note.text,
+      summary: note.text.slice(0, 200),
+      sourceFile: `note:${note.source}`,
+      transcriptId: null,
+      tags: note.tags || [],
+      textPosition: null,
+      editHistory: [],
+      timestamp: Date.now(),
+      noteSource: note.source,
+      noteDate: note.date || null,
+      noteGeneration: note.generation || null,
+      noteCategory: note.noteCategory || null,
+      noteId: note.id,
+    };
+    const tsId = `touchstone-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const newTouchstone = {
+      id: tsId,
+      name: touchstoneName || note.title || note.text.slice(0, 60),
+      summary: `1 instance — from ${note.source} note`,
+      bitIds: [bitId],
+      instances: [{ bitId, sourceFile: bit.sourceFile, title: bit.title, instanceNumber: 1, confidence: 1, relationship: "same_bit", communionStatus: "sainted" }],
+      firstAppearance: { transcriptId: null, bitId, sourceFile: bit.sourceFile },
+      frequency: 1, crossTranscript: false, sourceCount: 1,
+      tags: note.tags || [], commonWords: [],
+      matchInfo: { totalMatches: 0, sameBitCount: 0, evolvedCount: 0, relatedCount: 0, callbackCount: 0, avgConfidence: 0, avgMatchPercentage: 0, reasons: [] },
+      category: "confirmed", manual: true,
+    };
+    update('topics', prev => [...prev, bit]);
+    update('touchstones', prev => ({
+      confirmed: [...(prev.confirmed || []), newTouchstone],
+      possible: prev.possible || [],
+      rejected: prev.rejected || [],
+    }));
+    await noteOps.updateNote(noteId, { matchedTouchstoneId: tsId });
+    const s = stateRef.current;
+    saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }).catch(console.error);
+    return tsId;
+  }, []);
+
+  // ── Tag merge via LLM ─────────────────────────────────────────
+
+  const onMergeTags = useCallback(async () => {
+    const s = stateRef.current;
+    const BATCH_SIZE = 100;
+
+    // Collect all tags with counts
+    const tagCounts = new Map();
+    for (const t of s.topics) {
+      for (const tag of (t.tags || [])) {
+        tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+      }
+    }
+    const allTags = [...tagCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    if (allTags.length === 0) { set('status', 'No tags to merge.'); return; }
+
+    set('processing', true);
+    const allMerges = [];
+    const allDescriptions = [];
+
+    // Split into batches
+    const batches = [];
+    for (let i = 0; i < allTags.length; i += BATCH_SIZE) {
+      batches.push(allTags.slice(i, i + BATCH_SIZE));
+    }
+
+    try {
+      // Pass 1: merge within each batch
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        set('status', `Analyzing tags batch ${i + 1}/${batches.length} (${batch.length} tags)...`);
+        const tagList = batch.map(([tag, count]) => `${tag} (${count})`).join(", ");
+        const result = await callOllama(
+          SYSTEM_MERGE_TAGS,
+          `Here are the tags with usage counts:\n${tagList}`,
+          () => {},
+          s.selectedModel,
+          s.debugMode ? addDebugEntry : null,
+          null,
+          { label: `merge-tags-batch-${i + 1}` }
+        );
+        const merges = Array.isArray(result) ? result.filter((m) => m.merge && m.into) : [];
+        allMerges.push(...merges);
+      }
+
+      // Apply batch merges to get the surviving tag list
+      const renameMap = new Map();
+      for (const op of allMerges) {
+        for (const oldTag of op.merge) {
+          if (oldTag !== op.into) renameMap.set(oldTag, op.into);
+        }
+      }
+
+      // Pass 2: cross-batch — if we had multiple batches, check survivors against each other
+      if (batches.length > 1) {
+        // Rebuild tag list after batch merges
+        const survivingTags = new Map();
+        for (const [tag, count] of allTags) {
+          const resolved = renameMap.get(tag) || tag;
+          survivingTags.set(resolved, (survivingTags.get(resolved) || 0) + count);
+        }
+        const crossList = [...survivingTags.entries()].sort((a, b) => b[1] - a[1]);
+
+        // Run cross-batch in batches too if still large
+        const crossBatches = [];
+        for (let i = 0; i < crossList.length; i += BATCH_SIZE) {
+          crossBatches.push(crossList.slice(i, i + BATCH_SIZE));
+        }
+        // But we also need overlap between batches to catch cross-batch dupes
+        // Strategy: sliding window with overlap
+        if (crossList.length > BATCH_SIZE) {
+          const OVERLAP = 15;
+          for (let i = 0; i < crossList.length; i += BATCH_SIZE - OVERLAP) {
+            const window = crossList.slice(i, i + BATCH_SIZE);
+            if (window.length < 5) break;
+            set('status', `Cross-checking tags (window ${Math.floor(i / (BATCH_SIZE - OVERLAP)) + 1}, ${window.length} tags)...`);
+            const tagList = window.map(([tag, count]) => `${tag} (${count})`).join(", ");
+            const result = await callOllama(
+              SYSTEM_MERGE_TAGS,
+              `Here are the tags with usage counts:\n${tagList}`,
+              () => {},
+              s.selectedModel,
+              s.debugMode ? addDebugEntry : null,
+              null,
+              { label: `merge-tags-cross-${i}` }
+            );
+            const merges = Array.isArray(result) ? result.filter((m) => m.merge && m.into) : [];
+            for (const op of merges) {
+              // Only add if this is a new merge not already captured
+              for (const oldTag of op.merge) {
+                if (oldTag !== op.into && !renameMap.has(oldTag)) {
+                  renameMap.set(oldTag, op.into);
+                  allMerges.push(op);
+                }
+              }
+            }
+          }
+        } else if (crossList.length > 1) {
+          set('status', `Cross-checking ${crossList.length} surviving tags...`);
+          const tagList = crossList.map(([tag, count]) => `${tag} (${count})`).join(", ");
+          const result = await callOllama(
+            SYSTEM_MERGE_TAGS,
+            `Here are the tags with usage counts:\n${tagList}`,
+            () => {},
+            s.selectedModel,
+            s.debugMode ? addDebugEntry : null,
+            null,
+            { label: "merge-tags-cross" }
+          );
+          const merges = Array.isArray(result) ? result.filter((m) => m.merge && m.into) : [];
+          for (const op of merges) {
+            for (const oldTag of op.merge) {
+              if (oldTag !== op.into && !renameMap.has(oldTag)) {
+                renameMap.set(oldTag, op.into);
+                allMerges.push(op);
+              }
+            }
+          }
+        }
+      }
+
+      if (allMerges.length === 0) {
+        set('status', 'No tag merges recommended.');
+        set('processing', false);
+        return;
+      }
+
+      // Rebuild final rename map (resolving chains: a→b→c becomes a→c)
+      const finalMap = new Map();
+      for (const op of allMerges) {
+        for (const oldTag of op.merge) {
+          if (oldTag !== op.into) finalMap.set(oldTag, op.into);
+        }
+      }
+      // Resolve chains
+      for (const [from, to] of finalMap) {
+        let resolved = to;
+        let depth = 0;
+        while (finalMap.has(resolved) && depth < 10) { resolved = finalMap.get(resolved); depth++; }
+        if (resolved !== to) finalMap.set(from, resolved);
+      }
+
+      // Apply to all topics
+      set('status', 'Applying tag merges...');
+      update('topics', (prev) => prev.map((t) => {
+        if (!t.tags || t.tags.length === 0) return t;
+        const newTags = [...new Set(t.tags.map((tag) => finalMap.get(tag) || tag))];
+        if (newTags.length === t.tags.length && newTags.every((tag, i) => tag === t.tags[i])) return t;
+        return { ...t, tags: newTags };
+      }));
+
+      // Build verbose description
+      const mergeGroups = new Map();
+      for (const [from, to] of finalMap) {
+        if (!mergeGroups.has(to)) mergeGroups.set(to, []);
+        mergeGroups.get(to).push(from);
+      }
+      const descriptions = [...mergeGroups.entries()].map(([into, froms]) =>
+        `${froms.join(", ")} → ${into}`
+      );
+      set('tagMergeResult', descriptions);
+      set('status', `Merged ${finalMap.size} tag(s) into ${mergeGroups.size} group(s).`);
+      set('processing', false);
+
+      // Save
+      setTimeout(async () => {
+        const s2 = stateRef.current;
+        try { await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }); } catch {}
+      }, 100);
+    } catch (err) {
+      set('status', `Tag merge failed: ${err.message}`);
+      set('processing', false);
+    }
+  }, []);
 
   // ── Helpers ────────────────────────────────────────────────────
 
@@ -446,7 +678,7 @@ export default function ComedyParser() {
 
         {/* Row 3: Tabs */}
         <div style={{ display: "flex", gap: 0 }}>
-          {["play", "transcripts", "bits", "tags", "touchstones", "validation", "analytics", "graph", "settings"].map((tab) => (
+          {["play", "transcripts", "bits", "tags", "touchstones", "validation", "notes", "analytics", "graph", "settings"].map((tab) => (
             <button
               key={tab}
               className={`tab-btn ${activeTab === tab ? "active" : ""}`}
@@ -484,7 +716,7 @@ export default function ComedyParser() {
         </div>
       )}
 
-      <div style={{ padding: activeTab === "play" ? "24px 32px 0" : "24px 32px", paddingBottom: activeTab === "play" ? 0 : (streamingProgress || processing || huntProgress) ? 370 : debugMode ? "calc(40vh + 24px)" : 24 }}>
+      <div style={{ padding: activeTab === "play" ? "24px 32px 0" : "24px 32px", paddingBottom: activeTab === "play" ? 0 : ((streamingProgress || processing || huntProgress) && debugMode) ? "calc(60vh + 24px)" : (streamingProgress || processing || huntProgress) ? 370 : debugMode ? "calc(40vh + 24px)" : 24 }}>
         {/* PLAY TAB */}
         {activeTab === "play" && (
           <PlayTab
@@ -538,12 +770,10 @@ export default function ComedyParser() {
                 matches={matches}
                 touchstones={touchstones}
                 transcripts={transcripts}
-                onGoToTouchstone={(touchstoneId) => { setTouchstoneInit(touchstoneId); hashRouter.navigateTo("touchstones", touchstoneId); }}
-                onGoToMix={(tr) => { setMixTranscriptInit(tr); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
-                onGoToBit={(bitId, sourceFile) => {
-                  const tr = transcripts.find(t => t.name === sourceFile);
-                  if (tr) { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setSelectedTranscript(tr); setActiveTab("transcripts"); }
-                }}
+                onMergeTags={onMergeTags}
+                processing={processing}
+                tagMergeResult={tagMergeResult}
+                onDismissMergeResult={() => set('tagMergeResult', null)}
               />
             )}
           </div>
@@ -640,6 +870,12 @@ export default function ComedyParser() {
               onSynthesizeTouchstone={communion.handleSynthesizeTouchstone}
               onMassTouchstoneCommunion={communion.handleMassTouchstoneCommunion}
               onSaintInstance={tsHandlers.onSaintInstance}
+              notes={notes}
+              onGoToNote={(note) => {
+                const tag = (note.tags || [])[0] || null;
+                setNoteNav({ source: note.source || "all", tag });
+                setActiveTab("notes");
+              }}
             />
           </div>
         )}
@@ -705,6 +941,33 @@ export default function ComedyParser() {
               const s = stateRef.current;
               revalidateMatchesRef.current?.(bitIds, s.topics, s.matches);
             }}
+            onJoinBits={bitOps.handleJoinBits}
+            onReParseGap={bitMgmt.handleReParseGap}
+            onDeleteBit={bitMgmt.handleDeleteBit}
+          />
+        )}
+
+        {/* NOTES TAB */}
+        {activeTab === "notes" && (
+          <NotesTab
+            notes={notes}
+            touchstones={touchstones}
+            topics={topics}
+            embeddingStore={embeddingStore}
+            embeddingModel={embeddingModel}
+            onImportClickUp={noteOps.importClickUp}
+            onImportKeep={noteOps.importKeep}
+            onSyncJournals={noteOps.syncJournals}
+            onClearImports={noteOps.clearImports}
+            onRemoveNote={noteOps.removeNote}
+            onUpdateSortOrders={noteOps.updateNoteSortOrders}
+            onLoadListMeta={noteOps.loadListMeta}
+            onUpdateListMeta={noteOps.updateListMeta}
+            onUpdateNote={noteOps.updateNote}
+            onRenameListTag={noteOps.renameListTag}
+            onPromoteNote={handlePromoteNote}
+            initialNoteNav={noteNav}
+            onConsumeNoteNav={() => setNoteNav(null)}
           />
         )}
 
@@ -750,6 +1013,15 @@ export default function ComedyParser() {
                   </select>
                 </div>
               )}
+            </div>
+
+            {/* API Keys */}
+            <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, marginBottom: 20, marginTop: 32, color: "#eee" }}>External LLMs</h2>
+            <div className="card" style={{ cursor: "default" }}>
+              <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>
+                Configure API keys for high-end models. Used by "Send to..." on touchstone details. Keys are stored server-side only.
+              </p>
+              <LLMConfigPanel />
             </div>
 
             {/* Match Maintenance */}
@@ -824,11 +1096,35 @@ export default function ComedyParser() {
         )}
       </div>
 
-      {/* Streaming Progress Panel */}
-      {(!debugMode || huntProgress) && <StreamingProgressPanel progress={!debugMode ? streamingProgress : null} foundBits={!debugMode ? foundBits : null} processing={processing} status={status} huntProgress={huntProgress} onDismiss={() => { set('huntProgress', null); set('streamingProgress', null); set('status', ''); }} />}
+      {/* Bottom panels — stack when both debug and hunt/streaming are active */}
+      {(() => {
+        const showProgress = !!(streamingProgress || processing || huntProgress);
+        const showDebug = debugMode;
+        const bothActive = showProgress && showDebug;
 
-      {/* Debug Panel */}
-      {debugMode && <DebugPanel log={debugLog} onClear={() => { set('debugLog', []); set('debugMode', false); }} />}
+        if (bothActive) {
+          return (
+            <div style={{
+              position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 1001,
+              display: "flex", flexDirection: "column", height: "60vh", maxHeight: "60vh",
+            }}>
+              <div style={{ flex: "0 0 auto", maxHeight: "50%", overflow: "hidden" }}>
+                <StreamingProgressPanel progress={streamingProgress} foundBits={foundBits} processing={processing} status={status} huntProgress={huntProgress} onDismiss={() => { set('huntProgress', null); set('streamingProgress', null); set('status', ''); }} docked />
+              </div>
+              <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+                <DebugPanel log={debugLog} onClear={() => { set('debugLog', []); set('debugMode', false); }} docked />
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <>
+            {showProgress && !showDebug && <StreamingProgressPanel progress={streamingProgress} foundBits={foundBits} processing={processing} status={status} huntProgress={huntProgress} onDismiss={() => { set('huntProgress', null); set('streamingProgress', null); set('status', ''); }} />}
+            {showDebug && !showProgress && <DebugPanel log={debugLog} onClear={() => { set('debugLog', []); set('debugMode', false); }} />}
+          </>
+        );
+      })()}
 
       {/* Detail Panel */}
       <DetailPanel

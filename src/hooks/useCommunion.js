@@ -317,8 +317,17 @@ export function useCommunion(ctx) {
       update('touchstones', (prev) => {
         const updateIn = (list) => list.map((t) => {
           if (t.id !== touchstoneId) return t;
-          if (t.manualIdealText) return t;
-          return { ...t, idealText: result.idealText, idealTextNotes: result.notes || '' };
+          // Add synthesis result as a version
+          const versions = [...(t.idealTextVersions || [])];
+          versions.push({
+            idealText: result.idealText,
+            notes: result.notes || '',
+            model,
+            source: 'synthesis',
+            date: new Date().toISOString(),
+          });
+          if (t.manualIdealText) return { ...t, idealTextVersions: versions };
+          return { ...t, idealText: result.idealText, idealTextNotes: result.notes || '', idealTextVersions: versions };
         });
         return { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };
       });

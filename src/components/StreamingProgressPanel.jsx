@@ -1,4 +1,4 @@
-export function StreamingProgressPanel({ progress, foundBits, processing, status, huntProgress, onDismiss }) {
+export function StreamingProgressPanel({ progress, foundBits, processing, status, huntProgress, onDismiss, docked }) {
   // Show panel whenever ANY LLM process is active
   const hasActivity = progress || processing || huntProgress;
   if (!hasActivity) return null;
@@ -14,17 +14,15 @@ export function StreamingProgressPanel({ progress, foundBits, processing, status
 
   return (
     <div style={{
-      position: "fixed",
-      bottom: 0,
-      left: 0,
-      right: 0,
+      ...(docked ? {} : { position: "fixed", bottom: 0, left: 0, right: 0 }),
       background: "#0a0a14",
       borderTop: `3px solid ${accentColor}`,
-      maxHeight: "350px",
+      height: docked ? "100%" : undefined,
+      maxHeight: docked ? "100%" : "350px",
       overflowY: "auto",
-      padding: "16px 32px",
-      zIndex: isHunting ? 1001 : 50,
-      boxShadow: `0 -8px 24px ${accentColor}26`,
+      padding: docked ? "10px 24px" : "16px 32px",
+      zIndex: docked ? undefined : (isHunting ? 1001 : 50),
+      boxShadow: docked ? undefined : `0 -8px 24px ${accentColor}26`,
       fontFamily: "'JetBrains Mono', monospace",
     }}>
       {/* Header */}

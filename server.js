@@ -120,33 +120,40 @@ async function ollamaHealthCheck() {
   }
 }
 
-// Todo: a sudo restart can't actually be completed without asking for my password each time. Make this an api restart, or other method.
-
 async function restartOllama() {
-  console.log("[Ollama] Restarting via sudo systemctl restart ollama...");
+  console.log("[Ollama] Restarting via systemctl (user-level, then system-level)...");
 
-  const result = await execCommand("sudo systemctl restart ollama");
-  if (!result.success) {
-    console.error("[Ollama] systemctl restart failed:", result.error);
-    return { success: false, message: `systemctl restart failed: ${result.error}` };
+  // Try user-level first (no sudo needed), fall back to systemctl with pkexec
+  const strategies = [
+    { cmd: "systemctl --user restart ollama", label: "user-level systemctl" },
+    { cmd: "pkill -f 'ollama serve' && sleep 1 && ollama serve &", label: "pkill + relaunch" },
+  ];
+
+  for (const { cmd, label } of strategies) {
+    console.log(`[Ollama] Trying ${label}...`);
+    const result = await execCommand(cmd);
+    if (!result.success) {
+      console.log(`[Ollama] ${label} failed: ${result.error}`);
+      continue;
+    }
+
+    console.log(`[Ollama] ${label} issued, waiting for healthy...`);
+    let healthy = false;
+    let attempts = 0;
+    while (!healthy && attempts < 30) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      healthy = await ollamaHealthCheck();
+      attempts++;
+    }
+
+    if (healthy) {
+      console.log(`[Ollama] Ollama healthy after ${attempts}s via ${label}`);
+      return { success: true, message: `Ollama restarted via ${label} (${attempts}s)` };
+    }
   }
 
-  console.log("[Ollama] systemctl restart issued, waiting for healthy...");
-
-  let healthy = false;
-  let attempts = 0;
-  while (!healthy && attempts < 60) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    healthy = await ollamaHealthCheck();
-    attempts++;
-  }
-
-  if (healthy) {
-    console.log(`[Ollama] Ollama healthy after ${attempts}s`);
-    return { success: true, message: `Ollama restarted successfully (${attempts}s)` };
-  } else {
-    console.log("[Ollama] Ollama still not healthy after 60s");
-    return { success: false, message: "Ollama restart timeout after 60s" };
+  console.log("[Ollama] All restart strategies failed");
+  return { success: false, message: "All restart strategies failed (tried user systemctl, pkill + relaunch)" };
   }
 }
 

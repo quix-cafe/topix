@@ -23,8 +23,6 @@ const EXCLUSIVE_RELATIONSHIPS = new Set(["same_bit", "evolved"]);
  * TouchstonePanel - Display and explore touchstones (recurring jokes across transcripts)
  */
 
-// Todo: clicking the 'detail' on the bit card should not jump the interface to the 'bits' tab. move the action buttons to the top and make the 'detail' button larger and colored. do the same to the mix button. move them to the top right and remove the duplicate 'blessed' etc. indicator -- the dropdown selector basically functions as the indicator. 
-
 export function TouchstonePanel({
   touchstones, bits, matches, notes, onSelectBit, onHunt, onRectifyOverlaps, huntProgress, processing,
   onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onCreateTouchstone,
@@ -1644,16 +1642,19 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
 
           return (
             <div key={instance.bitId} className="card" style={{ marginBottom: 8, cursor: "default" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, color: "#ddd", fontSize: 13, marginBottom: 4 }}>
-                    #{instance.instanceNumber} — {applyCorrections(instance.title)}
-                  </div>
-                  <div style={{ fontSize: 11, marginBottom: 4 }}><StyledFilename sourceFile={instance.sourceFile} /></div>
-                  {bit.summary && <div style={{ fontSize: 11, color: "#777", lineHeight: 1.4, marginBottom: 4 }}>{applyCorrections(bit.summary)}</div>}
+              {/* Top row: action buttons */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <button onClick={() => onSelectBit(bit)} style={{ background: "#4ecdc418", border: "1px solid #4ecdc444", color: "#4ecdc4", borderRadius: 4, padding: "4px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>Detail</button>
+                  {onGoToMix && (
+                    <button onClick={() => onGoToMix(bit)} style={{ background: "#ffa94d18", border: "1px solid #ffa94d44", color: "#ffa94d", borderRadius: 4, padding: "4px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>Mix</button>
+                  )}
+                  <button onClick={() => toggleExpand(instance.bitId)} style={{ background: isExpanded ? "#252538" : "none", border: "1px solid #252538", color: isExpanded ? "#4ecdc4" : "#888", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>
+                    {isExpanded ? "Hide" : "Text"}
+                  </button>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginLeft: 8, alignItems: "flex-end" }}>
-                  {/* Editable relationship */}
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  {/* Relationship selector */}
                   <select
                     value={instance.relationship || "matched"}
                     onChange={(e) => {
@@ -1675,46 +1676,45 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
                       <option key={opt} value={opt}>{opt.replace("_", " ")}</option>
                     ))}
                   </select>
-                  {instance.confidence > 0 && <span style={{ fontSize: 10, color: "#666" }}>{Math.round(instance.confidence * 100)}%</span>}
-                  <CommunionStatusBadge instance={instance} />
-                  <div style={{ display: "flex", gap: 4 }}>
-                    <button onClick={() => toggleExpand(instance.bitId)} style={{ background: isExpanded ? "#252538" : "none", border: "1px solid #252538", color: isExpanded ? "#4ecdc4" : "#888", borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>
-                      {isExpanded ? "Hide" : "Text"}
-                    </button>
-                    {onGoToMix && (
-                      <button onClick={() => onGoToMix(bit)} style={{ background: "none", border: "1px solid #252538", color: "#ffa94d", borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>Mix</button>
-                    )}
-                    <button onClick={() => onSelectBit(bit)} style={{ background: "none", border: "1px solid #252538", color: "#888", borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>Detail</button>
-                    {onSaintInstance && (() => {
-                      const cs = instance.communionStatus || 'purgatory';
-                      const cfg = COMMUNION_STATUS_CONFIG[cs] || COMMUNION_STATUS_CONFIG.purgatory;
-                      return (
-                        <select
-                          value={cs}
-                          onChange={(e) => onSaintInstance(touchstone.id, instance.bitId, e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                          style={{
-                            background: `${cfg.bg}`, color: cfg.color, border: `1px solid ${cfg.border}`,
-                            borderRadius: 4, padding: "2px 4px", fontSize: 10, cursor: "pointer", fontWeight: 600,
-                            appearance: "auto",
-                          }}
-                        >
-                          {Object.entries(COMMUNION_STATUS_CONFIG).map(([key, val]) => (
-                            <option key={key} value={key}>{val.icon} {val.label}</option>
-                          ))}
-                        </select>
-                      );
-                    })()}
-                    {onRemoveInstance && touchstone.instances.length > 1 && (
-                      <button
-                        onClick={() => { if (window.confirm(`Remove "${instance.title}" from this touchstone?`)) onRemoveInstance(touchstone.id, instance.bitId); }}
-                        style={{ background: "#ff6b6b11", border: "1px solid #ff6b6b33", color: "#ff6b6b", borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}
+                  {/* Communion status selector */}
+                  {onSaintInstance && (() => {
+                    const cs = instance.communionStatus || 'purgatory';
+                    const cfg = COMMUNION_STATUS_CONFIG[cs] || COMMUNION_STATUS_CONFIG.purgatory;
+                    return (
+                      <select
+                        value={cs}
+                        onChange={(e) => onSaintInstance(touchstone.id, instance.bitId, e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          background: `${cfg.bg}`, color: cfg.color, border: `1px solid ${cfg.border}`,
+                          borderRadius: 4, padding: "2px 4px", fontSize: 10, cursor: "pointer", fontWeight: 600,
+                          appearance: "auto",
+                        }}
                       >
-                        Remove
-                      </button>
-                    )}
-                  </div>
+                        {Object.entries(COMMUNION_STATUS_CONFIG).map(([key, val]) => (
+                          <option key={key} value={key}>{val.icon} {val.label}</option>
+                        ))}
+                      </select>
+                    );
+                  })()}
+                  {instance.confidence > 0 && <span style={{ fontSize: 10, color: "#666" }}>{Math.round(instance.confidence * 100)}%</span>}
+                  {onRemoveInstance && touchstone.instances.length > 1 && (
+                    <button
+                      onClick={() => { if (window.confirm(`Remove "${instance.title}" from this touchstone?`)) onRemoveInstance(touchstone.id, instance.bitId); }}
+                      style={{ background: "#ff6b6b11", border: "1px solid #ff6b6b33", color: "#ff6b6b", borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}
+                    >
+                      &times;
+                    </button>
+                  )}
                 </div>
+              </div>
+              {/* Content */}
+              <div>
+                <div style={{ fontWeight: 600, color: "#ddd", fontSize: 13, marginBottom: 4 }}>
+                  #{instance.instanceNumber} — {applyCorrections(instance.title)}
+                </div>
+                <div style={{ fontSize: 11, marginBottom: 4 }}><StyledFilename sourceFile={instance.sourceFile} /></div>
+                {bit.summary && <div style={{ fontSize: 11, color: "#777", lineHeight: 1.4, marginBottom: 4 }}>{applyCorrections(bit.summary)}</div>}
               </div>
 
               {isExpanded && bit.fullText && (

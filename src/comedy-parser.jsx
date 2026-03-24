@@ -32,9 +32,6 @@ import { useNotes } from "./hooks/useNotes";
 import NotesTab from "./components/NotesTab";
 import LLMConfigPanel from "./components/LLMConfigPanel";
 
-// Todo: general cleanup -- remove any dead or unused code from the entire app, and make sure any duplicate or similar code is consolidated into reusable functions or components. This includes any old UI elements, helper functions, or hooks that are no longer in use after the recent refactors.
-
-// Todo: add a 'low power mode' button to the top that pauses all background operations (embedding generation, hunting, etc.) to reduce CPU usage when the app is open but idle. This would set a global 'lowPowerMode' state that all relevant hooks and operations check before running, and display a warning banner when enabled. 
 
 function ClearFiltersButton({ activeTab }) {
   const [hasFilters, setHasFilters] = useState(() => window.location.hash.includes("?"));
@@ -49,8 +46,7 @@ function ClearFiltersButton({ activeTab }) {
   return (
     <button
       onClick={() => {
-        const pathPart = window.location.hash.split("?")[0] || `#/${activeTab}`;
-        history.replaceState(null, "", pathPart);
+        history.replaceState(null, "", `#/${activeTab || "play"}`);
         window.dispatchEvent(new PopStateEvent("popstate"));
         setHasFilters(false);
       }}
@@ -868,7 +864,6 @@ export default function ComedyParser() {
               matches={matches}
               onSelectBit={(bit) => {
                 setSelectedTopic(bit);
-                setActiveTab("bits");
               }}
               onHunt={huntTouchstones}
               onRectifyOverlaps={transcriptOps.rectifyOverlaps}

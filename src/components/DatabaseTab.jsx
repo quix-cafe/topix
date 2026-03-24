@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
+import { useHashParam, useHashParamSet } from "../hooks/useHashParam";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
 export function DatabaseTab({
@@ -8,9 +9,9 @@ export function DatabaseTab({
   touchstones,
 }) {
   const [shuffleKey, setShuffleKey] = useState(0);
-  const [search, setSearch] = useState("");
-  const [tagsOpen, setTagsOpen] = useState(false);
-  const [selectedTags, setSelectedTags] = useState(new Set());
+  const [search, setSearch] = useHashParam("bs", "");
+  const [selectedTags, setSelectedTags] = useHashParamSet("bt");
+  const [tagsOpen, setTagsOpen] = useState(() => selectedTags.size > 0);
   const [tagSearch, setTagSearch] = useState("");
 
   // Map bit IDs to their touchstone names
@@ -222,7 +223,7 @@ export function DatabaseTab({
                 const active = selectedTags.has(tag);
                 return (
                   <span
-                    key={tag}
+                    key={`${tag}-${i}`}
                     className="tag-pill"
                     style={{
                       cursor: "pointer",
@@ -296,11 +297,11 @@ export function DatabaseTab({
           </div>
           {(topic.tags || []).length > 0 && (
             <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 2 }}>
-              {(topic.tags || []).map((tag) => {
+              {(topic.tags || []).map((tag, ti) => {
                 const norm = tag.trim().replace(/\s+/g, "-").toLowerCase();
                 const isSelected = showingTagResults && selectedTags.has(norm);
                 return (
-                  <span key={tag} className="tag-pill" style={{
+                  <span key={`${tag}-${ti}`} className="tag-pill" style={{
                     background: isSelected ? "#ffa94d15" : "#ff6b6b10",
                     color: isSelected ? "#ffa94d" : "#ff8888",
                     border: `1px solid ${isSelected ? "#ffa94d30" : "#ff6b6b20"}`,

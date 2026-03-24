@@ -163,9 +163,39 @@ export function useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate) {
     }
   }, []);
 
+  const handleReparseTags = useCallback(async (bitId) => {
+    const s = stateRef.current;
+    const bit = s.topics.find((t) => t.id === bitId);
+    if (!bit || !bit.fullText?.trim()) return;
+
+    set('status', `Reparsing tags for "${bit.title}"...`);
+    try {
+      const prompt = `Categorize this comedy bit with 3-8 concise tags. Tags should describe: comedy style (observational, self-deprecating, dark, etc.), topic (dating, work, family, etc.), and technique (act-out, callback, crowd-work, etc.). Return ONLY a JSON object: {"tags": ["tag1", "tag2", ...]}\n\nTitle: ${bit.title}\n\n${bit.fullText}`;
+      const result = await callOllama("You are a comedy tagging assistant. Return valid JSON only.", prompt, () => {}, s.selectedModel, s.debugMode ? addDebugEntry : null);
+      const parsed = Array.isArray(result) ? result[0] : result;
+      const newTags = (parsed?.tags || []).map((t) => String(t).replace(/\s+/g, "-").toLowerCase()).filter(Boolean);
+      if (newTags.length > 0) {
+        const updatedBit = {
+          ...bit,
+          tags: newTags,
+          editHistory: [...(bit.editHistory || []), { timestamp: Date.now(), action: "reparse-tags", details: { from: bit.tags, to: newTags } }],
+        };
+        update('topics', (prev) => prev.map((t) => t.id === bitId ? updatedBit : t));
+        set('selectedTopic', updatedBit);
+        const s2 = stateRef.current;
+        await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones });
+        set('status', `Reparsed tags: ${newTags.length} tags (was ${bit.tags?.length || 0})`);
+      } else {
+        set('status', 'Tag reparse returned no tags');
+      }
+    } catch (err) {
+      set('status', `Tag reparse failed: ${err.message}`);
+    }
+  }, []);
+
   return {
     handleSplitBit, handleJoinBits, handleBoundaryChange,
     handleTakeOverlap, handleScrollBoundary,
-    handleGenerateTitle, handleConfirmRename, handleBaptizeBit,
+    handleGenerateTitle, handleConfirmRename, handleBaptizeBit, handleReparseTags,
   };
 }

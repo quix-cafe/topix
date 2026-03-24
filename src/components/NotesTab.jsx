@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useHashParam } from "../hooks/useHashParam";
 import { embedText, cosineSimilarity } from "../utils/embeddings";
 import { searchTouchstones } from "../utils/touchstoneSearch";
 
@@ -25,16 +26,16 @@ export default function NotesTab({
   onUpdateSortOrders, onLoadListMeta, onUpdateListMeta, onUpdateNote, onRenameListTag, onPromoteNote,
   initialNoteNav, onConsumeNoteNav,
 }) {
-  const [search, setSearch] = useState("");
-  const [genFilter, setGenFilter] = useState("all");
-  const [sourceFilter, setSourceFilter] = useState("all");
-  const [tagFilter, setTagFilter] = useState("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
-  const [heartFilter, setHeartFilter] = useState(false);
-  const [noHeartFilter, setNoHeartFilter] = useState(false);
-  const [noCategoryFilter, setNoCategoryFilter] = useState(false);
-  const [journalSortDir, setJournalSortDir] = useState("desc");
-  const [page, setPage] = useState(0);
+  const [search, setSearch] = useHashParam("ns", "");
+  const [genFilter, setGenFilter] = useHashParam("ng", "all");
+  const [sourceFilter, setSourceFilter] = useHashParam("nso", "all");
+  const [tagFilter, setTagFilter] = useHashParam("ntg", "all");
+  const [categoryFilter, setCategoryFilter] = useHashParam("nc", "all");
+  const [heartFilter, setHeartFilter] = useHashParam("nh", false);
+  const [noHeartFilter, setNoHeartFilter] = useHashParam("nxh", false);
+  const [noCategoryFilter, setNoCategoryFilter] = useHashParam("nxc", false);
+  const [journalSortDir, setJournalSortDir] = useHashParam("njd", "desc");
+  const [page, setPage] = useHashParam("np", 0);
   const [expanded, setExpanded] = useState(null);
   const [status, setStatus] = useState("");
   const [importing, setImporting] = useState(null);
@@ -51,7 +52,7 @@ export default function NotesTab({
   const [dragFromIdx, setDragFromIdx] = useState(null);
   const [dropGapIdx, setDropGapIdx] = useState(null);
   const [settling, setSettling] = useState(false);
-  const [listCategoryFilter, setListCategoryFilter] = useState("all");
+  const [listCategoryFilter, setListCategoryFilter] = useHashParam("nlc", "all");
   const cardRefsMap = useRef({}); // noteId -> DOM element
   const prevRectsRef = useRef({}); // noteId -> DOMRect snapshot before reorder
   const renameInputRef = useRef(null);
@@ -554,15 +555,17 @@ export default function NotesTab({
     setBulkSuggesting(false);
   }, [embeddingStore, embeddingModel, topics, bitToTouchstone, filtered, onUpdateNote, bulkSuggesting]);
 
-  const FilterPill = ({ label, value, current, onClick }) => (
+  const FilterBtn = ({ label, value, current, onClick, first, last }) => (
     <button
       onClick={() => onClick(value)}
       style={{
-        padding: "3px 10px", borderRadius: 12, border: "1px solid",
-        borderColor: current === value ? "#6366f1" : "#555",
-        background: current === value ? "#6366f1" : "transparent",
-        color: current === value ? "#fff" : "#ccc",
-        cursor: "pointer", fontSize: 12,
+        padding: "3px 8px", border: "1px solid",
+        borderColor: current === value ? "#6366f1" : "#333",
+        background: current === value ? "#6366f1" : "#0c0c14",
+        color: current === value ? "#fff" : "#999",
+        cursor: "pointer", fontSize: 11,
+        borderRadius: first && last ? 4 : first ? "4px 0 0 4px" : last ? "0 4px 4px 0" : 0,
+        marginLeft: first ? 0 : -1,
       }}
     >
       {label}
@@ -586,71 +589,79 @@ export default function NotesTab({
   return (
     <div style={{ padding: 16, maxWidth: 1100, margin: "0 auto" }}>
       {/* Filters */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
         <input
           type="text"
           placeholder="Search notes..."
           value={search}
           onChange={e => { setSearch(e.target.value); setPage(0); }}
-          style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid #555", background: "#0f172a", color: "#e2e8f0", width: 200, fontSize: 13 }}
+          style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid #333", background: "#0d1020", color: "#e2e8f0", width: 160, fontSize: 12 }}
         />
-        <span style={{ fontSize: 11, color: "#64748b" }}>Gen:</span>
-        <FilterPill label="All" value="all" current={genFilter} onClick={v => { setGenFilter(v); setPage(0); }} />
-        <FilterPill label="g1" value="g1" current={genFilter} onClick={v => { setGenFilter(v); setPage(0); }} />
-        <FilterPill label="g2" value="g2" current={genFilter} onClick={v => { setGenFilter(v); setPage(0); }} />
-        <span style={{ fontSize: 11, color: "#64748b", marginLeft: 8 }}>Source:</span>
-        <FilterPill label="All" value="all" current={sourceFilter} onClick={v => { setSourceFilter(v); setTagFilter("all"); setPage(0); }} />
-        <FilterPill label="ClickUp" value="clickup" current={sourceFilter} onClick={v => { setSourceFilter(v); setPage(0); }} />
-        <FilterPill label="Keep" value="keep" current={sourceFilter} onClick={v => { setSourceFilter(v); setTagFilter("all"); setPage(0); }} />
-        <FilterPill label="Journal" value="journal" current={sourceFilter} onClick={v => { setSourceFilter(v); setTagFilter("all"); setPage(0); }} />
-        <button
-          onClick={() => { setCategoryFilter(categoryFilter === "prompts" ? "all" : "prompts"); setPage(0); }}
-          style={{
-            padding: "3px 10px", borderRadius: 12, fontSize: 12, cursor: "pointer", marginLeft: 4,
-            border: `1px solid ${categoryFilter === "prompts" ? "#0284c7" : "#555"}`,
-            background: categoryFilter === "prompts" ? "#1a2332" : "transparent",
-            color: categoryFilter === "prompts" ? "#7dd3fc" : "#ccc",
-          }}
-        >
-          Prompts
-        </button>
-        <button
-          onClick={() => { setHeartFilter(h => !h); if (!heartFilter) setNoHeartFilter(false); setPage(0); }}
-          style={{
-            padding: "3px 10px", borderRadius: 12, fontSize: 12, cursor: "pointer",
-            border: `1px solid ${heartFilter ? "#e11d48" : "#555"}`,
-            background: heartFilter ? "#1c0a10" : "transparent",
-            color: heartFilter ? "#fb7185" : "#ccc",
-          }}
-        >
-          ❤️
-        </button>
-        <button
-          onClick={() => { setNoHeartFilter(h => !h); if (!noHeartFilter) setHeartFilter(false); setPage(0); }}
-          style={{
-            padding: "3px 10px", borderRadius: 12, fontSize: 12, cursor: "pointer",
-            border: `1px solid ${noHeartFilter ? "#e11d48" : "#555"}`,
-            background: noHeartFilter ? "#1c0a10" : "transparent",
-            color: noHeartFilter ? "#fb7185" : "#ccc",
-          }}
-          title="No heart"
-        >
-          🚫❤️
-        </button>
-        <button
-          onClick={() => { setNoCategoryFilter(h => !h); setPage(0); }}
-          style={{
-            padding: "3px 10px", borderRadius: 12, fontSize: 12, cursor: "pointer",
-            border: `1px solid ${noCategoryFilter ? "#fbbf24" : "#555"}`,
-            background: noCategoryFilter ? "#1a1608" : "transparent",
-            color: noCategoryFilter ? "#fbbf24" : "#ccc",
-          }}
-          title="No category"
-        >
-          🏷️✖️
-        </button>
+        {/* Source group */}
+        <div style={{ display: "flex" }}>
+          <FilterBtn label="All" value="all" current={sourceFilter} onClick={v => { setSourceFilter(v); setTagFilter("all"); setPage(0); }} first />
+          <FilterBtn label="ClickUp" value="clickup" current={sourceFilter} onClick={v => { setSourceFilter(v); setPage(0); }} />
+          <FilterBtn label="Keep" value="keep" current={sourceFilter} onClick={v => { setSourceFilter(v); setTagFilter("all"); setPage(0); }} />
+          <FilterBtn label="Journal" value="journal" current={sourceFilter} onClick={v => { setSourceFilter(v); setTagFilter("all"); setPage(0); }} last />
+        </div>
+        {/* Gen group */}
+        <div style={{ display: "flex" }}>
+          <FilterBtn label="All" value="all" current={genFilter} onClick={v => { setGenFilter(v); setPage(0); }} first />
+          <FilterBtn label="g1" value="g1" current={genFilter} onClick={v => { setGenFilter(v); setPage(0); }} />
+          <FilterBtn label="g2" value="g2" current={genFilter} onClick={v => { setGenFilter(v); setPage(0); }} last />
+        </div>
+        {/* Toggle filters group */}
+        <div style={{ display: "flex" }}>
+          <button
+            onClick={() => { setCategoryFilter(categoryFilter === "prompts" ? "all" : "prompts"); setPage(0); }}
+            title="Prompts"
+            style={{
+              padding: "3px 8px", fontSize: 11, cursor: "pointer", borderRadius: "4px 0 0 4px",
+              border: `1px solid ${categoryFilter === "prompts" ? "#0284c7" : "#333"}`,
+              background: categoryFilter === "prompts" ? "#1a2332" : "#0c0c14",
+              color: categoryFilter === "prompts" ? "#7dd3fc" : "#999",
+            }}
+          >
+            💡
+          </button>
+          <button
+            onClick={() => { setHeartFilter(h => !h); if (!heartFilter) setNoHeartFilter(false); setPage(0); }}
+            style={{
+              padding: "3px 8px", fontSize: 11, cursor: "pointer", borderRadius: 0, marginLeft: -1,
+              border: `1px solid ${heartFilter ? "#e11d48" : "#333"}`,
+              background: heartFilter ? "#1c0a10" : "#0c0c14",
+              color: heartFilter ? "#fb7185" : "#999",
+            }}
+          >
+            ❤️
+          </button>
+          <button
+            onClick={() => { setNoHeartFilter(h => !h); if (!noHeartFilter) setHeartFilter(false); setPage(0); }}
+            title="No heart"
+            style={{
+              padding: "3px 8px", fontSize: 11, cursor: "pointer", borderRadius: 0, marginLeft: -1,
+              border: `1px solid ${noHeartFilter ? "#e11d48" : "#333"}`,
+              background: noHeartFilter ? "#1c0a10" : "#0c0c14",
+              color: noHeartFilter ? "#fb7185" : "#999",
+            }}
+          >
+            🚫❤️
+          </button>
+          <button
+            onClick={() => { setNoCategoryFilter(h => !h); setPage(0); }}
+            title="No category"
+            style={{
+              padding: "3px 8px", fontSize: 11, cursor: "pointer", borderRadius: "0 4px 4px 0", marginLeft: -1,
+              border: `1px solid ${noCategoryFilter ? "#fbbf24" : "#333"}`,
+              background: noCategoryFilter ? "#1a1608" : "#0c0c14",
+              color: noCategoryFilter ? "#fbbf24" : "#999",
+            }}
+          >
+            🏷️✖️
+          </button>
+        </div>
         {categoryFilter !== "all" && categoryFilter !== "prompts" && (
-          <span style={{ fontSize: 11, color: CATEGORY_COLORS[categoryFilter]?.color || "#94a3b8", marginLeft: 4 }}>
+          <span style={{ fontSize: 11, color: CATEGORY_COLORS[categoryFilter]?.color || "#94a3b8" }}>
             [{categoryFilter}]
             <button onClick={() => setCategoryFilter("all")} style={{ border: "none", background: "transparent", color: "#64748b", cursor: "pointer", fontSize: 11, padding: "0 4px" }}>&times;</button>
           </span>
@@ -658,22 +669,33 @@ export default function NotesTab({
         {sourceFilter === "journal" && (
           <button
             onClick={() => setJournalSortDir(d => d === "desc" ? "asc" : "desc")}
-            style={{ padding: "3px 10px", borderRadius: 6, border: "1px solid #555", background: "transparent", color: "#ccc", cursor: "pointer", fontSize: 12, marginLeft: 4 }}
+            style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid #333", background: "#0c0c14", color: "#999", cursor: "pointer", fontSize: 11 }}
           >
             Date {journalSortDir === "desc" ? "\u2193" : "\u2191"}
+          </button>
+        )}
+        <div style={{ flex: 1 }} />
+        {(search || genFilter !== "all" || sourceFilter !== "all" || tagFilter !== "all" || categoryFilter !== "all" || heartFilter || noHeartFilter || noCategoryFilter) && (
+          <button
+            onClick={() => { setSearch(""); setGenFilter("all"); setSourceFilter("all"); setTagFilter("all"); setCategoryFilter("all"); setHeartFilter(false); setNoHeartFilter(false); setNoCategoryFilter(false); setListCategoryFilter("all"); setPage(0); }}
+            title="Clear all filters"
+            style={{ padding: "3px 8px", borderRadius: 4, fontSize: 11, cursor: "pointer", border: "1px solid #ff6b6b33", background: "#1a0a0a", color: "#ff6b6b" }}
+          >
+            🧹
           </button>
         )}
         {!rearranging ? (
           <button
             onClick={handleStartRearrange}
-            style={{ padding: "3px 10px", borderRadius: 6, border: "1px solid #555", background: "transparent", color: "#a78bfa", cursor: "pointer", fontSize: 12, marginLeft: 4 }}
+            title="Rearrange"
+            style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid #333", background: "#0c0c14", color: "#a78bfa", cursor: "pointer", fontSize: 11 }}
           >
-            Rearrange
+            🖐️
           </button>
         ) : (
           <button
             onClick={() => setRearranging(false)}
-            style={{ padding: "3px 10px", borderRadius: 6, border: "1px solid #a78bfa", background: "#312e81", color: "#c4b5fd", cursor: "pointer", fontSize: 12, marginLeft: 4 }}
+            style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #a78bfa", background: "#312e81", color: "#c4b5fd", cursor: "pointer", fontSize: 11 }}
           >
             Done
           </button>
@@ -753,10 +775,7 @@ export default function NotesTab({
                       {tagFilter}
                     </div>
                   )}
-                  <div style={{ fontSize: 10, color: "#64748b", marginBottom: 6 }}>
-                    {filtered.length} notes &middot; {matchedCount} matched
-                  </div>
-                  <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 2, flexWrap: "wrap", marginTop: 2 }}>
                     {CATEGORIES.map(({ key, label }) => {
                       const c = CATEGORY_COLORS[key];
                       const active = currentListCategory === key;

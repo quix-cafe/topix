@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useMemo } from "react";
+import { useHashParam } from "../hooks/useHashParam";
 import * as d3 from "d3";
 
 export function NetworkGraph({ topics, matches }) {
@@ -145,9 +146,9 @@ export function NetworkGraph({ topics, matches }) {
   }, [topics, matches]);
 
   // Table data
-  const [tableSortCol, setTableSortCol] = useState("confidence");
-  const [tableSortDir, setTableSortDir] = useState("desc");
-  const [filterRel, setFilterRel] = useState("all");
+  const [tableSortCol, setTableSortCol] = useHashParam("gsc", "confidence");
+  const [tableSortDir, setTableSortDir] = useHashParam("gsd", "desc");
+  const [filterRel, setFilterRel] = useHashParam("gr", "all");
 
   const topicMap = useMemo(() => {
     const m = new Map();

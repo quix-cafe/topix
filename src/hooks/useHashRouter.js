@@ -4,9 +4,11 @@ const VALID_TABS = new Set(["play", "transcripts", "bits", "touchstones", "notes
 
 function parseHash(hash) {
   const clean = hash.replace(/^#\/?/, "");
-  const [pathPart, queryPart] = clean.split("?");
+  const qIdx = clean.indexOf("?");
+  const pathPart = qIdx === -1 ? clean : clean.slice(0, qIdx);
+  const queryPart = qIdx === -1 ? "" : clean.slice(qIdx + 1);
   const segments = pathPart.split("/").filter(Boolean);
-  const params = new URLSearchParams(queryPart || "");
+  const params = new URLSearchParams(queryPart);
 
   const tab = VALID_TABS.has(segments[0]) ? segments[0] : "play";
   const subId = segments[1] ? decodeURIComponent(segments[1]) : null;
@@ -15,11 +17,22 @@ function parseHash(hash) {
   return { tab, subId, bitId };
 }
 
-function buildHash(tab, subId, bitId) {
+function buildHash(tab, subId, bitId, preserveParams = true) {
   let hash = `#/${tab || "play"}`;
   if (subId) hash += `/${encodeURIComponent(subId)}`;
-  if (bitId) hash += `?bit=${bitId}`;
+  // Preserve existing query params from the URL
+  const existing = preserveParams ? getCurrentParams() : new URLSearchParams();
+  if (bitId) existing.set("bit", bitId);
+  else existing.delete("bit");
+  const qs = existing.toString();
+  if (qs) hash += `?${qs}`;
   return hash;
+}
+
+function getCurrentParams() {
+  const hash = window.location.hash;
+  const qIdx = hash.indexOf("?");
+  return qIdx === -1 ? new URLSearchParams() : new URLSearchParams(hash.slice(qIdx));
 }
 
 // Sentinel to distinguish "not set" from "set to null"

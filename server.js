@@ -120,6 +120,8 @@ async function ollamaHealthCheck() {
   }
 }
 
+// Todo: a sudo restart can't actually be completed without asking for my password each time. Make this an api restart, or other method.
+
 async function restartOllama() {
   console.log("[Ollama] Restarting via sudo systemctl restart ollama...");
 

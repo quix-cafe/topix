@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { useHashParam } from "../hooks/useHashParam";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 import { SYSTEM_SYNTHESIZE_TOUCHSTONE, SYSTEM_TOUCHSTONE_COMMUNE, SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
 import { searchTouchstones } from "../utils/touchstoneSearch";
@@ -22,7 +23,7 @@ const EXCLUSIVE_RELATIONSHIPS = new Set(["same_bit", "evolved"]);
  * TouchstonePanel - Display and explore touchstones (recurring jokes across transcripts)
  */
 
-
+// Todo: clicking the 'detail' on the bit card should not jump the interface to the 'bits' tab. move the action buttons to the top and make the 'detail' button larger and colored. do the same to the mix button. move them to the top right and remove the duplicate 'blessed' etc. indicator -- the dropdown selector basically functions as the indicator. 
 
 export function TouchstonePanel({
   touchstones, bits, matches, notes, onSelectBit, onHunt, onRectifyOverlaps, huntProgress, processing,
@@ -31,11 +32,11 @@ export function TouchstonePanel({
   onCommuneTouchstone, onSynthesizeTouchstone, onMassTouchstoneCommunion, onSaintInstance,
   initialTouchstoneId, onConsumeInitialTouchstone, onGoToNote,
 }) {
-  const [selectedTouchstoneId, setSelectedTouchstoneIdRaw] = useState(null);
-  const setSelectedTouchstoneId = (id) => { setSelectedTouchstoneIdRaw(id); if (id) window.scrollTo(0, 0); };
+  const [selectedTouchstoneId, setSelectedTouchstoneIdRaw] = useHashParam("tsid", "");
+  const setSelectedTouchstoneId = (id) => { setSelectedTouchstoneIdRaw(id || ""); if (id) window.scrollTo(0, 0); };
   const [autoOpenMerge, setAutoOpenMerge] = useState(false);
   const [creatingFrom, setCreatingFrom] = useState(null); // bit to seed new touchstone
-  const [touchstoneFilter, setTouchstoneFilter] = useState("");
+  const [touchstoneFilter, setTouchstoneFilter] = useHashParam("tf", "");
   const [newTouchstoneName, setNewTouchstoneName] = useState("");
 
   // Navigate to a specific touchstone from external (e.g. DetailPanel)
@@ -1384,60 +1385,6 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
         )}
       </div>
 
-      {/* Matched notes */}
-      {(() => {
-        const matchedNotes = (notes || []).filter(n => n.matchedTouchstoneId === touchstone.id);
-        if (matchedNotes.length === 0) return null;
-        return (
-          <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
-              Notes ({matchedNotes.length})
-            </div>
-            {matchedNotes.map(note => (
-              <div
-                key={note.id}
-                onClick={() => onGoToNote?.(note)}
-                style={{
-                  padding: "6px 10px",
-                  background: "#0a0a14",
-                  borderRadius: 5,
-                  border: "1px solid #1a1a2a",
-                  marginBottom: 4,
-                  cursor: onGoToNote ? "pointer" : "default",
-                  transition: "border-color 0.15s",
-                }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = "#da77f2"; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a1a2a"; }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 12, color: "#ddd", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {note.title || note.text?.substring(0, 60) || "Untitled"}
-                  </span>
-                  {(note.tags || []).length > 0 && (
-                    <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "#da77f218", color: "#da77f2", border: "1px solid #da77f233", flexShrink: 0 }}>
-                      {note.tags[0]}
-                    </span>
-                  )}
-                  <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "#1a1a2a", color: "#888", flexShrink: 0 }}>
-                    {note.source}
-                  </span>
-                  {note.matchScore != null && (
-                    <span style={{ fontSize: 9, color: "#6ee7b7", flexShrink: 0 }}>
-                      {Math.round(note.matchScore * 100)}%
-                    </span>
-                  )}
-                </div>
-                {note.text && (
-                  <div style={{ fontSize: 11, color: "#777", marginTop: 3, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {note.text.substring(0, 120)}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        );
-      })()}
-
       {/* Match details & reasoning */}
       <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
           {(() => {
@@ -1556,6 +1503,60 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
             )}
           </div>
         </div>
+
+      {/* Matched notes */}
+      {(() => {
+        const matchedNotes = (notes || []).filter(n => n.matchedTouchstoneId === touchstone.id);
+        if (matchedNotes.length === 0) return null;
+        return (
+          <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+              Notes ({matchedNotes.length})
+            </div>
+            {matchedNotes.map(note => (
+              <div
+                key={note.id}
+                onClick={() => onGoToNote?.(note)}
+                style={{
+                  padding: "6px 10px",
+                  background: "#0a0a14",
+                  borderRadius: 5,
+                  border: "1px solid #1a1a2a",
+                  marginBottom: 4,
+                  cursor: onGoToNote ? "pointer" : "default",
+                  transition: "border-color 0.15s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = "#da77f2"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a1a2a"; }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 12, color: "#ddd", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {note.title || note.text?.substring(0, 60) || "Untitled"}
+                  </span>
+                  {(note.tags || []).length > 0 && (
+                    <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "#da77f218", color: "#da77f2", border: "1px solid #da77f233", flexShrink: 0 }}>
+                      {note.tags[0]}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "#1a1a2a", color: "#888", flexShrink: 0 }}>
+                    {note.source}
+                  </span>
+                  {note.matchScore != null && (
+                    <span style={{ fontSize: 9, color: "#6ee7b7", flexShrink: 0 }}>
+                      {Math.round(note.matchScore * 100)}%
+                    </span>
+                  )}
+                </div>
+                {note.text && (
+                  <div style={{ fontSize: 11, color: "#777", marginTop: 3, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {note.text.substring(0, 120)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Word Corrections */}
       {onUpdateTouchstoneEdits && (

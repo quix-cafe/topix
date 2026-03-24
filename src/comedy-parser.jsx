@@ -32,6 +32,45 @@ import { useNotes } from "./hooks/useNotes";
 import NotesTab from "./components/NotesTab";
 import LLMConfigPanel from "./components/LLMConfigPanel";
 
+// Todo: general cleanup -- remove any dead or unused code from the entire app, and make sure any duplicate or similar code is consolidated into reusable functions or components. This includes any old UI elements, helper functions, or hooks that are no longer in use after the recent refactors.
+
+// Todo: add a 'low power mode' button to the top that pauses all background operations (embedding generation, hunting, etc.) to reduce CPU usage when the app is open but idle. This would set a global 'lowPowerMode' state that all relevant hooks and operations check before running, and display a warning banner when enabled. 
+
+function ClearFiltersButton({ activeTab }) {
+  const [hasFilters, setHasFilters] = useState(() => window.location.hash.includes("?"));
+  useEffect(() => {
+    const check = () => setHasFilters(window.location.hash.includes("?"));
+    window.addEventListener("hashchange", check);
+    window.addEventListener("popstate", check);
+    // Poll briefly since replaceState doesn't fire events
+    const id = setInterval(check, 500);
+    return () => { window.removeEventListener("hashchange", check); window.removeEventListener("popstate", check); clearInterval(id); };
+  }, []);
+  return (
+    <button
+      onClick={() => {
+        const pathPart = window.location.hash.split("?")[0] || `#/${activeTab}`;
+        history.replaceState(null, "", pathPart);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+        setHasFilters(false);
+      }}
+      title="Clear all URL filters and reset to current tab"
+      style={{
+        padding: "5px 10px",
+        background: hasFilters ? "#1a2a1b" : "#1a1a2a",
+        border: `1px solid ${hasFilters ? "#6bff7f44" : "#2a2a40"}`,
+        color: hasFilters ? "#7fff6b" : "#444",
+        borderRadius: "6px",
+        fontSize: 16,
+        fontWeight: 600,
+        cursor: "pointer",
+      }}
+    >
+      ↺
+    </button>
+  );
+}
+
 const initialState = {
   transcripts: [],
   topics: [],
@@ -612,6 +651,7 @@ export default function ComedyParser() {
             >
               {debugMode ? "DEBUG ON" : "DEBUG"}
             </button>
+            <ClearFiltersButton activeTab={activeTab} />
           </div>
         </div>
 
@@ -1138,6 +1178,7 @@ export default function ComedyParser() {
         getMatchesForTopic={getMatchesForTopic}
         onBaptize={bitOps.handleBaptizeBit}
         onRename={bitOps.handleConfirmRename}
+        onReparseTags={bitOps.handleReparseTags}
         onCommuneBit={communion.handleCommuneBit}
         onDeleteBit={bitMgmt.handleDeleteBit}
         onApproveGap={handleApproveGap}

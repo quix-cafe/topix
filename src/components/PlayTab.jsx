@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useReducer, useRef } from "react";
+import { useHashParam } from "../hooks/useHashParam";
 import { parseFilenameClient, ratingColor, ratingValue, RATING_FONT } from "../utils/filenameUtils";
 
 const SERVER_URL = "http://localhost:3001";
@@ -58,8 +59,12 @@ export function PlayTab({
     loading: true,
   });
 
-  const { files, selectedHash, selectedDetail, search, filter, saving, syncDiff, loading } = state;
+  const { files, selectedHash, selectedDetail, search, saving, syncDiff, loading } = state;
   const set = (field, value) => dispatch({ type: "SET", field, value });
+
+  // URL-synced state
+  const [hashSelectedHash, setHashSelectedHash] = useHashParam("pf", "");
+  const [filter, setFilterParam] = useHashParam("pp", "all");
 
   // Keep a ref to transcripts so computeSyncDiff always uses latest
   const transcriptsRef = useRef(transcripts);
@@ -198,9 +203,19 @@ export function PlayTab({
   }, [files, vaultReady]);
 
 
+  // Restore selection from URL after files load
+  const restoredFromUrl = useRef(false);
+  useEffect(() => {
+    if (files.length > 0 && hashSelectedHash && !selectedHash && !restoredFromUrl.current) {
+      restoredFromUrl.current = true;
+      selectFile(hashSelectedHash);
+    }
+  }, [files, hashSelectedHash, selectedHash]);
+
   // Select a file
   const selectFile = useCallback(async (hash) => {
     set("selectedHash", hash);
+    setHashSelectedHash(hash || "");
     try {
       const res = await fetch(`${SERVER_URL}/api/transcripts/${hash}`);
       if (!res.ok) throw new Error(`Server ${res.status}`);
@@ -553,7 +568,7 @@ export function PlayTab({
           {FILTERS.map((f) => (
             <button
               key={f.key}
-              onClick={() => set("filter", f.key)}
+              onClick={() => { set("filter", f.key); setFilterParam(f.key); }}
               style={{
                 padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: "pointer", border: "1px solid",
                 background: filter === f.key ? "#ff6b6b18" : "transparent",

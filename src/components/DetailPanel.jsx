@@ -28,6 +28,7 @@ export function DetailPanel({
   onRemoveFromTouchstone,
   onBaptize,
   onRename,
+  onReparseTags,
   onCommuneBit,
   onDeleteBit,
   onApproveGap,
@@ -474,12 +475,23 @@ export function DetailPanel({
       </div>
 
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
-          Tags
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1 }}>
+            Tags {(selectedTopic.tags || []).length > 0 && `(${selectedTopic.tags.length})`}
+          </div>
+          {onReparseTags && (
+            <button
+              onClick={() => onReparseTags(selectedTopic.id)}
+              title="Re-generate tags via LLM (useful if too many tags accumulated)"
+              style={{ background: "none", border: "1px solid #333", color: "#c4b5fd", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer", fontWeight: 600 }}
+            >
+              Reparse
+            </button>
+          )}
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-          {(selectedTopic.tags || []).map((tag) => (
-            <span key={tag} className="tag-pill" style={{
+          {(selectedTopic.tags || []).map((tag, i) => (
+            <span key={`${tag}-${i}`} className="tag-pill" style={{
               background: "#ff6b6b10", color: "#ff8888", border: "1px solid #ff6b6b20",
             }}>
               #{tag}

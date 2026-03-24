@@ -1,9 +1,28 @@
+import { useState } from "react";
+
 export function ExportTab({
   topics,
   exportVault,
   exportMarkdownZip,
   exportSingleMd,
+  syncToVault,
 }) {
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const data = await syncToVault();
+      setSyncResult({ ok: true, written: data.written, errors: data.errors || [] });
+    } catch (e) {
+      setSyncResult({ ok: false, error: e.message });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: 560 }}>
       <h2 style={{
@@ -16,12 +35,29 @@ export function ExportTab({
         Export to Obsidian
       </h2>
 
+      <div className="card" style={{ cursor: "default", borderLeft: "3px solid #51cf66" }}>
+        <div style={{ fontWeight: 600, color: "#eee", marginBottom: 6 }}>Sync to Vault</div>
+        <p style={{ fontSize: 13, color: "#888", marginBottom: 12, lineHeight: 1.5 }}>
+          Write all generated files directly to <code style={{ color: "#74c0fc" }}>~/ownCloud/Comedy/</code>. Updates Jokes/, Touchstones/, Performance Flows/, and the MOC.
+        </p>
+        <button className="btn btn-primary" onClick={handleSync} disabled={topics.length === 0 || syncing}>
+          {syncing ? "Syncing..." : "Sync to Vault"}
+        </button>
+        {syncResult && (
+          <div style={{ marginTop: 8, fontSize: 12, color: syncResult.ok ? "#51cf66" : "#ff6b6b" }}>
+            {syncResult.ok
+              ? `Wrote ${syncResult.written} files.${syncResult.errors.length > 0 ? ` ${syncResult.errors.length} errors.` : ""}`
+              : `Error: ${syncResult.error}`}
+          </div>
+        )}
+      </div>
+
       <div className="card" style={{ cursor: "default" }}>
         <div style={{ fontWeight: 600, color: "#eee", marginBottom: 6 }}>JSON Vault Export</div>
         <p style={{ fontSize: 13, color: "#888", marginBottom: 12, lineHeight: 1.5 }}>
-          Downloads a structured JSON file containing all markdown files, frontmatter, wikilinks, and tags. Use a script or manually extract into your Obsidian vault.
+          Downloads a structured JSON file containing all markdown files, wikilinks, and tags.
         </p>
-        <button className="btn btn-primary" onClick={exportVault} disabled={topics.length === 0}>
+        <button className="btn btn-secondary" onClick={exportVault} disabled={topics.length === 0}>
           Download JSON Vault
         </button>
       </div>
@@ -39,7 +75,7 @@ export function ExportTab({
       <div className="card" style={{ cursor: "default" }}>
         <div style={{ fontWeight: 600, color: "#eee", marginBottom: 6 }}>Individual Files</div>
         <p style={{ fontSize: 13, color: "#888", marginBottom: 12, lineHeight: 1.5 }}>
-          Downloads each topic as a separate .md file. Your browser may ask permission for multiple downloads. Place all files in a single Obsidian vault folder.
+          Downloads each topic as a separate .md file. Your browser may ask permission for multiple downloads.
         </p>
         <button className="btn btn-secondary" onClick={exportMarkdownZip} disabled={topics.length === 0}>
           Download All .md Files
@@ -57,7 +93,7 @@ export function ExportTab({
           Obsidian Setup Tips
         </div>
         <div style={{ fontSize: 12, color: "#777", lineHeight: 1.7 }}>
-          Each exported bit becomes a note with YAML frontmatter (tags, tone, structure, keywords) and <code style={{ color: "#74c0fc" }}>[[wikilinks]]</code> to matched bits. For the best graph experience, enable the core <strong style={{ color: "#bbb" }}>Graph View</strong> plugin and install <strong style={{ color: "#bbb" }}>Dataview</strong> for querying by tag/property. The <strong style={{ color: "#bbb" }}>Juggl</strong> or <strong style={{ color: "#bbb" }}>Graph Analysis</strong> community plugins will give you the richest network visualization. Connection types (same_bit, evolved, callback, related) and confidence scores are included in each note's links section.
+          Each exported bit becomes a note with <code style={{ color: "#74c0fc" }}>[[wikilinks]]</code> to matched bits and touchstones. For the best graph experience, enable the core <strong style={{ color: "#bbb" }}>Graph View</strong> plugin and install <strong style={{ color: "#bbb" }}>Dataview</strong> for querying by tag/property. Connection types (same_bit, evolved, callback, related) and confidence scores are included in each note's links section.
         </div>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { embedText, cosineSimilarity } from "../utils/embeddings";
+import { searchTouchstones } from "../utils/touchstoneSearch";
 
 const CATEGORY_COLORS = {
   set: { bg: "#1e3a2f", color: "#6ee7b7", border: "#059669" },
@@ -30,6 +31,8 @@ export default function NotesTab({
   const [tagFilter, setTagFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [heartFilter, setHeartFilter] = useState(false);
+  const [noHeartFilter, setNoHeartFilter] = useState(false);
+  const [noCategoryFilter, setNoCategoryFilter] = useState(false);
   const [journalSortDir, setJournalSortDir] = useState("desc");
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState(null);
@@ -109,7 +112,7 @@ export default function NotesTab({
         map[t] = (map[t] || 0) + 1;
       }
       if (!n.tags || n.tags.length === 0) {
-        map["(untagged)"] = (map["(untagged)"] || 0) + 1;
+        map["(unlisted)"] = (map["(unlisted)"] || 0) + 1;
       }
     }
     return Object.entries(map).sort((a, b) => {
@@ -121,7 +124,7 @@ export default function NotesTab({
   }, [notes, listMeta]);
 
   // Flat list of all unique tag names for autosuggest
-  const allTagNames = useMemo(() => tagList.map(([t]) => t).filter(t => t !== "(untagged)"), [tagList]);
+  const allTagNames = useMemo(() => tagList.map(([t]) => t).filter(t => t !== "(unlisted)"), [tagList]);
 
   // Resolve effective category for a note:
   // - clickup notes: inherit from their list's category in listMeta
@@ -143,7 +146,7 @@ export default function NotesTab({
     if (genFilter !== "all") result = result.filter(n => n.generation === genFilter);
     if (sourceFilter !== "all") result = result.filter(n => n.source === sourceFilter);
     if (tagFilter !== "all") {
-      if (tagFilter === "(untagged)") {
+      if (tagFilter === "(unlisted)") {
         result = result.filter(n => !n.tags || n.tags.length === 0);
       } else {
         result = result.filter(n => (n.tags || []).includes(tagFilter));
@@ -154,6 +157,12 @@ export default function NotesTab({
     }
     if (heartFilter) {
       result = result.filter(n => n.hearted);
+    }
+    if (noHeartFilter) {
+      result = result.filter(n => !n.hearted);
+    }
+    if (noCategoryFilter) {
+      result = result.filter(n => !getNoteCategory(n));
     }
     if (search) {
       const q = search.toLowerCase();
@@ -184,7 +193,7 @@ export default function NotesTab({
       });
     }
     return result;
-  }, [notes, genFilter, sourceFilter, tagFilter, categoryFilter, heartFilter, search, getNoteCategory, journalSortDir]);
+  }, [notes, genFilter, sourceFilter, tagFilter, categoryFilter, heartFilter, noHeartFilter, noCategoryFilter, search, getNoteCategory, journalSortDir]);
 
   // Count matched notes in current filtered view
   const matchedCount = useMemo(() => {
@@ -308,10 +317,10 @@ export default function NotesTab({
   }, [filtered, onUpdateSortOrders]);
 
   // List category
-  const currentListCategory = tagFilter !== "all" && tagFilter !== "(untagged)" ? ((listMeta[tagFilter]?.category === "setlist" ? "set" : listMeta[tagFilter]?.category) || null) : null;
+  const currentListCategory = tagFilter !== "all" && tagFilter !== "(unlisted)" ? ((listMeta[tagFilter]?.category === "setlist" ? "set" : listMeta[tagFilter]?.category) || null) : null;
 
   const handleSetListCategory = async (category) => {
-    if (!tagFilter || tagFilter === "all" || tagFilter === "(untagged)") return;
+    if (!tagFilter || tagFilter === "all" || tagFilter === "(unlisted)") return;
     const newCat = currentListCategory === category ? null : category;
     const updated = await onUpdateListMeta(tagFilter, { category: newCat });
     setListMeta(updated);
@@ -459,11 +468,7 @@ export default function NotesTab({
   };
 
   const filteredTouchstones = useMemo(() => {
-    if (!matchSearch) return allTouchstones.slice(0, 20);
-    const q = matchSearch.toLowerCase();
-    return allTouchstones.filter(t =>
-      t.name?.toLowerCase().includes(q) || t.summary?.toLowerCase().includes(q)
-    ).slice(0, 20);
+    return searchTouchstones(allTouchstones, matchSearch).slice(0, 20);
   }, [allTouchstones, matchSearch]);
 
   // Embedding-based touchstone suggestions
@@ -610,7 +615,7 @@ export default function NotesTab({
           Prompts
         </button>
         <button
-          onClick={() => { setHeartFilter(h => !h); setPage(0); }}
+          onClick={() => { setHeartFilter(h => !h); if (!heartFilter) setNoHeartFilter(false); setPage(0); }}
           style={{
             padding: "3px 10px", borderRadius: 12, fontSize: 12, cursor: "pointer",
             border: `1px solid ${heartFilter ? "#e11d48" : "#555"}`,
@@ -619,6 +624,30 @@ export default function NotesTab({
           }}
         >
           ❤️
+        </button>
+        <button
+          onClick={() => { setNoHeartFilter(h => !h); if (!noHeartFilter) setHeartFilter(false); setPage(0); }}
+          style={{
+            padding: "3px 10px", borderRadius: 12, fontSize: 12, cursor: "pointer",
+            border: `1px solid ${noHeartFilter ? "#e11d48" : "#555"}`,
+            background: noHeartFilter ? "#1c0a10" : "transparent",
+            color: noHeartFilter ? "#fb7185" : "#ccc",
+          }}
+          title="No heart"
+        >
+          🚫❤️
+        </button>
+        <button
+          onClick={() => { setNoCategoryFilter(h => !h); setPage(0); }}
+          style={{
+            padding: "3px 10px", borderRadius: 12, fontSize: 12, cursor: "pointer",
+            border: `1px solid ${noCategoryFilter ? "#fbbf24" : "#555"}`,
+            background: noCategoryFilter ? "#1a1608" : "transparent",
+            color: noCategoryFilter ? "#fbbf24" : "#ccc",
+          }}
+          title="No category"
+        >
+          🏷️✖️
         </button>
         {categoryFilter !== "all" && categoryFilter !== "prompts" && (
           <span style={{ fontSize: 11, color: CATEGORY_COLORS[categoryFilter]?.color || "#94a3b8", marginLeft: 4 }}>
@@ -702,7 +731,7 @@ export default function NotesTab({
             </select>
             {/* Selected list details — always visible to prevent layout jumps */}
             <div style={{ marginBottom: 10, paddingBottom: 8, borderBottom: "1px solid #334155", minHeight: 44 }}>
-              {tagFilter !== "all" && tagFilter !== "(untagged)" ? (
+              {tagFilter !== "all" && tagFilter !== "(unlisted)" ? (
                 <>
                   {renamingList ? (
                     <form onSubmit={(e) => { e.preventDefault(); commitRename(); }} style={{ marginBottom: 4 }}>
@@ -750,11 +779,36 @@ export default function NotesTab({
                   </div>
                 </>
               ) : (
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#94a3b8" }}>
-                  {tagFilter === "(untagged)" ? "Untagged" : "All lists"}
-                  <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#94a3b8" }}>
+                    {tagFilter === "(unlisted)" ? "Unlisted" : "All lists"}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#64748b", marginTop: 4, marginBottom: tagFilter === "(unlisted)" ? 6 : 0 }}>
                     {filtered.length} notes &middot; {matchedCount} matched
                   </div>
+                  {tagFilter === "(unlisted)" && (
+                    <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+                      {CATEGORIES.filter(({ key }) => key === "project" || key === "prompts" || key === "misc").map(({ key, label }) => {
+                        const c = CATEGORY_COLORS[key];
+                        const active = categoryFilter === key;
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => { setCategoryFilter(active ? "all" : key); setPage(0); }}
+                            style={{
+                              padding: "1px 5px", borderRadius: 8, fontSize: 9, cursor: "pointer",
+                              border: `1px solid ${active ? c.border : "transparent"}`,
+                              background: active ? c.bg : "transparent",
+                              color: active ? c.color : c.color + "66",
+                              opacity: active ? 1 : 0.5,
+                            }}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -772,7 +826,7 @@ export default function NotesTab({
             {tagList
               .filter(([tag]) => {
                 if (listCategoryFilter === "all") return true;
-                if (tag === "(untagged)") return listCategoryFilter === "all";
+                if (tag === "(unlisted)") return listCategoryFilter === "all";
                 const tc = listMeta[tag]?.category === "setlist" ? "set" : listMeta[tag]?.category;
                 return tc === listCategoryFilter;
               })
@@ -781,7 +835,7 @@ export default function NotesTab({
                 return (
               <div
                 key={tag}
-                onClick={() => { setTagFilter(tag); if (tag === "(untagged)") setSourceFilter("all"); setPage(0); setRenamingList(false); }}
+                onClick={() => { setTagFilter(tag); if (tag === "(unlisted)") setSourceFilter("all"); setPage(0); setRenamingList(false); }}
                 style={{
                   padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 12, marginBottom: 1,
                   background: tagFilter === tag ? (isMisc ? "#151a22" : "#1e293b") : "transparent",
@@ -980,18 +1034,22 @@ export default function NotesTab({
                       >
                         {note.generation}
                       </button>
-                      {(note.tags || []).map(t => (
-                        <span key={t} style={{ background: "#334155", padding: "1px 6px", borderRadius: 8, fontSize: 10 }}>{t}</span>
+                      {(note.tags || []).map((t, i) => (
+                        <span key={`${t}-${i}`} style={{ background: "#334155", padding: "1px 6px", borderRadius: 8, fontSize: 10 }}>{t}</span>
                       ))}
                       {(() => {
                         const effCat = getNoteCategory(note);
                         const showPicker = catPickerNoteId === note.id;
                         const isAutoApplied = effCat && !note.noteCategory && note.source === "clickup";
+                        const isUnlisted = !note.tags || note.tags.length === 0;
+                        const availCats = isUnlisted
+                          ? CATEGORIES.filter(({ key }) => key !== "set" && key !== "category")
+                          : CATEGORIES;
                         // Show inline buttons if: picker is open, or no category set
                         if (showPicker || !effCat) {
                           return (
                             <span onClick={e => e.stopPropagation()} style={{ display: "inline-flex", gap: 2, alignItems: "center" }}>
-                              {CATEGORIES.map(({ key, label }) => {
+                              {availCats.map(({ key, label }) => {
                                 const cc = CATEGORY_COLORS[key];
                                 const active = effCat === key;
                                 return (
@@ -1111,8 +1169,8 @@ export default function NotesTab({
                       {/* Current tags */}
                       {(note.tags || []).length > 0 && (
                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
-                          {(note.tags || []).map(t => (
-                            <span key={t} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#334155", color: "#e2e8f0", display: "flex", alignItems: "center", gap: 4 }}>
+                          {(note.tags || []).map((t, i) => (
+                            <span key={`${t}-${i}`} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#334155", color: "#e2e8f0", display: "flex", alignItems: "center", gap: 4 }}>
                               {t}
                               <button
                                 onClick={(e) => removeFromList(e, note.id, t)}

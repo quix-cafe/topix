@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 import { SYSTEM_SYNTHESIZE_TOUCHSTONE, SYSTEM_TOUCHSTONE_COMMUNE, SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
+import { searchTouchstones } from "../utils/touchstoneSearch";
 
 function StyledFilename({ sourceFile, style }) {
   const p = parseFilenameClient(sourceFile || "");
@@ -235,8 +236,8 @@ export function TouchstonePanel({
       </div>
 
       {(() => {
-        const q = touchstoneFilter.trim().toLowerCase();
-        const filterList = (list) => q ? list.filter((t) => t.name.toLowerCase().includes(q)) : list;
+        const q = touchstoneFilter.trim();
+        const filterList = (list) => q ? searchTouchstones(list, q) : list;
         const fConfirmed = filterList(confirmed);
         const fPossible = filterList(possible);
         const fRejected = filterList(rejected);
@@ -260,7 +261,7 @@ export function TouchstonePanel({
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   {fConfirmed.map((touchstone) => (
-                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} notes={notes} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
                   ))}
                 </div>
               </div>
@@ -273,7 +274,7 @@ export function TouchstonePanel({
                 </h3>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   {fPossible.map((touchstone) => (
-                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onConfirm={onConfirmTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} notes={notes} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onConfirm={onConfirmTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
                   ))}
                 </div>
               </div>
@@ -286,7 +287,7 @@ export function TouchstonePanel({
                 </h3>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   {fRejected.map((touchstone) => (
-                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRestore={onRestoreTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} notes={notes} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRestore={onRestoreTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
                   ))}
                 </div>
               </div>
@@ -394,12 +395,13 @@ function pctColor(pct) {
   return "#cc5555";
 }
 
-function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, onMerge, onCommune, onSynthesize, processing, bits }) {
+function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, onMerge, onCommune, onSynthesize, processing, bits, notes }) {
   const instances = touchstone.instances || [];
   const sourceCount = new Set(instances.map((i) => i.sourceFile)).size;
   const instanceCount = instances.length;
   const sameBitCount = instances.filter((i) => i.relationship === "same_bit").length;
   const evolvedCount = instances.filter((i) => i.relationship === "evolved").length;
+  const noteCount = (notes || []).filter(n => n.matchedTouchstoneId === touchstone.id).length;
 
   const avgDuration = useMemo(() => {
     if (!bits || instances.length === 0) return null;
@@ -455,21 +457,21 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
             </div>
           )}
 
-          {/* Why matched */}
-          {topReason && (
-            <div style={{ fontSize: 11, color: "#777", fontStyle: "italic", lineHeight: 1.4, marginBottom: 4 }}>
-              {topReason}
-            </div>
-          )}
-
-          {/* Ideal text preview */}
+          {/* Ideal text preview — above match reason */}
           {touchstone.idealText && (
-            <div style={{ marginTop: 4, padding: "8px 10px", background: "#0a0a14", borderRadius: 5, border: "1px solid #1a1a2a", fontSize: 11, color: "#999", lineHeight: 1.5, maxHeight: 104, overflow: "hidden", position: "relative" }}>
+            <div style={{ marginTop: 4, marginBottom: 4, padding: "8px 10px", background: "#0a0a14", borderRadius: 5, border: "1px solid #1a1a2a", fontSize: 11, color: "#999", lineHeight: 1.5, maxHeight: 104, overflow: "hidden", position: "relative" }}>
               <span style={{ fontSize: 9, color: touchstone.manualIdealText ? "#c4b5fd" : "#74c0fc", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                 {touchstone.manualIdealText ? "Edited" : "Synth"}{" \u2014 "}
               </span>
               {touchstone.idealText.slice(0, 400)}{touchstone.idealText.length > 400 ? "..." : ""}
               <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 20, background: "linear-gradient(transparent, #12121e)" }} />
+            </div>
+          )}
+
+          {/* Why matched */}
+          {topReason && (
+            <div style={{ fontSize: 11, color: "#777", fontStyle: "italic", lineHeight: 1.4, marginBottom: 4 }}>
+              {topReason}
             </div>
           )}
 
@@ -486,17 +488,19 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
 
         {/* Right column: stats + actions */}
         <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, minWidth: 72 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <div style={{ background: matchColor, color: "#000", padding: "2px 8px", borderRadius: 4, fontWeight: 700, fontSize: 12 }}>
-              {avgPct}%
-            </div>
-            {avgDuration && <span style={{ fontSize: 9, color: "#74c0fc" }}>{formatDuration(avgDuration)}</span>}
+          {/* Rating — top right */}
+          <div style={{ background: matchColor, color: "#000", padding: "2px 8px", borderRadius: 4, fontWeight: 700, fontSize: 12 }}>
+            {avgPct}%
           </div>
-          {/* TODO: show linked-note count here (e.g. "3 notes") — filter notes by matchedTouchstoneId === touchstone.id */}
+          {/* Time estimate */}
+          {avgDuration && <span style={{ fontSize: 9, color: "#74c0fc" }}>{formatDuration(avgDuration)}</span>}
+          {/* Bit counts */}
           <div style={{ fontSize: 9, color: "#666" }}>
             {sameBitCount > 0 && <span style={{ color: "#51cf66" }}>{sameBitCount} same</span>}
             {sameBitCount > 0 && evolvedCount > 0 && " · "}
             {evolvedCount > 0 && <span style={{ color: "#ffa94d" }}>{evolvedCount} evolved</span>}
+            {noteCount > 0 && (sameBitCount > 0 || evolvedCount > 0) && " · "}
+            {noteCount > 0 && <span style={{ color: "#c4b5fd" }}>{noteCount} note{noteCount !== 1 ? "s" : ""}</span>}
           </div>
 
           {/* Action buttons — single column */}
@@ -1158,8 +1162,7 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
               style={{ width: "100%", padding: "6px 10px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#ddd", fontSize: 12, fontFamily: "inherit", marginBottom: 8, boxSizing: "border-box" }}
             />
             <div style={{ maxHeight: 200, overflowY: "auto" }}>
-              {mergeTargets
-                .filter((t) => t.id !== touchstone.id && (!mergeSearch.trim() || t.name.toLowerCase().includes(mergeSearch.toLowerCase())))
+              {searchTouchstones(mergeTargets.filter((t) => t.id !== touchstone.id), mergeSearch)
                 .map((target) => (
                   <div
                     key={target.id}

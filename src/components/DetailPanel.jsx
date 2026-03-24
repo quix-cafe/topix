@@ -3,6 +3,7 @@ import { BoundaryAdjuster } from "./BoundaryAdjuster";
 import { BitEditor } from "./BitEditor";
 import { BitJoiner } from "./BitJoiner";
 import { getBitTouchstones } from "../utils/touchstoneDetector";
+import { searchTouchstones } from "../utils/touchstoneSearch";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
 export function DetailPanel({
@@ -413,8 +414,7 @@ export function DetailPanel({
                   style={{ width: "100%", padding: "4px 8px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#ddd", fontSize: 11, fontFamily: "inherit", marginBottom: 6, boxSizing: "border-box" }}
                 />
                 <div style={{ maxHeight: 180, overflowY: "auto" }}>
-                  {possibleTs
-                    .filter((ts) => !touchstoneSearch.trim() || ts.name.toLowerCase().includes(touchstoneSearch.toLowerCase()))
+                  {searchTouchstones(possibleTs, touchstoneSearch)
                     .map((ts) => (
                       <div
                         key={ts.id}

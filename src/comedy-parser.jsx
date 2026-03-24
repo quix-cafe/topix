@@ -12,7 +12,7 @@ import { DebugPanel } from "./components/DebugPanel";
 import { StreamingProgressPanel } from "./components/StreamingProgressPanel";
 import { PlayTab } from "./components/PlayTab";
 import { DatabaseTab } from "./components/DatabaseTab";
-import { TagsTab } from "./components/TagsTab";
+
 import { TranscriptTab } from "./components/TranscriptTab";
 import { ExportTab } from "./components/ExportTab";
 import { ValidationTab } from "./components/ValidationTab";
@@ -64,7 +64,6 @@ const initialState = {
   tagMergeResult: null,
 };
 
-// Todo: add browser back/forward navigation support. if a different tab or different 'subtab' page is accessed, allow me to go back to the previous view. it might be good to encode every part of the interface to a URL view, so that I can also share links to specific views (e.g. a specific topic, or the network graph with a search query applied).
 
 function reducer(state, action) {
   switch (action.type) {
@@ -678,7 +677,7 @@ export default function ComedyParser() {
 
         {/* Row 3: Tabs */}
         <div style={{ display: "flex", gap: 0 }}>
-          {["play", "transcripts", "bits", "tags", "touchstones", "validation", "notes", "analytics", "graph", "settings"].map((tab) => (
+          {["play", "transcripts", "bits", "touchstones", "notes", "errors", "analytics", "graph", "settings"].map((tab) => (
             <button
               key={tab}
               className={`tab-btn ${activeTab === tab ? "active" : ""}`}
@@ -744,15 +743,6 @@ export default function ComedyParser() {
             topics={topics}
             setSelectedTopic={setSelectedTopic}
             getMatchesForTopic={getMatchesForTopic}
-            touchstones={touchstones}
-          />
-        )}
-
-        {/* TAGS TAB */}
-        {activeTab === "tags" && (
-          <TagsTab
-            topics={topics}
-            setSelectedTopic={setSelectedTopic}
             touchstones={touchstones}
           />
         )}
@@ -923,8 +913,8 @@ export default function ComedyParser() {
           />
         )}
 
-        {/* VALIDATION TAB */}
-        {activeTab === "validation" && (
+        {/* ERRORS TAB */}
+        {activeTab === "errors" && (
           <ValidationTab
             topics={topics}
             transcripts={transcripts}
@@ -1091,6 +1081,7 @@ export default function ComedyParser() {
               exportVault={transcriptOps.exportVault}
               exportMarkdownZip={transcriptOps.exportMarkdownZip}
               exportSingleMd={transcriptOps.exportSingleMd}
+              syncToVault={transcriptOps.syncToVault}
             />
           </div>
         )}

@@ -278,9 +278,146 @@ async def send_to_claude(prompt: str) -> str:
             raise
 
 
+async def _ensure_gemini_model(page: Page):
+    """Ensure Gemini is set to 'pro' or 'thinking' rather than 'flash'."""
+    try:
+        # Try multiple possible selectors for the model picker
+        picker_selectors = [
+            '.model-picker-container',
+            'model-picker',
+            '[data-test-id="model-selector"]',
+            'button[aria-haspopup="listbox"]',
+            'button[aria-haspopup="menu"]',
+            'button[aria-haspopup="dialog"]',
+        ]
+
+        picker = None
+        for sel in picker_selectors:
+            loc = page.locator(sel)
+            if await loc.count() > 0 and await loc.first.is_visible():
+                picker = loc.first
+                log.info("Found model picker via selector: %s", sel)
+                break
+
+        if not picker:
+            # Broader search: look for buttons containing model-related text
+            for text in ["Flash", "Pro", "Gemini"]:
+                loc = page.locator(f'button:has-text("{text}")').first
+                if await loc.count() > 0 and await loc.is_visible():
+                    inner = (await loc.inner_text()).strip()
+                    # Make sure it's actually a model selector, not the send button etc
+                    if len(inner) < 60 and any(m in inner.lower() for m in ["flash", "pro", "gemini", "thinking"]):
+                        picker = loc
+                        log.info("Found model picker via text match: '%s'", inner)
+                        break
+
+        if not picker:
+            log.info("No model picker found on page, skipping model check")
+            return
+
+        picker_text = (await picker.inner_text()).strip().lower()
+        if "pro" in picker_text and "thinking" not in picker_text:
+            log.info("Model already set to pro: '%s'", picker_text)
+            return
+
+        log.info("Gemini model is '%s', switching to pro", picker_text)
+        await picker.click()
+        await page.wait_for_timeout(random.randint(1200, 2000))
+
+        # Now we know the structure: [role="menu"].gds-mode-switch-menu
+        # contains children with text like "Pro\nAdvanced math and code..."
+        # Use Playwright's real mouse clicks (not JS .click() which Angular ignores)
+
+        # First, get the menu item structure for debugging
+        try:
+            dump = await page.evaluate("""() => {
+                const menu = document.querySelector('[role="menu"]');
+                if (!menu) return 'no [role=menu] found';
+                const items = menu.querySelectorAll('*');
+                const result = [];
+                for (const el of items) {
+                    if (el.children.length === 0 || el.getAttribute('role')) {
+                        const text = el.innerText?.trim();
+                        if (text && text.length > 1 && text.length < 100) {
+                            result.push({tag: el.tagName, role: el.getAttribute('role'), cls: el.className?.toString().slice(0, 80), text: text.slice(0, 60)});
+                        }
+                    }
+                }
+                return JSON.stringify(result.slice(0, 30), null, 2);
+            }""")
+            log.info("Menu items: %s", dump[:1500])
+        except Exception as e:
+            log.warning("Menu dump failed: %s", e)
+
+        # Use Playwright locator to click within the menu overlay
+        menu = page.locator('[role="menu"]')
+        clicked = False
+        for label in ["Pro"]:
+            # Find children of the menu whose text starts with the label
+            # Use xpath to match direct/near text
+            for sel in [
+                f'[role="menu"] >> text=/^{label}$/i',
+                f'[role="menu"] >> text=/^{label}\\n/i',
+                f'.cdk-overlay-container >> text=/^{label}$/i',
+                f'.cdk-overlay-container >> text=/^{label}\\n/i',
+            ]:
+                try:
+                    loc = page.locator(sel)
+                    if await loc.count() > 0:
+                        await loc.first.click(timeout=3000)
+                        await page.wait_for_timeout(random.randint(500, 1000))
+                        log.info("Switched Gemini model to '%s' via Playwright: %s", label, sel)
+                        clicked = True
+                        break
+                except Exception as e:
+                    log.info("Selector %s failed: %s", sel, e)
+                    continue
+            if clicked:
+                break
+
+        if not clicked:
+            # Fallback: use bounding box of text node to do a real mouse click
+            try:
+                box = await page.evaluate("""() => {
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                    while (walker.nextNode()) {
+                        const t = walker.currentNode.textContent?.trim();
+                        if (t === 'Pro') {
+                            const range = document.createRange();
+                            range.selectNode(walker.currentNode);
+                            const rect = range.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                            }
+                        }
+                    }
+                    return null;
+                }""")
+                if box:
+                    await page.mouse.click(box['x'], box['y'])
+                    await page.wait_for_timeout(random.randint(500, 1000))
+                    log.info("Switched Gemini model to Pro via mouse click at (%d, %d)", box['x'], box['y'])
+                    clicked = True
+                else:
+                    log.warning("Could not find 'Pro' text node bounding box")
+            except Exception as e:
+                log.warning("Mouse click fallback failed: %s", e)
+
+        if not clicked:
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(300)
+            log.warning("Could not find pro model option, keeping current selection")
+    except Exception as e:
+        log.warning("Model picker check failed: %s", e)
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+
 async def _gemini_attempt(page: Page, prompt: str) -> str:
     """Single attempt to send a prompt on a Gemini page. Returns response or raises."""
-    # TODO: Before typing, check the 'model-picker-container' and select 'pro' (if available) or 'thinking' instead of 'fast'
+    await _ensure_gemini_model(page)
     editor = page.locator('.ql-editor').first
     await editor.wait_for(state="visible", timeout=15000)
     await editor.click()

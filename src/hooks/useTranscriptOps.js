@@ -304,7 +304,7 @@ export function useTranscriptOps(ctx, loadSavedData) {
       vaultName: "Comedy Bit Vault", exportDate: new Date().toISOString(),
       stats: { totalBits: s.topics.length, touchstones: (s.touchstones.confirmed || []).length + (s.touchstones.possible || []).length, connections: s.matches.length, transcripts: s.transcripts.length },
       files,
-      instructions: "Create a folder called 'Comedy Bit Vault' in your Obsidian vault. Create subfolders: 'bits', 'tags', '_root-bits', '_touchstones'. Place each file according to its folder. The MOC file goes in the root.",
+      instructions: "Extract into your Comedy vault (~/ownCloud/Comedy/). Folders: 'Jokes/', 'Touchstones/', 'Performance Flows/'. The MOC file goes in the vault root.",
     };
     const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "comedy-vault-export.json"; a.click(); URL.revokeObjectURL(url);
@@ -327,11 +327,32 @@ export function useTranscriptOps(ctx, loadSavedData) {
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "comedy-vault-combined.md"; a.click(); URL.revokeObjectURL(url);
   }, []);
 
+  const syncToVault = useCallback(async () => {
+    const s = stateRef.current;
+    const files = generateObsidianVault(s.topics, s.matches, s.transcripts, [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])]);
+    set("status", `Syncing ${files.length} files to Obsidian vault...`);
+    try {
+      const res = await fetch("/api/export/obsidian", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Export failed");
+      const errCount = data.errors?.length || 0;
+      set("status", `Synced ${data.written} files to vault.${errCount > 0 ? ` ${errCount} errors.` : ""}`);
+      return data;
+    } catch (e) {
+      set("status", `Vault sync failed: ${e.message}`);
+      throw e;
+    }
+  }, []);
+
   return {
     purgeTranscriptData, removeTranscript, handleSyncApply,
     handleCreateTouchstoneFromBit, rectifyOverlaps,
     clearProcessedData, clearAllData, handleHardStop,
     handleBackup, handleRestore, handleRestoreFile, handleResetTouchstones,
-    exportVault, exportMarkdownZip, exportSingleMd,
+    exportVault, exportMarkdownZip, exportSingleMd, syncToVault,
   };
 }

@@ -47,20 +47,49 @@ export function NetworkGraph({ topics, matches }) {
       d3.zoom().scaleExtent([0.2, 4]).on("zoom", (e) => g.attr("transform", e.transform))
     );
 
+    // Confidence-based color gradient (mapped to 0.5–1.0 visible range):
+    //   1.0  = neon cyan-blue   (highest)
+    //   0.9  = purple
+    //   0.8  = red
+    //   0.7  = orange
+    //   0.6  = yellow
+    //   0.5  = green            (lowest shown)
+    const colorStops = [
+      { t: 0.0, r: 60, g: 210, b: 90  },  // green
+      { t: 0.2, r: 230, g: 220, b: 50 },   // yellow
+      { t: 0.4, r: 255, g: 150, b: 50 },   // orange
+      { t: 0.6, r: 240, g: 60,  b: 70 },   // red
+      { t: 0.8, r: 180, g: 80,  b: 240 },  // purple
+      { t: 1.0, r: 50,  g: 220, b: 255 },  // neon cyan-blue
+    ];
+
+    function linkColor(d) {
+      // Map confidence 0.5–1.0 → 0–1 for maximum contrast in the visible range
+      const t = Math.max(0, Math.min(1, (d.confidence - 0.5) * 2));
+      // Find surrounding stops
+      let lo = colorStops[0], hi = colorStops[colorStops.length - 1];
+      for (let i = 0; i < colorStops.length - 1; i++) {
+        if (t >= colorStops[i].t && t <= colorStops[i + 1].t) {
+          lo = colorStops[i];
+          hi = colorStops[i + 1];
+          break;
+        }
+      }
+      const f = hi.t === lo.t ? 0 : (t - lo.t) / (hi.t - lo.t);
+      const r = Math.round(lo.r + (hi.r - lo.r) * f);
+      const g = Math.round(lo.g + (hi.g - lo.g) * f);
+      const b = Math.round(lo.b + (hi.b - lo.b) * f);
+      return `rgb(${r},${g},${b})`;
+    }
+
     const link = g
       .append("g")
       .selectAll("line")
       .data(links)
       .join("line")
-      .attr("stroke", (d) => {
-        const rel = d.relationship;
-        if (rel === "same_bit") return "#ff6b6b";
-        if (rel === "evolved") return "#ffa94d";
-        if (rel === "callback") return "#74c0fc";
-        return "#555";
-      })
+      .attr("stroke", linkColor)
       .attr("stroke-width", (d) => 1 + d.confidence * 3)
-      .attr("stroke-opacity", 0.6)
+      .attr("stroke-opacity", (d) => 0.6 + d.confidence * 0.35)
       .attr("stroke-dasharray", (d) => (d.relationship === "related" ? "4,4" : null));
 
     const node = g

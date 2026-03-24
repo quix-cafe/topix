@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 
-const VALID_TABS = new Set(["play", "transcripts", "bits", "tags", "touchstones", "validation", "notes", "analytics", "graph", "settings"]);
+const VALID_TABS = new Set(["play", "transcripts", "bits", "touchstones", "notes", "errors", "analytics", "graph", "settings"]);
 
 function parseHash(hash) {
   const clean = hash.replace(/^#\/?/, "");

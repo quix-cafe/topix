@@ -1,24 +1,48 @@
 /**
- * Obsidian vault export - generates markdown files for Obsidian import
+ * Obsidian vault export - generates markdown files compatible with
+ * the existing Comedy vault structure at ~/ownCloud/Comedy/
+ *
+ * Vault layout:
+ *   Jokes/          — individual bit/joke files (matches existing folder)
+ *   Touchstones/    — recurring joke touchstone files
+ *   Performance Flows/ — transcript setlist/flow files (matches existing folder)
+ *   Comedy Vault MOC.md — root index linking everything
+ *
+ * Format matches the existing vault convention:
+ *   Category line, Tags line, body text, wikilink sections
+ *   (no YAML frontmatter — existing vault doesn't use it)
  */
+
+const sanitize = (s) => s.replace(/[/\\:*?"<>|]/g, "_").replace(/^"/, "").replace(/"$/, "");
 
 export function generateObsidianVault(topics, matches, transcripts, touchstones = []) {
   const files = [];
 
-  // MOC (Map of Content) index
+  // Build lookup maps
   const transcriptMap = {};
   topics.forEach((t) => {
     if (!transcriptMap[t.sourceFile]) transcriptMap[t.sourceFile] = [];
     transcriptMap[t.sourceFile].push(t);
   });
 
-  let moc = `---\ntags: [comedy-vault, index]\n---\n# Comedy Bit Vault\n\n`;
+  const touchstonesByBit = {};
+  touchstones.forEach((ts) => {
+    (ts.bitIds || []).forEach((id) => {
+      if (!touchstonesByBit[id]) touchstonesByBit[id] = [];
+      touchstonesByBit[id].push(ts);
+    });
+  });
+
+  // ── MOC (Map of Content) ──────────────────────────────────────
+
+  let moc = `# Comedy Vault\n\n`;
   moc += `> Last updated: ${new Date().toLocaleString()}\n\n`;
 
   if (touchstones.length > 0) {
-    moc += `## Recurring Touchstones (${touchstones.length})\n`;
+    moc += `## Touchstones (${touchstones.length})\n`;
     touchstones.forEach((ts) => {
-      moc += `- [[${ts.name}]] (${ts.frequency} occurrences)\n`;
+      const sources = new Set((ts.instances || []).map((i) => i.sourceFile)).size;
+      moc += `- [[${ts.name}]] — ${ts.frequency} occurrences across ${sources} transcript${sources !== 1 ? "s" : ""}\n`;
     });
     moc += `\n`;
   }
@@ -31,37 +55,61 @@ export function generateObsidianVault(topics, matches, transcripts, touchstones 
     });
   });
 
-  moc += `\n## All Tags\n`;
   const allTags = [...new Set(topics.flatMap((t) => t.tags))].sort();
-  allTags.forEach((tag) => {
-    moc += `- #${tag.replace(/\s+/g, "-")}\n`;
-  });
+  if (allTags.length > 0) {
+    moc += `\n## Tags\n`;
+    allTags.forEach((tag) => {
+      moc += `- #${tag.replace(/\s+/g, "-")}\n`;
+    });
+  }
   files.push({ name: "Comedy Vault MOC.md", content: moc });
 
-  // Touchstone files
-  touchstones.forEach((touchstone) => {
-    let md = `---\n`;
-    md += `title: "${touchstone.name}"\n`;
-    md += `type: touchstone\n`;
-    md += `frequency: ${touchstone.frequency}\n`;
-    md += `tags: [touchstone, ${touchstone.tags.map((t) => t.replace(/\s+/g, "-")).join(", ")}]\n`;
-    md += `---\n\n`;
-    md += `# ${touchstone.name}\n\n`;
-    md += `> [!info] Recurring Joke\n> Appears **${touchstone.frequency}** times across **${new Set(touchstone.instances.map((i) => i.sourceFile)).size}** transcripts.\n\n`;
-    md += `## Summary\n${touchstone.summary}\n\n`;
+  // ── Touchstone files ──────────────────────────────────────────
 
-    md += `## Instances\n`;
-    touchstone.instances.forEach((inst) => {
+  touchstones.forEach((touchstone) => {
+    const tags = (touchstone.tags || []).map((t) => `#${t.replace(/\s+/g, "-")}`).join(" ");
+    let md = `Category: Touchstone\n`;
+    if (tags) md += `Tags: #touchstone ${tags}\n`;
+    else md += `Tags: #touchstone\n`;
+    md += `\n`;
+
+    md += `${touchstone.summary || ""}\n\n`;
+
+    if (touchstone.idealText) {
+      md += `> [!quote] Synthesized Version\n`;
+      touchstone.idealText.split("\n").forEach((line) => {
+        md += `> ${line}\n`;
+      });
+      md += `\n`;
+    }
+
+    md += `Instances:\n`;
+    (touchstone.instances || []).forEach((inst) => {
       const bit = topics.find((t) => t.id === inst.bitId);
       if (bit) {
-        md += `- **${inst.instanceNumber}.** [[${inst.title}]] (${inst.sourceFile}, ${Math.round(inst.confidence * 100)}% match)\n`;
+        const rel = inst.relationship || "same_bit";
+        const pct = Math.round((inst.confidence || 0) * 100);
+        md += `- [[${bit.title}]] — ${rel} (${pct}%) · \`${inst.sourceFile}\`\n`;
+      }
+    });
+    md += `\n`;
+
+    md += `Related Jokes:\n`;
+    const seenBits = new Set();
+    (touchstone.instances || []).forEach((inst) => {
+      const bit = topics.find((t) => t.id === inst.bitId);
+      if (bit && !seenBits.has(bit.id)) {
+        seenBits.add(bit.id);
+        md += `- [[${bit.title}]]\n`;
       }
     });
 
-    files.push({ name: `_touchstones/${touchstone.name.replace(/[/\\:*?"<>|]/g, "_").replace(/^"/, "").replace(/"$/, "")}.md`, content: md });
+    files.push({ name: `Touchstones/${sanitize(touchstone.name)}.md`, content: md });
   });
 
-  // Individual topic files
+  // ── Individual joke/bit files ─────────────────────────────────
+  // Matches existing Jokes/ folder format
+
   topics.forEach((topic) => {
     const relatedMatches = matches.filter(
       (m) => m.sourceId === topic.id || m.targetId === topic.id
@@ -71,103 +119,76 @@ export function generateObsidianVault(topics, matches, transcripts, touchstones 
       return { ...topics.find((t) => t.id === otherId), match: m };
     }).filter((t) => t.id);
 
-    let md = `---\n`;
-    md += `title: "${topic.title}"\n`;
-    md += `source: "${topic.sourceFile}"\n`;
-    md += `tags: [${topic.tags.map((t) => t.replace(/\s+/g, "-")).join(", ")}]\n`;
-    md += `keywords: [${topic.keywords.join(", ")}]\n`;
+    // Category from tags (use first tag as category path, like existing vault)
+    const category = topic.tags.length > 0
+      ? topic.tags.slice(0, 2).map((t) => t.replace(/\s+/g, "-")).join("/")
+      : "Uncategorized";
+    const tags = topic.tags.map((t) => `#${t.replace(/\s+/g, "-")}`).join(" ");
 
-    // Add position data
-    if (topic.textPosition) {
-      md += `position: "${topic.textPosition.startChar}-${topic.textPosition.endChar}"\n`;
-      md += `position-chars: ${topic.textPosition.endChar - topic.textPosition.startChar}\n`;
-    }
+    let md = `Category: ${category}\n`;
+    md += `Tags: ${tags}\n`;
+    if (topic.sourceFile) md += `Source: ${topic.sourceFile}\n`;
+    md += `\n`;
 
-    // Add flow data
-    if (topic.bitFlow) {
-      md += `flow-pattern: "${topic.bitFlow.pattern}"\n`;
-      md += `flow-rhythm: "${topic.bitFlow.rhythm}"\n`;
-      md += `flow-stages: ${topic.bitFlow.totalStages}\n`;
-    }
+    // Main text body
+    md += `${topic.fullText || topic.summary || ""}\n`;
 
-    // Add touchstone info
-    const topicTouchstones = touchstones.filter((ts) => ts.bitIds.includes(topic.id));
-    if (topicTouchstones.length > 0) {
-      md += `touchstones: [${topicTouchstones.map((ts) => ts.name).join(", ")}]\n`;
-      topicTouchstones.forEach((ts) => {
-        const instance = ts.instances.find((i) => i.bitId === topic.id);
-        if (instance) {
-          md += `touchstone-${ts.name.replace(/[^a-z0-9]/gi, "-").toLowerCase()}: "instance-${instance.instanceNumber}"\n`;
-        }
+    // Related jokes (wikilinks)
+    if (relatedTopics.length > 0) {
+      md += `\nRelated Jokes:\n`;
+      relatedTopics.forEach((rt) => {
+        const rel = rt.match.relationship;
+        const pct = Math.round((rt.match.confidence || 0) * 100);
+        md += `- [[${rt.title}]] — *${rel}* (${pct}%)\n`;
       });
     }
 
-    // Add edit history count
-    if (topic.editHistory && topic.editHistory.length > 0) {
-      md += `edit-history: ${topic.editHistory.length}\n`;
+    // Touchstone links
+    const topicTouchstones = touchstonesByBit[topic.id] || [];
+    if (topicTouchstones.length > 0) {
+      md += `\nTouchstones:\n`;
+      topicTouchstones.forEach((ts) => {
+        const instance = (ts.instances || []).find((i) => i.bitId === topic.id);
+        const instanceNum = instance ? ` (instance ${instance.instanceNumber}/${ts.frequency})` : "";
+        md += `- [[${ts.name}]]${instanceNum}\n`;
+      });
     }
 
-    md += `---\n\n`;
-    md += `# ${topic.title}\n\n`;
-    md += `> [!info] Source\n> **File:** ${topic.sourceFile}\n`;
-
-    if (topic.textPosition) {
-      md += `> **Position:** Characters ${topic.textPosition.startChar}-${topic.textPosition.endChar}\n`;
-    }
-    md += `\n`;
-
-    md += `## Summary\n${topic.summary}\n\n`;
-
-    // Add flow visualization section
+    // Comedic structure (if available)
     if (topic.bitFlow) {
-      md += `## Comedic Structure\n`;
-      md += `**Pattern:** ${topic.bitFlow.pattern}\n`;
-      md += `**Rhythm:** ${topic.bitFlow.rhythm}\n`;
-      md += `**Stages:** ${topic.bitFlow.totalStages}\n\n`;
+      md += `\nStructure:\n`;
+      md += `- Pattern: ${topic.bitFlow.pattern}\n`;
+      md += `- Rhythm: ${topic.bitFlow.rhythm}\n`;
       if (topic.bitFlow.stages) {
-        md += `| Stage | Type | Confidence |\n`;
-        md += `|-------|------|------------|\n`;
         topic.bitFlow.stages.forEach((stage, idx) => {
-          md += `| ${idx + 1} | ${stage.type} | ${Math.round(stage.confidence * 100)}% |\n`;
+          md += `- Stage ${idx + 1}: ${stage.type} (${Math.round(stage.confidence * 100)}%)\n`;
         });
-        md += `\n`;
       }
     }
 
-    md += `## Full Text\n\`\`\`\n${topic.fullText}\n\`\`\`\n\n`;
-
-    if (relatedTopics.length > 0) {
-      md += `## Connected Bits\n`;
-      relatedTopics.forEach((rt) => {
-        const emoji = { same_bit: "\u{1F504}", evolved: "\u{1F500}", related: "\u{1F517}", callback: "\u21A9\uFE0F" }[rt.match.relationship] || "\u{1F517}";
-        md += `- ${emoji} [[${rt.title}]] — *${rt.match.relationship}* (${Math.round(rt.match.confidence * 100)}% confidence) · from \`${rt.sourceFile}\`\n`;
-      });
-      md += `\n`;
-    }
-
-    if (topicTouchstones.length > 0) {
-      md += `## Recurring Touchstones\n`;
-      topicTouchstones.forEach((ts) => {
-        const instance = ts.instances.find((i) => i.bitId === topic.id);
-        if (instance) {
-          md += `- [[${ts.name}]] (instance ${instance.instanceNumber}/${ts.frequency})\n`;
-        }
-      });
-      md += `\n`;
-    }
-
-    md += `## Tags\n${topic.tags.map((t) => `#${t.replace(/\s+/g, "-")}`).join(" ")}\n`;
-    files.push({ name: `bits/${topic.title.replace(/[/\\:*?"<>|]/g, "_")}.md`, content: md });
+    files.push({ name: `Jokes/${sanitize(topic.title)}.md`, content: md });
   });
 
-  // Tag index files
-  allTags.forEach((tag) => {
-    const tagged = topics.filter((t) => t.tags.includes(tag));
-    let md = `---\ntags: [tag-index]\n---\n# Tag: ${tag}\n\n`;
-    tagged.forEach((t) => {
-      md += `- [[${t.title}]] (${t.sourceFile})\n`;
+  // ── Performance Flow files ────────────────────────────────────
+  // One file per transcript, showing the setlist order
+
+  Object.entries(transcriptMap).forEach(([sourceFile, bits]) => {
+    const sorted = [...bits].sort((a, b) => {
+      const aStart = a.textPosition?.startChar ?? 0;
+      const bStart = b.textPosition?.startChar ?? 0;
+      return aStart - bStart;
     });
-    files.push({ name: `tags/${tag.replace(/\s+/g, "-")}.md`, content: md });
+
+    let md = `# ${sourceFile}\n\n`;
+    md += `| Bit | Tags | Touchstone |\n`;
+    md += `| --- | ---- | ---------- |\n`;
+    sorted.forEach((bit) => {
+      const ts = (touchstonesByBit[bit.id] || []).map((t) => `[[${t.name}]]`).join(", ") || "—";
+      const tags = bit.tags.slice(0, 3).map((t) => `#${t.replace(/\s+/g, "-")}`).join(" ") || "—";
+      md += `| [[${bit.title}]] | ${tags} | ${ts} |\n`;
+    });
+
+    files.push({ name: `Performance Flows/${sanitize(sourceFile)}.md`, content: md });
   });
 
   return files;

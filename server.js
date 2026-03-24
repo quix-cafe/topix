@@ -9,7 +9,7 @@ import http from "http";
 import { exec, execFile, spawn } from "child_process";
 import { promisify } from "util";
 import fs from "node:fs/promises";
-import { existsSync, createReadStream, statSync } from "node:fs";
+import { existsSync, createReadStream, statSync, openSync } from "node:fs";
 import path from "node:path";
 import { parseFilename, buildFilename, withRating, withDuration, transcriptName, formatDuration as formatDur, AUDIO_EXT } from "./server/filename.js";
 import { hashFiles } from "./server/hash.js";
@@ -682,13 +682,15 @@ const server = http.createServer(async (req, res) => {
 
         // Launch server.py
         const serverPy = path.join(import.meta.dirname, "server.py");
-        const proc = spawn("python", [serverPy], {
+        const logPath = path.join(import.meta.dirname, "passthru.log");
+        const logFd = openSync(logPath, "a");
+        const proc = spawn("python", ["-u", serverPy], {
           cwd: import.meta.dirname,
-          stdio: "ignore",
+          stdio: ["ignore", logFd, logFd],
           detached: true,
         });
         proc.unref();
-        console.log(`[Passthru] Launched server.py (pid=${proc.pid})`);
+        console.log(`[Passthru] Launched server.py (pid=${proc.pid}), logs: ${logPath}`);
         json(res, 200, { status: "started", pid: proc.pid });
       } catch (e) {
         json(res, 500, { error: e.message });
@@ -718,9 +720,11 @@ const server = http.createServer(async (req, res) => {
           if (!passthruUp) {
             // Try to start it
             const serverPy = path.join(import.meta.dirname, "server.py");
-            const proc = spawn("python", [serverPy], {
+            const logPath = path.join(import.meta.dirname, "passthru.log");
+            const logFd = openSync(logPath, "a");
+            const proc = spawn("python", ["-u", serverPy], {
               cwd: import.meta.dirname,
-              stdio: "ignore",
+              stdio: ["ignore", logFd, logFd],
               detached: true,
             });
             proc.unref();
@@ -784,6 +788,37 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         json(res, 500, { error: e.message });
       }
+      return;
+    }
+
+    // POST /api/export/obsidian — write generated vault files directly to ~/ownCloud/Comedy/
+    if (req.url === "/api/export/obsidian" && req.method === "POST") {
+      const body = await parseBody(req);
+      const { files } = body;
+      if (!Array.isArray(files) || files.length === 0) {
+        json(res, 400, { error: "files array required" });
+        return;
+      }
+      const VAULT_DIR = "/home/kai/ownCloud/Comedy";
+      const written = [];
+      const errors = [];
+      for (const f of files) {
+        if (!f.name || typeof f.content !== "string") continue;
+        const filePath = path.join(VAULT_DIR, f.name);
+        // Prevent path traversal
+        if (!filePath.startsWith(VAULT_DIR)) {
+          errors.push({ name: f.name, error: "path traversal rejected" });
+          continue;
+        }
+        try {
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.writeFile(filePath, f.content, "utf-8");
+          written.push(f.name);
+        } catch (e) {
+          errors.push({ name: f.name, error: e.message });
+        }
+      }
+      json(res, 200, { written: written.length, errors, files: written });
       return;
     }
 

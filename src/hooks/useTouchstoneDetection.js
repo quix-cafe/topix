@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { detectTouchstones } from "../utils/touchstoneDetector";
 import { assembleAndMergeTouchstones } from "../utils/touchstoneAssembler";
+import { autoRelateTouchstones } from "../utils/flowRelations";
 
 export function useTouchstoneDetection(ctx, { topics, matches, processing }) {
   const { dispatch, stateRef } = ctx;
@@ -10,6 +11,7 @@ export function useTouchstoneDetection(ctx, { topics, matches, processing }) {
   const touchstoneNameCache = useRef(new Map());
   const touchstoneNamingController = useRef(null);
   const namingInFlight = useRef(new Set());
+  const lastDetectionKey = useRef("");
 
   const findCachedName = useCallback((bitIds) => {
     const idSet = new Set(bitIds);
@@ -34,11 +36,20 @@ export function useTouchstoneDetection(ctx, { topics, matches, processing }) {
     if (processing) return;
     const debounceTimer = setTimeout(() => {
       if (topics.length >= 2) {
+        // Skip re-detection if topics and matches haven't meaningfully changed
+        const detectionKey = `${topics.length}:${matches.length}`;
+        if (detectionKey === lastDetectionKey.current) return;
+        lastDetectionKey.current = detectionKey;
+
         const detected = detectTouchstones(topics, matches, 2);
         const prev = stateRef.current.touchstones || {};
         const keyOf = (ts) => [...ts.bitIds].sort().join(",");
 
-        const named = assembleAndMergeTouchstones({ detected, previousTouchstones: prev, topics, matches, findCachedName });
+        const assembled = assembleAndMergeTouchstones({ detected, previousTouchstones: prev, topics, matches, findCachedName });
+        // Carry over _unlinkedPairs from previous state
+        assembled._unlinkedPairs = prev._unlinkedPairs || [];
+        // Auto-relate touchstones that appear adjacent 3+ times in setlists
+        const named = autoRelateTouchstones(assembled, topics);
         set('touchstones', named);
 
         const toName = named.possible.filter(ts => {

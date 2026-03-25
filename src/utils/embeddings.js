@@ -127,9 +127,17 @@ function textHash(bit) {
 /**
  * Build the text sent to the embedding model for a bit.
  * Deliberately excludes tags/keywords — those cause false positives.
+ * Truncates to ~2000 chars to stay within mxbai-embed-large's 512 token context window.
  */
+const MAX_EMBED_CHARS = 2000;
+
 function bitToEmbedText(bit) {
-  return `Title: ${bit.title || ""}\nSummary: ${bit.summary || ""}\nText: ${bit.fullText || ""}`;
+  const title = bit.title || "";
+  const summary = bit.summary || "";
+  const fullText = bit.fullText || "";
+  const prefix = `Title: ${title}\nSummary: ${summary}\nText: `;
+  const remaining = Math.max(0, MAX_EMBED_CHARS - prefix.length);
+  return prefix + fullText.slice(0, remaining);
 }
 
 // ─── IndexedDB helpers for embeddings ───────────────────────────────

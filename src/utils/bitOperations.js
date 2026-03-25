@@ -156,34 +156,55 @@ export function applyTakeOverlap(takerId, conflictingUpdates, topics, transcript
 // Returns: { updatedTopics, changedBitIds } or null if no change
 export function applyScrollBoundary(bitId, nextBitId, direction, topics, transcripts) {
   const bit = topics.find((t) => t.id === bitId);
-  const nextBit = topics.find((t) => t.id === nextBitId);
-  if (!bit || !nextBit) return null;
+  const nextBit = nextBitId ? topics.find((t) => t.id === nextBitId) : null;
+  if (!bit) return null;
+  if (nextBitId && !nextBit) return null;
 
   const transcript = transcripts.find((tr) => tr.name === bit.sourceFile);
   if (!transcript) return null;
   const text = transcript.text.replace(/\n/g, " ");
 
-  const bitEnd = bit.textPosition?.endChar || 0;
+  const bitStart = bit.textPosition?.startChar ?? 0;
+  const bitEnd = bit.textPosition?.endChar ?? bitStart;
+
+  // Use the passed nextBit if valid; otherwise scan for the actual next bit
+  // This handles cases where merged bits have stale nextBitId references
+  let effectiveNextBit = nextBit;
+  if (!effectiveNextBit || (effectiveNextBit.textPosition?.startChar ?? 0) < bitEnd) {
+    const sameSrcBits = topics
+      .filter((t) => t.sourceFile === bit.sourceFile && t.id !== bitId)
+      .sort((a, b) => (a.textPosition?.startChar ?? 0) - (b.textPosition?.startChar ?? 0));
+    effectiveNextBit = sameSrcBits.find((t) => (t.textPosition?.startChar ?? 0) >= bitEnd) || null;
+  }
+  // When growing, we can eat into the next bit (moving the boundary forward),
+  // so cap at the next bit's END, not its start. The next bit's startChar gets
+  // adjusted accordingly. When there's no next bit, grow to end of transcript.
+  const maxEnd = effectiveNextBit ? effectiveNextBit.textPosition.endChar : text.length;
+  // Cap shrink at the bit's own start (keep at least 1 char)
+  const minEnd = bitStart + 1;
   const count = Math.abs(direction);
   const growing = direction > 0;
 
   let newBitEnd = bitEnd;
   for (let i = 0; i < count; i++) {
     if (growing) {
-      const after = text.substring(newBitEnd);
+      if (newBitEnd >= maxEnd) break;
+      const after = text.substring(newBitEnd, maxEnd);
       const m = after.match(/^\s*\S+/);
       if (!m) break;
-      newBitEnd = newBitEnd + m[0].length;
+      newBitEnd = Math.min(newBitEnd + m[0].length, maxEnd);
     } else {
+      if (newBitEnd <= minEnd) break;
       const before = text.substring(0, newBitEnd);
       const m = before.match(/\S+\s*$/);
       if (!m) break;
-      newBitEnd = newBitEnd - m[0].length;
+      newBitEnd = Math.max(newBitEnd - m[0].length, minEnd);
     }
   }
   if (newBitEnd === bitEnd) return null; // nothing changed
   const newNextStart = newBitEnd;
 
+  const changedBitIds = [bitId];
   const updatedTopics = topics.map((t) => {
     if (t.id === bitId) {
       const newPos = { startChar: t.textPosition.startChar, endChar: newBitEnd };
@@ -194,7 +215,8 @@ export function applyScrollBoundary(bitId, nextBitId, direction, topics, transcr
         editHistory: [...(t.editHistory || []), { timestamp: Date.now(), action: "scroll-boundary", details: { from: t.textPosition, to: newPos } }],
       };
     }
-    if (t.id === nextBitId) {
+    if (effectiveNextBit && t.id === effectiveNextBit.id) {
+      changedBitIds.push(effectiveNextBit.id);
       const newPos = { startChar: newNextStart, endChar: t.textPosition.endChar };
       return {
         ...t,
@@ -206,5 +228,5 @@ export function applyScrollBoundary(bitId, nextBitId, direction, topics, transcr
     return t;
   });
 
-  return { updatedTopics, changedBitIds: [bitId, nextBitId] };
+  return { updatedTopics, changedBitIds };
 }

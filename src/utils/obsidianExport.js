@@ -104,6 +104,16 @@ export function generateObsidianVault(topics, matches, transcripts, touchstones 
       }
     });
 
+    // Flow neighbors (related touchstones that often appear adjacent in setlists)
+    const relatedIds = touchstone.relatedTouchstoneIds || [];
+    if (relatedIds.length > 0) {
+      md += `\nFlow Neighbors:\n`;
+      relatedIds.forEach((relId) => {
+        const rel = touchstones.find((t) => t.id === relId);
+        if (rel) md += `- [[${rel.name}]]\n`;
+      });
+    }
+
     files.push({ name: `Touchstones/${sanitize(touchstone.name)}.md`, content: md });
   });
 

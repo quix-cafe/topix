@@ -20,12 +20,19 @@ export function ValidationTab({
   onJoinBits,
   onReParseGap,
   onDeleteBit,
+  batchFixing,
+  setBatchFixing,
+  batchProgress,
+  setBatchProgress,
+  batchStopRef,
+  universalCorrections = [],
+  onUpdateUniversalCorrections,
 }) {
   const [expandedIssue, setExpandedIssue] = useState(null);
   const [autoFixing, setAutoFixing] = useState(null);
-  const [batchFixing, setBatchFixing] = useState(null); // category being batch-fixed
-  const [batchProgress, setBatchProgress] = useState(null); // {done, total}
-  const batchStopRef = useRef(false);
+  const [newCorrFrom, setNewCorrFrom] = useState("");
+  const [newCorrTo, setNewCorrTo] = useState("");
+  const [newCorrPattern, setNewCorrPattern] = useState(false);
   const setFilter = onFilterChange;
 
   // Build transcript map
@@ -176,9 +183,76 @@ export function ValidationTab({
     return suggestions;
   }, [topics, transcripts, touchstones]);
 
+  // Collect all word corrections from touchstones for the transcription category
+  const transcriptionIssues = useMemo(() => {
+    const allTs = [
+      ...(touchstones?.confirmed || []),
+      ...(touchstones?.possible || []),
+      ...(touchstones?.rejected || []),
+    ];
+    const corrections = [];
+    const universalSet = new Set(universalCorrections.map(c => `${c.from}→${c.to}`));
+
+    for (const ts of allTs) {
+      for (const c of ts.corrections || []) {
+        corrections.push({
+          type: "transcription",
+          bitId: null,
+          bitTitle: `"${c.from}" → "${c.to}"`,
+          source: ts.name || "unnamed",
+          error: `Touchstone "${ts.name || 'unnamed'}" corrects "${c.from}" → "${c.to}"`,
+          severity: 10,
+          correctionFrom: c.from,
+          correctionTo: c.to,
+          touchstoneId: ts.id,
+          touchstoneName: ts.name || "unnamed",
+          isUniversal: universalSet.has(`${c.from}→${c.to}`),
+        });
+      }
+    }
+
+    // Add universal corrections not already represented by a touchstone
+    for (const c of universalCorrections) {
+      const key = `${c.from}→${c.to}`;
+      if (!corrections.some(cr => `${cr.correctionFrom}→${cr.correctionTo}` === key)) {
+        corrections.push({
+          type: "transcription",
+          bitId: null,
+          bitTitle: `"${c.from}" → "${c.to}"`,
+          source: "universal",
+          error: `Universal correction: "${c.from}" → "${c.to}"${c.pattern ? " (pattern)" : ""}`,
+          severity: 10,
+          correctionFrom: c.from,
+          correctionTo: c.to,
+          touchstoneId: null,
+          touchstoneName: null,
+          isUniversal: true,
+          isPattern: !!c.pattern,
+        });
+      }
+    }
+
+    // Deduplicate by from→to
+    const seen = new Map();
+    for (const c of corrections) {
+      const key = `${c.correctionFrom}→${c.correctionTo}`;
+      if (!seen.has(key)) {
+        seen.set(key, { ...c, touchstoneNames: [c.touchstoneName].filter(Boolean) });
+      } else {
+        const existing = seen.get(key);
+        if (c.touchstoneName && !existing.touchstoneNames.includes(c.touchstoneName)) {
+          existing.touchstoneNames.push(c.touchstoneName);
+        }
+        if (c.isUniversal) existing.isUniversal = true;
+      }
+    }
+
+    return [...seen.values()];
+  }, [touchstones, universalCorrections]);
+
   // Categorize issues (excluding trivial ones <= 10 chars)
   const categorized = useMemo(() => {
-    const cats = { overlap: [], mismatch: [], missing: [], bounds: [], gap: [], join: [] };
+    const cats = { overlap: [], mismatch: [], missing: [], bounds: [], gap: [], join: [], transcription: [] };
     (validation.issues || []).filter((issue) => (issue.severity || 0) > 10).forEach((issue) => {
       if (issue.error.includes("Overlaps with")) cats.overlap.push(issue);
       else if (issue.error.includes("mismatch") || issue.error.includes("similarity")) cats.mismatch.push(issue);
@@ -187,14 +261,15 @@ export function ValidationTab({
     });
     cats.gap = gapIssues.filter((g) => !g.approved);
     cats.join = joinSuggestions;
+    cats.transcription = transcriptionIssues;
     return cats;
-  }, [validation, gapIssues, joinSuggestions]);
+  }, [validation, gapIssues, joinSuggestions, transcriptionIssues]);
 
   const allIssues = useMemo(() => {
     const base = (validation.issues || []).filter((issue) => (issue.severity || 0) > 10);
     const unapprovedGaps = gapIssues.filter((g) => !g.approved);
-    return [...base, ...unapprovedGaps, ...joinSuggestions];
-  }, [validation, gapIssues, joinSuggestions]);
+    return [...base, ...unapprovedGaps, ...joinSuggestions, ...transcriptionIssues];
+  }, [validation, gapIssues, joinSuggestions, transcriptionIssues]);
 
   const filteredIssues = (filter === "all"
     ? allIssues
@@ -469,6 +544,7 @@ export function ValidationTab({
     bounds: { bg: "#74c0fc", label: "Bounds Error" },
     gap: { bg: "#c4b5fd", label: "Gap" },
     join: { bg: "#4ecdc4", label: "Join" },
+    transcription: { bg: "#f783ac", label: "Transcription" },
   };
 
   const batchFixLabels = {
@@ -479,6 +555,7 @@ export function ValidationTab({
   };
 
   const getIssueCategory = (issue) => {
+    if (issue.type === "transcription") return "transcription";
     if (issue.type === "join") return "join";
     if (issue.type === "gap") return "gap";
     if (issue.error.includes("Overlaps with")) return "overlap";
@@ -614,6 +691,51 @@ export function ValidationTab({
         </div>
       )}
 
+      {/* Add new universal correction (transcription filter only) */}
+      {filter === "transcription" && onUpdateUniversalCorrections && (
+        <div style={{
+          display: "flex", gap: 8, alignItems: "center", padding: "10px 14px",
+          background: "#12121f", border: "1px solid #1e1e30", borderRadius: 8, marginBottom: 12,
+        }}>
+          <span style={{ fontSize: 10, color: "#f783ac", fontWeight: 600, flexShrink: 0 }}>New:</span>
+          <input
+            type="text" value={newCorrFrom} onChange={(e) => setNewCorrFrom(e.target.value)}
+            placeholder="Wrong word(s)" style={{ flex: 1, padding: "4px 8px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#ff8888", fontSize: 11, fontFamily: "inherit" }}
+          />
+          <span style={{ color: "#555", fontSize: 11 }}>&rarr;</span>
+          <input
+            type="text" value={newCorrTo} onChange={(e) => setNewCorrTo(e.target.value)}
+            placeholder="Correct word(s)"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newCorrFrom.trim() && newCorrTo.trim()) {
+                onUpdateUniversalCorrections([...universalCorrections, { from: newCorrFrom.trim(), to: newCorrTo.trim(), pattern: newCorrPattern }]);
+                setNewCorrFrom(""); setNewCorrTo(""); setNewCorrPattern(false);
+              }
+            }}
+            style={{ flex: 1, padding: "4px 8px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#51cf66", fontSize: 11, fontFamily: "inherit" }}
+          />
+          <label style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10, color: "#888", cursor: "pointer", flexShrink: 0 }}>
+            <input type="checkbox" checked={newCorrPattern} onChange={(e) => setNewCorrPattern(e.target.checked)} style={{ accentColor: "#f783ac" }} />
+            pattern
+          </label>
+          <button
+            onClick={() => {
+              if (!newCorrFrom.trim() || !newCorrTo.trim()) return;
+              onUpdateUniversalCorrections([...universalCorrections, { from: newCorrFrom.trim(), to: newCorrTo.trim(), pattern: newCorrPattern }]);
+              setNewCorrFrom(""); setNewCorrTo(""); setNewCorrPattern(false);
+            }}
+            disabled={!newCorrFrom.trim() || !newCorrTo.trim()}
+            style={{
+              padding: "4px 10px", background: newCorrFrom.trim() && newCorrTo.trim() ? "#f783ac22" : "none",
+              border: "1px solid #f783ac33", color: newCorrFrom.trim() && newCorrTo.trim() ? "#f783ac" : "#555",
+              borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: newCorrFrom.trim() && newCorrTo.trim() ? "pointer" : "default",
+            }}
+          >
+            Add Universal
+          </button>
+        </div>
+      )}
+
       {/* Issues list */}
       {filteredIssues.length === 0 && filter !== "all" && (
         <div style={{ textAlign: "center", padding: 40, color: "#666", fontSize: 13 }}>
@@ -729,7 +851,7 @@ export function ValidationTab({
             </div>
 
             {/* Expanded detail */}
-            {isExpanded && (bit || category === "gap" || category === "join") && (
+            {isExpanded && (bit || category === "gap" || category === "join" || category === "transcription") && (
               <div style={{
                 padding: "0 16px 16px",
                 borderTop: "1px solid #1e1e30",
@@ -914,6 +1036,58 @@ export function ValidationTab({
                     <div style={{ color: "#888", fontSize: 10, marginTop: 4 }}>
                       These bits are sequential in the transcript and all belong to the same touchstone.
                       Joining them will merge their text and titles into a single bit.
+                    </div>
+                  </div>
+                )}
+
+                {/* Transcription correction detail */}
+                {category === "transcription" && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontSize: 11, color: "#ff8888", textDecoration: "line-through" }}>{issue.correctionFrom}</span>
+                      <span style={{ fontSize: 11, color: "#555" }}>&rarr;</span>
+                      <span style={{ fontSize: 11, color: "#51cf66" }}>{issue.correctionTo}</span>
+                      {issue.isPattern && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "#f783ac22", color: "#f783ac" }}>pattern</span>}
+                    </div>
+                    {issue.touchstoneNames && issue.touchstoneNames.length > 0 && (
+                      <div style={{ fontSize: 10, color: "#888", marginBottom: 8 }}>
+                        Used in: {issue.touchstoneNames.join(", ")}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {!issue.isUniversal && onUpdateUniversalCorrections && (
+                        <button
+                          onClick={() => {
+                            const updated = [...universalCorrections, { from: issue.correctionFrom, to: issue.correctionTo }];
+                            onUpdateUniversalCorrections(updated);
+                          }}
+                          style={{
+                            padding: "4px 10px", background: "#f783ac22", border: "1px solid #f783ac44",
+                            color: "#f783ac", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer",
+                          }}
+                        >
+                          Make Universal
+                        </button>
+                      )}
+                      {issue.isUniversal && (
+                        <span style={{ fontSize: 10, padding: "4px 10px", background: "#f783ac18", borderRadius: 4, color: "#f783ac", fontWeight: 600 }}>
+                          Universal
+                        </span>
+                      )}
+                      {issue.isUniversal && onUpdateUniversalCorrections && (
+                        <button
+                          onClick={() => {
+                            const updated = universalCorrections.filter(c => !(c.from === issue.correctionFrom && c.to === issue.correctionTo));
+                            onUpdateUniversalCorrections(updated);
+                          }}
+                          style={{
+                            padding: "4px 10px", background: "#ff6b6b22", border: "1px solid #ff6b6b44",
+                            color: "#ff6b6b", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer",
+                          }}
+                        >
+                          Remove Universal
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}

@@ -332,12 +332,21 @@ export async function saveTouchstones(touchstones) {
  */
 export async function loadTouchstones() {
   const db = await getDB();
-  const store = db.transaction([STORES.touchstones], "readonly").objectStore(STORES.touchstones);
+  const tx = db.transaction([STORES.touchstones, STORES.metadata], "readonly");
+  const store = tx.objectStore(STORES.touchstones);
 
   const records = await new Promise((resolve, reject) => {
     const request = store.getAll();
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve(request.result || []);
+  });
+
+  // Load unlinked flow pairs from metadata
+  const metaStore = tx.objectStore(STORES.metadata);
+  const unlinkedRecord = await new Promise((resolve, reject) => {
+    const req = metaStore.get("unlinked-flow-pairs");
+    req.onerror = () => resolve(null);
+    req.onsuccess = () => resolve(req.result);
   });
 
   // Reconstruct { confirmed, possible, rejected } from flat array
@@ -346,6 +355,7 @@ export async function loadTouchstones() {
     confirmed: records.filter((t) => !t.category || t.category === "confirmed"),
     possible: records.filter((t) => t.category === "possible"),
     rejected: records.filter((t) => t.category === "rejected"),
+    _unlinkedPairs: unlinkedRecord?.data || [],
   };
 }
 
@@ -401,6 +411,17 @@ export async function saveVaultState(vaultData) {
     },
   });
 
+  // Persist unlinked flow pairs (manually broken touchstone relationships)
+  const unlinkedPairs = vaultData.touchstones?._unlinkedPairs;
+  if (unlinkedPairs) {
+    tx.objectStore(STORES.metadata).put({ id: "unlinked-flow-pairs", data: unlinkedPairs });
+  }
+
+  // Persist universal corrections
+  if (vaultData.universalCorrections) {
+    tx.objectStore(STORES.metadata).put({ id: "universal-corrections", data: vaultData.universalCorrections });
+  }
+
   // Wait for the entire transaction to commit
   await new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
@@ -412,6 +433,16 @@ export async function saveVaultState(vaultData) {
 /**
  * Load entire vault state
  */
+export async function loadUniversalCorrections() {
+  const db = await getDB();
+  const store = db.transaction([STORES.metadata], "readonly").objectStore(STORES.metadata);
+  return new Promise((resolve, reject) => {
+    const request = store.get("universal-corrections");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result?.data || []);
+  });
+}
+
 export async function loadVaultState() {
   return {
     transcripts: await loadTranscripts(),
@@ -419,6 +450,7 @@ export async function loadVaultState() {
     matches: await loadMatches(),
     touchstones: await loadTouchstones(),
     notes: await loadNotes(),
+    universalCorrections: await loadUniversalCorrections(),
   };
 }
 

@@ -133,9 +133,10 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
     return () => window.removeEventListener("keydown", handler);
   }, [selectedTranscript, sortedBits]);
 
-  // Detect gaps and overlaps between adjacent bits
+  // Detect gaps and overlaps between adjacent bits (including trailing gap after last bit)
   const bitAnalysis = useMemo(() => {
     const analysis = [];
+    const textLen = selectedTranscript?.text?.replace(/\n/g, " ").length || 0;
     for (let i = 0; i < sortedBits.length; i++) {
       const bit = sortedBits[i];
       const next = sortedBits[i + 1];
@@ -151,11 +152,18 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
         } else {
           gapInfo = { type: "gap", chars: gapSize, gapStart, gapEnd };
         }
+      } else if (textLen > 0) {
+        // Trailing gap after last bit
+        const gapStart = bit.textPosition?.endChar || 0;
+        const trailingSize = textLen - gapStart;
+        if (trailingSize > 10) {
+          gapInfo = { type: "trailing", chars: trailingSize, gapStart, gapEnd: textLen };
+        }
       }
       analysis.push({ bit, gapInfo, index: i });
     }
     return analysis;
-  }, [sortedBits]);
+  }, [sortedBits, selectedTranscript]);
 
   // Auto-expand and scroll to a gap when navigating from ValidationTab
   useEffect(() => {
@@ -664,7 +672,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
               onClick={() => setExpandedGaps((prev) => { const next = new Set(prev); if (next.has(gapKey)) next.delete(gapKey); else next.add(gapKey); return next; })}
             >
               <div style={{ flex: 1, height: 1, background: "#c4b5fd33" }} />
-              <span style={{ padding: "0 8px" }}>{firstStart} char gap (start) {isGapExpanded ? "▾" : "▸"}{!isGapExpanded && isLeadApproved && <span style={{ color: "#51cf66", marginLeft: 6 }}>✓</span>}</span>
+              <span style={{ padding: "0 8px" }}>{firstStart} char gap (start) {isGapExpanded ? "▾" : "▸"}{isLeadApproved && <span style={{ color: "#51cf66", marginLeft: 6, fontSize: 13, fontWeight: 700 }}>✓</span>}</span>
               <div style={{ flex: 1, height: 1, background: "#c4b5fd33" }} />
             </div>
             {isGapExpanded && gapText && (
@@ -851,13 +859,13 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                   </div>
                   <div style={{ display: "flex", gap: 6, marginLeft: 8, flexShrink: 0, alignItems: "stretch" }}>
                     {/* Boundary scroll +/- */}
-                    {isSelected && onScrollBoundary && sortedBits[index + 1] && (
+                    {isSelected && onScrollBoundary && (sortedBits[index + 1] || gapInfo?.type === "trailing") && (
                       <div style={{ display: "flex", gap: 3, marginRight: 4 }}>
                         {[[-10, "−10"], [-1, "−"], [1, "+"], [10, "+10"]].map(([delta, label]) => (
                           <button
                             key={delta}
-                            onClick={(e) => { e.stopPropagation(); onScrollBoundary(bit.id, sortedBits[index + 1].id, delta); }}
-                            title={delta < 0 ? `Give ${Math.abs(delta)} word${Math.abs(delta) > 1 ? 's' : ''} to next bit` : `Take ${delta} word${delta > 1 ? 's' : ''} from next bit`}
+                            onClick={(e) => { e.stopPropagation(); onScrollBoundary(bit.id, sortedBits[index + 1]?.id || null, delta); }}
+                            title={delta < 0 ? `Give ${Math.abs(delta)} word${Math.abs(delta) > 1 ? 's' : ''} to ${sortedBits[index + 1] ? 'next bit' : 'gap'}` : `Take ${delta} word${delta > 1 ? 's' : ''} from ${sortedBits[index + 1] ? 'next bit' : 'gap'}`}
                             style={{
                               background: "none",
                               border: `1px solid ${delta < 0 ? '#ffa94d44' : '#51cf6644'}`,
@@ -958,7 +966,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
               </div>
 
               {/* Gap indicator between bits */}
-              {gapInfo && (() => {
+              {gapInfo && gapInfo.type !== "trailing" && (() => {
                 const gapKey = `${index}`;
                 const isPhantom = gapInfo.type === "gap" && gapInfo.chars > 10;
                 const isGapExpanded = expandedGaps.has(gapKey);
@@ -994,7 +1002,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                         {gapInfo.type === "overlap" ? `${gapInfo.chars} char overlap` :
                          gapInfo.type === "adjacent" ? `${gapInfo.chars} chars` :
                          `${gapInfo.chars} char gap ${isGapExpanded ? "▾" : "▸"}`}
-                        {isPhantom && !isGapExpanded && isGapApproved && <span style={{ color: "#51cf66", marginLeft: 6 }}>✓</span>}
+                        {isPhantom && isGapApproved && <span style={{ color: "#51cf66", marginLeft: 6, fontSize: 13, fontWeight: 700 }}>✓</span>}
                       </span>
                       <div style={{
                         flex: 1, height: 1,
@@ -1096,7 +1104,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                 onClick={() => setExpandedGaps((prev) => { const next = new Set(prev); if (next.has(gapKey)) next.delete(gapKey); else next.add(gapKey); return next; })}
               >
                 <div style={{ flex: 1, height: 1, background: "#c4b5fd33" }} />
-                <span style={{ padding: "0 8px" }}>{trailingSize} char gap (end) {isGapExpanded ? "▾" : "▸"}{!isGapExpanded && isTrailApproved && <span style={{ color: "#51cf66", marginLeft: 6 }}>✓</span>}</span>
+                <span style={{ padding: "0 8px" }}>{trailingSize} char gap (end) {isGapExpanded ? "▾" : "▸"}{isTrailApproved && <span style={{ color: "#51cf66", marginLeft: 6, fontSize: 13, fontWeight: 700 }}>✓</span>}</span>
                 <div style={{ flex: 1, height: 1, background: "#c4b5fd33" }} />
               </div>
               {isGapExpanded && gapText && (

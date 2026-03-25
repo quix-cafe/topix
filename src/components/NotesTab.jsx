@@ -469,7 +469,7 @@ export default function NotesTab({
   };
 
   const filteredTouchstones = useMemo(() => {
-    return searchTouchstones(allTouchstones, matchSearch).slice(0, 20);
+    return searchTouchstones(allTouchstones.filter(t => t.category !== "rejected"), matchSearch).slice(0, 20);
   }, [allTouchstones, matchSearch]);
 
   // Embedding-based touchstone suggestions

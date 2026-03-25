@@ -6,16 +6,18 @@ export function ExportTab({
   exportMarkdownZip,
   exportSingleMd,
   syncToVault,
+  undoVaultSync,
 }) {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
+  const [undoing, setUndoing] = useState(false);
 
   const handleSync = async () => {
     setSyncing(true);
     setSyncResult(null);
     try {
       const data = await syncToVault();
-      setSyncResult({ ok: true, written: data.written, errors: data.errors || [] });
+      setSyncResult({ ok: true, written: data.written, errors: data.errors || [], hasBackup: data.hasBackup });
     } catch (e) {
       setSyncResult({ ok: false, error: e.message });
     } finally {
@@ -23,62 +25,60 @@ export function ExportTab({
     }
   };
 
+  const handleUndo = async () => {
+    setUndoing(true);
+    try {
+      const data = await undoVaultSync();
+      setSyncResult({ ok: true, undone: true, restored: data.restored, removed: data.removed });
+    } catch (e) {
+      setSyncResult({ ok: false, error: e.message });
+    } finally {
+      setUndoing(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: 560 }}>
-      <h2 style={{
-        fontFamily: "'Playfair Display', serif",
-        fontSize: 22,
-        fontWeight: 700,
-        marginBottom: 20,
-        color: "#eee",
-      }}>
-        Export to Obsidian
-      </h2>
+      <h2 className="section-heading">Export to Obsidian</h2>
 
-      <div className="card" style={{ cursor: "default", borderLeft: "3px solid #51cf66" }}>
+      <div className="card card-static" style={{ borderLeft: "3px solid #51cf66" }}>
         <div style={{ fontWeight: 600, color: "#eee", marginBottom: 6 }}>Sync to Vault</div>
-        <p style={{ fontSize: 13, color: "#888", marginBottom: 12, lineHeight: 1.5 }}>
+        <p className="settings-description" style={{ lineHeight: 1.5 }}>
           Write all generated files directly to <code style={{ color: "#74c0fc" }}>~/ownCloud/Comedy/</code>. Updates Jokes/, Touchstones/, Performance Flows/, and the MOC.
         </p>
-        <button className="btn btn-primary" onClick={handleSync} disabled={topics.length === 0 || syncing}>
-          {syncing ? "Syncing..." : "Sync to Vault"}
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button className="btn btn-primary" onClick={handleSync} disabled={topics.length === 0 || syncing || undoing}>
+            {syncing ? "Syncing..." : "Sync to Vault"}
+          </button>
+          {syncResult?.ok && !syncResult.undone && (
+            <button
+              className="btn btn-secondary"
+              onClick={handleUndo}
+              disabled={undoing}
+              title="Restore vault files to their state before the last sync"
+            >
+              {undoing ? "Undoing..." : "Undo"}
+            </button>
+          )}
+        </div>
         {syncResult && (
           <div style={{ marginTop: 8, fontSize: 12, color: syncResult.ok ? "#51cf66" : "#ff6b6b" }}>
             {syncResult.ok
-              ? `Wrote ${syncResult.written} files.${syncResult.errors.length > 0 ? ` ${syncResult.errors.length} errors.` : ""}`
+              ? syncResult.undone
+                ? `Undo complete: ${syncResult.restored} restored, ${syncResult.removed} new files removed.`
+                : `Wrote ${syncResult.written} files.${syncResult.errors.length > 0 ? ` ${syncResult.errors.length} errors.` : ""}`
               : `Error: ${syncResult.error}`}
           </div>
         )}
       </div>
 
-      <div className="card" style={{ cursor: "default" }}>
-        <div style={{ fontWeight: 600, color: "#eee", marginBottom: 6 }}>JSON Vault Export</div>
-        <p style={{ fontSize: 13, color: "#888", marginBottom: 12, lineHeight: 1.5 }}>
-          Downloads a structured JSON file containing all markdown files, wikilinks, and tags.
-        </p>
-        <button className="btn btn-secondary" onClick={exportVault} disabled={topics.length === 0}>
-          Download JSON Vault
-        </button>
-      </div>
-
-      <div className="card" style={{ cursor: "default" }}>
+      <div className="card card-static">
         <div style={{ fontWeight: 600, color: "#eee", marginBottom: 6 }}>Combined Markdown</div>
-        <p style={{ fontSize: 13, color: "#888", marginBottom: 12, lineHeight: 1.5 }}>
+        <p className="settings-description" style={{ lineHeight: 1.5 }}>
           Single .md file with all topics, tags, and links. Good for quick review or import.
         </p>
         <button className="btn btn-secondary" onClick={exportSingleMd} disabled={topics.length === 0}>
           Download Combined .md
-        </button>
-      </div>
-
-      <div className="card" style={{ cursor: "default" }}>
-        <div style={{ fontWeight: 600, color: "#eee", marginBottom: 6 }}>Individual Files</div>
-        <p style={{ fontSize: 13, color: "#888", marginBottom: 12, lineHeight: 1.5 }}>
-          Downloads each topic as a separate .md file. Your browser may ask permission for multiple downloads.
-        </p>
-        <button className="btn btn-secondary" onClick={exportMarkdownZip} disabled={topics.length === 0}>
-          Download All .md Files
         </button>
       </div>
 

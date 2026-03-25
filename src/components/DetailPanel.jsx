@@ -368,6 +368,7 @@ export function DetailPanel({
         const possibleTs = allTouchstones.filter((ts) => {
           if (currentTsIds.has(ts.id)) return false;
           if (ts.bitIds.includes(selectedTopic.id)) return false;
+          if (ts.category === "rejected") return false;
           return true;
         });
 

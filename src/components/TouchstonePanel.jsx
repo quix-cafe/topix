@@ -4,6 +4,7 @@ import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filename
 import { SYSTEM_SYNTHESIZE_TOUCHSTONE, SYSTEM_TOUCHSTONE_COMMUNE, SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
 import { searchTouchstones } from "../utils/touchstoneSearch";
 
+
 function StyledFilename({ sourceFile, style }) {
   const p = parseFilenameClient(sourceFile || "");
   const rc = ratingColor(p.rating);
@@ -28,11 +29,14 @@ export function TouchstonePanel({
   onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onCreateTouchstone,
   onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, onUpdateTouchstoneEdits,
   onCommuneTouchstone, onSynthesizeTouchstone, onMassTouchstoneCommunion, onSaintInstance,
+  onRelateTouchstone, onUnrelateTouchstone, onAutoRelateAll,
   initialTouchstoneId, onConsumeInitialTouchstone, onGoToNote,
+  universalCorrections,
 }) {
   const [selectedTouchstoneId, setSelectedTouchstoneIdRaw] = useHashParam("tsid", "");
   const setSelectedTouchstoneId = (id) => { setSelectedTouchstoneIdRaw(id || ""); if (id) window.scrollTo(0, 0); };
   const [autoOpenMerge, setAutoOpenMerge] = useState(false);
+  const [autoOpenRelate, setAutoOpenRelate] = useState(false);
   const [creatingFrom, setCreatingFrom] = useState(null); // bit to seed new touchstone
   const [touchstoneFilter, setTouchstoneFilter] = useHashParam("tf", "");
   const [newTouchstoneName, setNewTouchstoneName] = useState("");
@@ -146,12 +150,18 @@ export function TouchstonePanel({
         processing={processing}
         autoOpenMerge={autoOpenMerge}
         onConsumeAutoOpenMerge={() => setAutoOpenMerge(false)}
+        autoOpenRelate={autoOpenRelate}
+        onConsumeAutoOpenRelate={() => setAutoOpenRelate(false)}
         onUpdateTouchstoneEdits={onUpdateTouchstoneEdits}
         onCommuneTouchstone={onCommuneTouchstone}
         onSynthesizeTouchstone={onSynthesizeTouchstone}
         onSaintInstance={onSaintInstance}
+        onRelateTouchstone={onRelateTouchstone}
+        onUnrelateTouchstone={onUnrelateTouchstone}
+        onNavigateToTouchstone={(id) => { setSelectedTouchstoneId(id); }}
         notes={notes}
         onGoToNote={onGoToNote}
+        universalCorrections={universalCorrections}
       />
     );
   }
@@ -184,6 +194,17 @@ export function TouchstonePanel({
             border: "1px solid #c4b5fd40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
           }}>
             {processing ? "Communing..." : `Commune (${confirmed.length + possible.length + rejected.length})`}
+          </button>
+        )}
+        {onAutoRelateAll && (confirmed.length + possible.length) >= 2 && (
+          <button onClick={() => {
+            const changed = onAutoRelateAll();
+            if (!changed) alert("No new flow relations found (need 3+ adjacent appearances across setlists).");
+          }} disabled={processing} style={{
+            padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#e599f7",
+            border: "1px solid #e599f740", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
+          }}>
+            Auto-Relate
           </button>
         )}
       </div>
@@ -239,7 +260,7 @@ export function TouchstonePanel({
         const filterList = (list) => q ? searchTouchstones(list, q) : list;
         const fConfirmed = filterList(confirmed);
         const fPossible = filterList(possible);
-        const fRejected = filterList(rejected);
+        const fRejected = q ? [] : rejected;
 
         return (
           <>
@@ -260,7 +281,7 @@ export function TouchstonePanel({
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   {fConfirmed.map((touchstone) => (
-                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} notes={notes} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} notes={notes} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onRelate={onRelateTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenRelate(true); } : null} processing={processing} allTouchstones={allTouchstones} />
                   ))}
                 </div>
               </div>
@@ -273,7 +294,7 @@ export function TouchstonePanel({
                 </h3>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   {fPossible.map((touchstone) => (
-                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} notes={notes} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onConfirm={onConfirmTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} notes={notes} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRemove={onRemoveTouchstone} onConfirm={onConfirmTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onRelate={onRelateTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenRelate(true); } : null} processing={processing} allTouchstones={allTouchstones} />
                   ))}
                 </div>
               </div>
@@ -286,7 +307,7 @@ export function TouchstonePanel({
                 </h3>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   {fRejected.map((touchstone) => (
-                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} notes={notes} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRestore={onRestoreTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onCommune={onCommuneTouchstone} onSynthesize={onSynthesizeTouchstone} processing={processing} />
+                    <TouchstoneCard key={touchstone.id} touchstone={touchstone} bits={bits} notes={notes} onClick={() => setSelectedTouchstoneId(touchstone.id)} onRestore={onRestoreTouchstone} onMerge={onMergeTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenMerge(true); } : null} onRelate={onRelateTouchstone ? (id) => { setSelectedTouchstoneId(id); setAutoOpenRelate(true); } : null} processing={processing} allTouchstones={allTouchstones} />
                   ))}
                 </div>
               </div>
@@ -394,7 +415,7 @@ function pctColor(pct) {
   return "#cc5555";
 }
 
-function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, onMerge, onCommune, onSynthesize, processing, bits, notes }) {
+function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, onMerge, onRelate, processing, bits, notes, allTouchstones }) {
   const instances = touchstone.instances || [];
   const sourceCount = new Set(instances.map((i) => i.sourceFile)).size;
   const instanceCount = instances.length;
@@ -436,8 +457,6 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
     fontWeight: 600, opacity: extra?.disabled ? 0.4 : 1, ...extra,
   });
 
-  const topReason = touchstone.matchInfo?.reasons?.[0];
-
   return (
     <div className="card" onClick={onClick} style={{ cursor: "pointer", borderLeft: `3px solid ${borderColor}`, opacity: isRejected ? 0.6 : 1, padding: "12px 14px" }}>
       <div style={{ display: "flex", gap: 14 }}>
@@ -449,15 +468,8 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
             {touchstone.manualName && <span style={{ fontSize: 9, color: "#c4b5fd", marginLeft: 6, fontWeight: 400 }}>edited</span>}
           </div>
 
-          {/* Summary — skip stale instance-count summaries from old data */}
-          {touchstone.summary && !/^\d+ instances?\s/.test(touchstone.summary) && (
-            <div style={{ fontSize: 11, color: "#888", lineHeight: 1.4, marginBottom: 4 }}>
-              {touchstone.summary}
-            </div>
-          )}
-
-          {/* Ideal text preview — above match reason */}
-          {touchstone.idealText && (
+          {/* Ideal text preview */}
+          {touchstone.idealText ? (
             <div style={{ marginTop: 4, marginBottom: 4, padding: "8px 10px", background: "#0a0a14", borderRadius: 5, border: "1px solid #1a1a2a", fontSize: 11, color: "#999", lineHeight: 1.5, maxHeight: 104, overflow: "hidden", position: "relative" }}>
               <span style={{ fontSize: 9, color: touchstone.manualIdealText ? "#c4b5fd" : "#74c0fc", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                 {touchstone.manualIdealText ? "Edited" : "Synth"}{" \u2014 "}
@@ -465,14 +477,11 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
               {touchstone.idealText.slice(0, 400)}{touchstone.idealText.length > 400 ? "..." : ""}
               <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 20, background: "linear-gradient(transparent, #12121e)" }} />
             </div>
-          )}
-
-          {/* Why matched */}
-          {topReason && (
+          ) : touchstone.matchInfo?.reasons?.[0] ? (
             <div style={{ fontSize: 11, color: "#777", fontStyle: "italic", lineHeight: 1.4, marginBottom: 4 }}>
-              {topReason}
+              {touchstone.matchInfo.reasons[0]}
             </div>
-          )}
+          ) : null}
 
           {/* Communion badges */}
           {hasCommunionData && (
@@ -498,9 +507,14 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
             {sameBitCount > 0 && <span style={{ color: "#51cf66" }}>{sameBitCount} same</span>}
             {sameBitCount > 0 && evolvedCount > 0 && " · "}
             {evolvedCount > 0 && <span style={{ color: "#ffa94d" }}>{evolvedCount} evolved</span>}
-            {noteCount > 0 && (sameBitCount > 0 || evolvedCount > 0) && " · "}
-            {noteCount > 0 && <span style={{ color: "#c4b5fd" }}>{noteCount} note{noteCount !== 1 ? "s" : ""}</span>}
           </div>
+          {(noteCount > 0 || (touchstone.relatedTouchstoneIds || []).length > 0) && (
+            <div style={{ fontSize: 9, color: "#666" }}>
+              {noteCount > 0 && <span style={{ color: "#c4b5fd" }}>{noteCount} note{noteCount !== 1 ? "s" : ""}</span>}
+              {noteCount > 0 && (touchstone.relatedTouchstoneIds || []).length > 0 && " · "}
+              {(touchstone.relatedTouchstoneIds || []).length > 0 && <span style={{ color: "#e599f7" }}>{(touchstone.relatedTouchstoneIds || []).length} flow</span>}
+            </div>
+          )}
 
           {/* Action buttons — single column */}
           <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 2, width: "100%" }}>
@@ -512,20 +526,13 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
               <button onClick={(e) => { e.stopPropagation(); onRestore(touchstone.id); }}
                 style={cardBtn("#4ecdc411", "#4ecdc433", "#4ecdc4")}>Restore</button>
             )}
-            {onCommune && (
-              <button onClick={(e) => { e.stopPropagation(); if (!processing) onCommune(touchstone.id); }}
-                style={cardBtn("#c4b5fd11", "#c4b5fd33", "#c4b5fd", { disabled: processing })}>Commune</button>
-            )}
-            {onSynthesize && (
-              <button onClick={(e) => { e.stopPropagation(); if (!processing && !touchstone.manualIdealText) onSynthesize(touchstone.id); }}
-                style={cardBtn("#74c0fc11", "#74c0fc33", "#74c0fc", { disabled: processing || touchstone.manualIdealText })}
-                title={touchstone.manualIdealText ? "Ideal text is manually edited" : ""}>
-                {touchstone.idealText ? "Re-synth" : "Synth"}
-              </button>
-            )}
             {onMerge && (
               <button onClick={(e) => { e.stopPropagation(); onMerge(touchstone.id); }}
                 style={cardBtn("#ffa94d11", "#ffa94d33", "#ffa94d")}>Merge</button>
+            )}
+            {onRelate && (
+              <button onClick={(e) => { e.stopPropagation(); onRelate(touchstone.id); }}
+                style={cardBtn("#e599f711", "#e599f733", "#e599f7")}>Relate</button>
             )}
             {onRemove && (
               <button onClick={(e) => { e.stopPropagation(); onRemove(touchstone.id); }}
@@ -542,12 +549,20 @@ function Badge({ bg, color, children }) {
   return <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: bg, color }}>{children}</span>;
 }
 
-function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBack, onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, mergeTargets, processing, autoOpenMerge, onConsumeAutoOpenMerge, onUpdateTouchstoneEdits, onCommuneTouchstone, onSynthesizeTouchstone, onSaintInstance, notes, onGoToNote }) {
+function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBack, onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, mergeTargets, processing, autoOpenMerge, onConsumeAutoOpenMerge, autoOpenRelate, onConsumeAutoOpenRelate, onUpdateTouchstoneEdits, onCommuneTouchstone, onSynthesizeTouchstone, onSaintInstance, onRelateTouchstone, onUnrelateTouchstone, onNavigateToTouchstone, notes, onGoToNote, universalCorrections }) {
   const [renamePending, setRenamePending] = useState(null);
   const [expandedInstances, setExpandedInstances] = useState(new Set(touchstone.instances.map((i) => i.bitId)));
+  // Reset expanded instances when touchstone changes (useState only initializes once)
+  useEffect(() => {
+    setExpandedInstances(new Set(touchstone.instances.map((i) => i.bitId)));
+  }, [touchstone.id]);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [mergeSearch, setMergeSearch] = useState("");
   const [mergeResult, setMergeResult] = useState(null); // {accepted, rejected}
+  const [relateOpen, setRelateOpen] = useState(false);
+  const [relateSearch, setRelateSearch] = useState("");
+  const [flowNeighborsOpen, setFlowNeighborsOpen] = useState(false);
+  const [matchedNotesOpen, setMatchedNotesOpen] = useState(false);
   const [correctionsOpen, setCorrectionsOpen] = useState(false);
   const [newCorrFrom, setNewCorrFrom] = useState("");
   const [newCorrTo, setNewCorrTo] = useState("");
@@ -576,12 +591,22 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
   const userReasons = touchstone.userReasons || [];
   const rejectedReasons = touchstone.rejectedReasons || [];
 
-  // Apply word corrections to displayed text
+  // Apply word corrections to displayed text (touchstone-specific + universal)
   const applyCorrections = (text) => {
-    if (!text || corrections.length === 0) return text;
+    if (!text) return text;
     let result = text;
+    // Touchstone-specific corrections first
     for (const c of corrections) {
       result = result.replace(new RegExp(c.from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), c.to);
+    }
+    // Universal corrections (skip those already covered by touchstone corrections)
+    const tsFromSet = new Set(corrections.map(c => c.from.toLowerCase()));
+    for (const c of universalCorrections || []) {
+      if (tsFromSet.has(c.from.toLowerCase())) continue;
+      try {
+        const pattern = c.pattern ? c.from : c.from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        result = result.replace(new RegExp(pattern, 'gi'), c.to);
+      } catch {}
     }
     return result;
   };
@@ -655,6 +680,26 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
         return JSON.parse(fixed);
       } catch {}
     }
+
+    // Fix unescaped inner quotes in group_reasoning strings from Gemini
+    // e.g. "- The comedian says "hello" to the audience" → escaped inner quotes
+    for (const raw of attempts) {
+      try {
+        // Replace inner unescaped quotes: find string values and escape quotes that aren't at boundaries
+        const fixed = raw.replace(/:\s*"([\s\S]*?)"\s*([,\]\}])/g, (match, inner, after) => {
+          // If it parses fine already, skip
+          try { JSON.parse(`{"k":"${inner}"}`); return match; } catch {}
+          // Escape unescaped inner quotes (not preceded by backslash)
+          const escaped = inner
+            .replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")
+            .replace(/(?<!\\)"/g, '\\"');
+          return `: "${escaped}"${after}`;
+        });
+        const result = JSON.parse(fixed);
+        if (result) return result;
+      } catch {}
+    }
+
     // Last resort: extract fields manually for synthesize responses
     // Handles cases where inner quotes break JSON parsing
     const idealMatch = cleaned.match(/"idealText"\s*:\s*"([\s\S]*?)"\s*,\s*"notes"\s*:\s*"([\s\S]*?)"\s*\}?\s*$/);
@@ -714,8 +759,12 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
       }
 
     } else if (type === "why_matched") {
-      if (parsed && parsed.group_reasoning) {
-        const reasoning = Array.isArray(parsed.group_reasoning) ? parsed.group_reasoning : [parsed.group_reasoning];
+      const hasReasoning = parsed && (Array.isArray(parsed.group_reasoning) ? parsed.group_reasoning.length > 0 : !!parsed.group_reasoning);
+      const hasCandidates = parsed && Array.isArray(parsed.candidates) && parsed.candidates.length > 0;
+      if (parsed && (hasReasoning || hasCandidates)) {
+        const reasoning = hasReasoning
+          ? (Array.isArray(parsed.group_reasoning) ? parsed.group_reasoning : [parsed.group_reasoning])
+          : [];
         const rejectedSet = new Set((rejectedReasons || []).map((r) => r.toLowerCase().trim()));
         const llmReasons = reasoning.filter((r) => !rejectedSet.has(r.toLowerCase().trim())).slice(0, 5);
         const finalReasons = llmReasons.slice(0, 6);
@@ -853,6 +902,14 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
     }
   }, [autoOpenMerge]);
 
+  useEffect(() => {
+    if (autoOpenRelate) {
+      setRelateOpen(true);
+      setRelateSearch("");
+      onConsumeAutoOpenRelate?.();
+    }
+  }, [autoOpenRelate]);
+
   const handleAutoRename = async () => {
     const instanceBits = touchstone.instances.map((i) => bits.find((b) => b.id === i.bitId)).filter(Boolean);
     if (instanceBits.length === 0) return;
@@ -951,9 +1008,11 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
         </div>
 
         {/* Action buttons — separated from title */}
+        {/* TODO: Better organization for action buttons — group by category (naming, LLM ops, state changes),
+            consider collapsible sections or overflow menu for less-used actions */}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
           {onGenerateTitle && !renamePending && !editingTitle && (
-            <button onClick={handleAutoRename} style={{ background: "none", border: "1px solid #333", color: "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+            <button onClick={handleAutoRename} style={{ background: "#c4b5fd11", border: "1px solid #c4b5fd33", color: "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
               {touchstone.manualName ? "AI Rename" : "Rename"}
             </button>
           )}
@@ -988,6 +1047,12 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
               {mergeOpen ? "Cancel merge" : "Merge into..."}
             </button>
           )}
+          {onRelateTouchstone && (
+            <button onClick={() => { setRelateOpen(!relateOpen); setRelateSearch(""); }}
+              style={{ background: relateOpen ? "#e599f722" : "none", border: "1px solid #e599f744", color: "#e599f7", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              {relateOpen ? "Cancel relate" : "Relate..."}
+            </button>
+          )}
           {onRemoveTouchstone && (
             <button onClick={() => onRemoveTouchstone(touchstone.id)}
               style={{ background: "#ff6b6b11", border: "1px solid #ff6b6b33", color: "#ff6b6b", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
@@ -996,7 +1061,7 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           )}
           <div style={{ position: "relative" }}>
             <button onClick={() => { setCopyPromptOpen(!copyPromptOpen); setSendPromptType(null); setPasteResponseType(null); }}
-              style={{ background: copyFeedback ? "#51cf6611" : "none", border: `1px solid ${copyFeedback ? "#51cf6633" : "#333"}`, color: copyFeedback ? "#51cf66" : "#aaa", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              style={{ background: copyFeedback ? "#51cf6611" : "#c4b5fd11", border: `1px solid ${copyFeedback ? "#51cf6633" : "#c4b5fd33"}`, color: copyFeedback ? "#51cf66" : "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
               {copyFeedback ? "Copied!" : "Copy Prompt"}
             </button>
             {copyPromptOpen && (
@@ -1019,7 +1084,7 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           {/* Paste Response */}
           <div style={{ position: "relative" }}>
             <button onClick={() => { setPasteResponseType(pasteResponseType ? null : "pick"); setCopyPromptOpen(false); setSendPromptType(null); }}
-              style={{ background: pasteResponseType ? "#51cf6611" : "none", border: `1px solid ${pasteResponseType ? "#51cf6633" : "#333"}`, color: pasteResponseType ? "#51cf66" : "#aaa", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              style={{ background: pasteResponseType ? "#51cf6611" : "#c4b5fd11", border: `1px solid ${pasteResponseType ? "#51cf6633" : "#c4b5fd33"}`, color: pasteResponseType ? "#51cf66" : "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
               Paste Response
             </button>
             {pasteResponseType === "pick" && (
@@ -1204,6 +1269,48 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           </div>
         )}
 
+        {/* Relate picker */}
+        {relateOpen && onRelateTouchstone && (
+          <div style={{ marginBottom: 12, padding: 12, background: "#0d0d16", borderRadius: 8, border: "1px solid #e599f733" }}>
+            <div style={{ fontSize: 11, color: "#e599f7", fontWeight: 600, marginBottom: 8 }}>
+              Link a touchstone that often appears adjacent in setlists / performance flows.
+            </div>
+            <input
+              type="text"
+              value={relateSearch}
+              onChange={(e) => setRelateSearch(e.target.value)}
+              placeholder="Search touchstones..."
+              autoFocus
+              style={{ width: "100%", padding: "6px 10px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#ddd", fontSize: 12, fontFamily: "inherit", marginBottom: 8, boxSizing: "border-box" }}
+            />
+            <div style={{ maxHeight: 200, overflowY: "auto" }}>
+              {searchTouchstones(
+                allTouchstones.filter((t) => t.id !== touchstone.id && !(touchstone.relatedTouchstoneIds || []).includes(t.id) && t.category !== "rejected"),
+                relateSearch
+              ).map((target) => (
+                  <div
+                    key={target.id}
+                    onClick={() => {
+                      onRelateTouchstone(touchstone.id, target.id);
+                      setRelateOpen(false);
+                    }}
+                    style={{ padding: "8px 10px", cursor: "pointer", fontSize: 12, color: "#bbb", borderBottom: "1px solid #1a1a2a", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "#1a1a2a"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <div>
+                      <span style={{ fontWeight: 600, color: "#ddd" }}>{target.name}</span>
+                      <span style={{ marginLeft: 8, fontSize: 10, color: target.category === "confirmed" ? "#51cf66" : "#ffa94d" }}>
+                        {target.category}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 10, color: "#666" }}>{target.instances.length} instances</span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
         {renamePending && !renamePending.loading && renamePending.suggested != null && (
           <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
             <input type="text" value={renamePending.suggested} onChange={(e) => setRenamePending((p) => ({ ...p, suggested: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") confirmRename(); else if (e.key === "Escape") setRenamePending(null); }} autoFocus style={{ flex: 1, padding: "6px 10px", background: "#0a0a14", border: "1px solid #c4b5fd44", borderRadius: 4, color: "#c4b5fd", fontSize: 14, fontFamily: "inherit" }} />
@@ -1212,9 +1319,6 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           </div>
         )}
 
-        {touchstone.summary && !/^\d+ instances?\s/.test(touchstone.summary) && (
-          <p style={{ fontSize: 13, color: "#999", lineHeight: 1.6 }}>{touchstone.summary}</p>
-        )}
       </div>
 
       {/* Ideal Text + Notes (always paired) */}
@@ -1383,6 +1487,77 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
         )}
       </div>
 
+      {/* Word Corrections */}
+      {onUpdateTouchstoneEdits && (
+        <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1 }}>
+              Word Corrections {corrections.length > 0 && `(${corrections.length})`}
+            </div>
+            <button
+              onClick={() => setCorrectionsOpen(!correctionsOpen)}
+              style={{ background: "none", border: "1px solid #333", color: correctionsOpen ? "#4ecdc4" : "#888", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}
+            >
+              {correctionsOpen ? "Hide" : corrections.length > 0 ? "Edit" : "Add"}
+            </button>
+          </div>
+          {corrections.length > 0 && !correctionsOpen && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {corrections.map((c, i) => (
+                <span key={i} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "#4ecdc418", color: "#4ecdc4" }}>
+                  {c.from} &rarr; {c.to}
+                </span>
+              ))}
+            </div>
+          )}
+          {correctionsOpen && (
+            <div>
+              {corrections.map((c, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0", fontSize: 11 }}>
+                  <span style={{ color: "#ff8888", textDecoration: "line-through" }}>{c.from}</span>
+                  <span style={{ color: "#555" }}>&rarr;</span>
+                  <span style={{ color: "#51cf66" }}>{c.to}</span>
+                  <button
+                    onClick={() => removeCorrection(i)}
+                    style={{ background: "none", border: "none", color: "#ff6b6b", fontSize: 12, cursor: "pointer", padding: "0 2px" }}
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
+                <input
+                  type="text"
+                  value={newCorrFrom}
+                  onChange={(e) => setNewCorrFrom(e.target.value)}
+                  placeholder="Wrong word"
+                  style={{ flex: 1, padding: "4px 8px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#ff8888", fontSize: 11, fontFamily: "inherit" }}
+                />
+                <span style={{ color: "#555", fontSize: 11, alignSelf: "center" }}>&rarr;</span>
+                <input
+                  type="text"
+                  value={newCorrTo}
+                  onChange={(e) => setNewCorrTo(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") addCorrection(); }}
+                  placeholder="Correct word"
+                  style={{ flex: 1, padding: "4px 8px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#51cf66", fontSize: 11, fontFamily: "inherit" }}
+                />
+                <button
+                  onClick={addCorrection}
+                  disabled={!newCorrFrom.trim() || !newCorrTo.trim()}
+                  style={{ background: newCorrFrom.trim() && newCorrTo.trim() ? "#4ecdc422" : "none", border: "1px solid #4ecdc433", color: newCorrFrom.trim() && newCorrTo.trim() ? "#4ecdc4" : "#555", borderRadius: 4, padding: "4px 8px", fontSize: 10, cursor: newCorrFrom.trim() && newCorrTo.trim() ? "pointer" : "default", fontWeight: 600 }}
+                >
+                  Add
+                </button>
+              </div>
+              <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>
+                Corrections are applied when sending text to the LLM and when displaying instance text.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Match details & reasoning */}
       <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
           {(() => {
@@ -1502,16 +1677,70 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           </div>
         </div>
 
-      {/* Matched notes */}
+      {/* Flow Neighbors (collapsed) */}
+      {(() => {
+        const relatedIds = touchstone.relatedTouchstoneIds || [];
+        if (relatedIds.length === 0) return null;
+        const relatedTs = relatedIds.map(id => allTouchstones.find(t => t.id === id)).filter(Boolean);
+        if (relatedTs.length === 0) return null;
+        return (
+          <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
+            <div
+              onClick={() => setFlowNeighborsOpen(!flowNeighborsOpen)}
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#e599f7", textTransform: "uppercase", letterSpacing: 1 }}>
+                Flow Neighbors ({relatedTs.length})
+              </div>
+              <span style={{ fontSize: 10, color: "#666" }}>{flowNeighborsOpen ? "▾" : "▸"}</span>
+            </div>
+            {flowNeighborsOpen && (
+              <div style={{ marginTop: 8 }}>
+                {relatedTs.map(rt => (
+                  <div
+                    key={rt.id}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: "#0a0a14", borderRadius: 5, border: "1px solid #1a1a2a", marginBottom: 4, cursor: "pointer", transition: "border-color 0.15s" }}
+                    onClick={() => onNavigateToTouchstone?.(rt.id)}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = "#e599f7"; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a1a2a"; }}
+                  >
+                    <span style={{ fontSize: 12, color: "#ddd", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rt.name}</span>
+                    <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: rt.category === "confirmed" ? "#51cf6618" : "#ffa94d18", color: rt.category === "confirmed" ? "#51cf66" : "#ffa94d" }}>
+                      {rt.category}
+                    </span>
+                    {onUnrelateTouchstone && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onUnrelateTouchstone(touchstone.id, rt.id); }}
+                        title="Unlink flow neighbor"
+                        style={{ background: "none", border: "none", color: "#ff6b6b", fontSize: 12, cursor: "pointer", padding: "0 2px", flexShrink: 0 }}
+                      >
+                        &times;
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Matched notes (collapsed) */}
       {(() => {
         const matchedNotes = (notes || []).filter(n => n.matchedTouchstoneId === touchstone.id);
         if (matchedNotes.length === 0) return null;
         return (
           <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
-              Notes ({matchedNotes.length})
+            <div
+              onClick={() => setMatchedNotesOpen(!matchedNotesOpen)}
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1 }}>
+                Notes ({matchedNotes.length})
+              </div>
+              <span style={{ fontSize: 10, color: "#666" }}>{matchedNotesOpen ? "▾" : "▸"}</span>
             </div>
-            {matchedNotes.map(note => (
+            {matchedNotesOpen && matchedNotes.map(note => (
               <div
                 key={note.id}
                 onClick={() => onGoToNote?.(note)}
@@ -1555,77 +1784,6 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           </div>
         );
       })()}
-
-      {/* Word Corrections */}
-      {onUpdateTouchstoneEdits && (
-        <div className="card" style={{ cursor: "default", marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1 }}>
-              Word Corrections {corrections.length > 0 && `(${corrections.length})`}
-            </div>
-            <button
-              onClick={() => setCorrectionsOpen(!correctionsOpen)}
-              style={{ background: "none", border: "1px solid #333", color: correctionsOpen ? "#4ecdc4" : "#888", borderRadius: 4, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}
-            >
-              {correctionsOpen ? "Hide" : corrections.length > 0 ? "Edit" : "Add"}
-            </button>
-          </div>
-          {corrections.length > 0 && !correctionsOpen && (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {corrections.map((c, i) => (
-                <span key={i} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "#4ecdc418", color: "#4ecdc4" }}>
-                  {c.from} &rarr; {c.to}
-                </span>
-              ))}
-            </div>
-          )}
-          {correctionsOpen && (
-            <div>
-              {corrections.map((c, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0", fontSize: 11 }}>
-                  <span style={{ color: "#ff8888", textDecoration: "line-through" }}>{c.from}</span>
-                  <span style={{ color: "#555" }}>&rarr;</span>
-                  <span style={{ color: "#51cf66" }}>{c.to}</span>
-                  <button
-                    onClick={() => removeCorrection(i)}
-                    style={{ background: "none", border: "none", color: "#ff6b6b", fontSize: 12, cursor: "pointer", padding: "0 2px" }}
-                  >
-                    &times;
-                  </button>
-                </div>
-              ))}
-              <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
-                <input
-                  type="text"
-                  value={newCorrFrom}
-                  onChange={(e) => setNewCorrFrom(e.target.value)}
-                  placeholder="Wrong word"
-                  style={{ flex: 1, padding: "4px 8px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#ff8888", fontSize: 11, fontFamily: "inherit" }}
-                />
-                <span style={{ color: "#555", fontSize: 11, alignSelf: "center" }}>&rarr;</span>
-                <input
-                  type="text"
-                  value={newCorrTo}
-                  onChange={(e) => setNewCorrTo(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") addCorrection(); }}
-                  placeholder="Correct word"
-                  style={{ flex: 1, padding: "4px 8px", background: "#0a0a14", border: "1px solid #252538", borderRadius: 4, color: "#51cf66", fontSize: 11, fontFamily: "inherit" }}
-                />
-                <button
-                  onClick={addCorrection}
-                  disabled={!newCorrFrom.trim() || !newCorrTo.trim()}
-                  style={{ background: newCorrFrom.trim() && newCorrTo.trim() ? "#4ecdc422" : "none", border: "1px solid #4ecdc433", color: newCorrFrom.trim() && newCorrTo.trim() ? "#4ecdc4" : "#555", borderRadius: 4, padding: "4px 8px", fontSize: 10, cursor: newCorrFrom.trim() && newCorrTo.trim() ? "pointer" : "default", fontWeight: 600 }}
-                >
-                  Add
-                </button>
-              </div>
-              <div style={{ fontSize: 10, color: "#555", marginTop: 4 }}>
-                Corrections are applied when sending text to the LLM and when displaying instance text.
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Instances */}
       <div style={{ marginBottom: 16 }}>

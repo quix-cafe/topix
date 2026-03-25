@@ -23,6 +23,8 @@ API:
         {"model": "claude" | "gemini", "messages": [{"role": "user", "content": "Hello"}]}
 """
 
+# Todo: if possible, perform the prompt in a 'temporary chat' in gemini, found by clicking the hamburger menu, and then clicking the button with aria-label="Temporary chat". Then select the correct model, then paste and send the prompt.
+
 import argparse
 import asyncio
 import logging
@@ -316,11 +318,12 @@ async def _ensure_gemini_model(page: Page):
             return
 
         picker_text = (await picker.inner_text()).strip().lower()
-        if "pro" in picker_text and "thinking" not in picker_text:
-            log.info("Model already set to pro: '%s'", picker_text)
-            return
+        if "pro" in picker_text or "thinking" in picker_text:
+            if "flash" not in picker_text:
+                log.info("Model already set to acceptable tier: '%s'", picker_text)
+                return
 
-        log.info("Gemini model is '%s', switching to pro", picker_text)
+        log.info("Gemini model is '%s', switching to pro/thinking", picker_text)
         await picker.click()
         await page.wait_for_timeout(random.randint(1200, 2000))
 
@@ -349,10 +352,42 @@ async def _ensure_gemini_model(page: Page):
         except Exception as e:
             log.warning("Menu dump failed: %s", e)
 
+        # Check if Pro is disabled/greyed out (quota exhausted)
+        pro_disabled = await page.evaluate("""() => {
+            const menu = document.querySelector('[role="menu"]');
+            if (!menu) return false;
+            const items = menu.querySelectorAll('*');
+            for (const el of items) {
+                const text = el.innerText?.trim();
+                if (text && text.startsWith('Pro')) {
+                    // Check for disabled state: aria-disabled, disabled attribute, or greyed-out styling
+                    if (el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('disabled')) return true;
+                    const style = window.getComputedStyle(el);
+                    if (parseFloat(style.opacity) < 0.5) return true;
+                    if (el.classList.contains('disabled') || el.classList.contains('is-disabled')) return true;
+                    // Check parent for disabled state too
+                    const parent = el.closest('[role="menuitem"], [role="option"]');
+                    if (parent) {
+                        if (parent.getAttribute('aria-disabled') === 'true' || parent.hasAttribute('disabled')) return true;
+                        const ps = window.getComputedStyle(parent);
+                        if (parseFloat(ps.opacity) < 0.5) return true;
+                        if (parent.classList.contains('disabled') || parent.classList.contains('is-disabled')) return true;
+                    }
+                }
+            }
+            return false;
+        }""")
+
+        if pro_disabled:
+            log.warning("Gemini Pro appears disabled (quota exhausted), falling back to Thinking")
+
+        # Try Pro first, fall back to Thinking if Pro is disabled
+        labels_to_try = ["Thinking", "Pro"] if pro_disabled else ["Pro", "Thinking"]
+
         # Use Playwright locator to click within the menu overlay
         menu = page.locator('[role="menu"]')
         clicked = False
-        for label in ["Pro"]:
+        for label in labels_to_try:
             # Find children of the menu whose text starts with the label
             # Use xpath to match direct/near text
             for sel in [
@@ -377,36 +412,36 @@ async def _ensure_gemini_model(page: Page):
 
         if not clicked:
             # Fallback: use bounding box of text node to do a real mouse click
-            try:
-                box = await page.evaluate("""() => {
-                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-                    while (walker.nextNode()) {
-                        const t = walker.currentNode.textContent?.trim();
-                        if (t === 'Pro') {
-                            const range = document.createRange();
-                            range.selectNode(walker.currentNode);
-                            const rect = range.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0) {
-                                return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+            for label in labels_to_try:
+                try:
+                    box = await page.evaluate("""(targetLabel) => {
+                        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                        while (walker.nextNode()) {
+                            const t = walker.currentNode.textContent?.trim();
+                            if (t === targetLabel) {
+                                const range = document.createRange();
+                                range.selectNode(walker.currentNode);
+                                const rect = range.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                                }
                             }
                         }
-                    }
-                    return null;
-                }""")
-                if box:
-                    await page.mouse.click(box['x'], box['y'])
-                    await page.wait_for_timeout(random.randint(500, 1000))
-                    log.info("Switched Gemini model to Pro via mouse click at (%d, %d)", box['x'], box['y'])
-                    clicked = True
-                else:
-                    log.warning("Could not find 'Pro' text node bounding box")
-            except Exception as e:
-                log.warning("Mouse click fallback failed: %s", e)
+                        return null;
+                    }""", label)
+                    if box:
+                        await page.mouse.click(box['x'], box['y'])
+                        await page.wait_for_timeout(random.randint(500, 1000))
+                        log.info("Switched Gemini model to %s via mouse click at (%d, %d)", label, box['x'], box['y'])
+                        clicked = True
+                        break
+                except Exception as e:
+                    log.warning("Mouse click fallback for %s failed: %s", label, e)
 
         if not clicked:
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(300)
-            log.warning("Could not find pro model option, keeping current selection")
+            log.warning("Could not find model option, keeping current selection")
     except Exception as e:
         log.warning("Model picker check failed: %s", e)
         try:

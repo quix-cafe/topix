@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { callOllama } from "../utils/ollama";
 import { SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
 import { saveVaultState } from "../utils/database";
+import { autoRelateTouchstones } from "../utils/flowRelations";
 
 export function useTouchstoneHandlers(ctx) {
   const { dispatch, stateRef, addDebugEntry, touchstoneNameCache } = ctx;
@@ -342,10 +343,71 @@ export function useTouchstoneHandlers(ctx) {
     }, 100);
   }, []);
 
+  const onRelateTouchstone = useCallback((sourceId, targetId) => {
+    update('touchstones', (prev) => {
+      const link = (list) => list.map((t) => {
+        if (t.id === sourceId) {
+          const existing = t.relatedTouchstoneIds || [];
+          if (existing.includes(targetId)) return t;
+          return { ...t, relatedTouchstoneIds: [...existing, targetId] };
+        }
+        if (t.id === targetId) {
+          const existing = t.relatedTouchstoneIds || [];
+          if (existing.includes(sourceId)) return t;
+          return { ...t, relatedTouchstoneIds: [...existing, sourceId] };
+        }
+        return t;
+      });
+      return { confirmed: link(prev.confirmed || []), possible: link(prev.possible || []), rejected: link(prev.rejected || []) };
+    });
+    setTimeout(async () => {
+      const s = stateRef.current;
+      try { await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }); } catch {}
+    }, 100);
+  }, []);
+
+  const onUnrelateTouchstone = useCallback((sourceId, targetId) => {
+    update('touchstones', (prev) => {
+      const unlink = (list) => list.map((t) => {
+        if (t.id === sourceId) return { ...t, relatedTouchstoneIds: (t.relatedTouchstoneIds || []).filter((id) => id !== targetId) };
+        if (t.id === targetId) return { ...t, relatedTouchstoneIds: (t.relatedTouchstoneIds || []).filter((id) => id !== sourceId) };
+        return t;
+      });
+      // Track as manually unlinked so auto-relate won't re-link
+      const pairKey = [sourceId, targetId].sort().join(":");
+      const existingUnlinked = prev._unlinkedPairs || [];
+      const unlinkedPairs = existingUnlinked.includes(pairKey) ? existingUnlinked : [...existingUnlinked, pairKey];
+      return {
+        confirmed: unlink(prev.confirmed || []),
+        possible: unlink(prev.possible || []),
+        rejected: unlink(prev.rejected || []),
+        _unlinkedPairs: unlinkedPairs,
+      };
+    });
+    setTimeout(async () => {
+      const s = stateRef.current;
+      try { await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }); } catch {}
+    }, 100);
+  }, []);
+
+  const onAutoRelateAll = useCallback(() => {
+    const s = stateRef.current;
+    const result = autoRelateTouchstones(s.touchstones, s.topics);
+    if (result !== s.touchstones) {
+      set('touchstones', result);
+      setTimeout(async () => {
+        const s2 = stateRef.current;
+        try { await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }); } catch {}
+      }, 100);
+    }
+    return result !== s.touchstones;
+  }, []);
+
   return {
     onRenameTouchstone, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone,
     onRemoveInstance, onUpdateInstanceRelationship,
     onMergeTouchstone, onRefreshReasons, onUpdateTouchstoneEdits,
     onSaintInstance, onRemoveFromTouchstone, onAddToTouchstone,
+    onRelateTouchstone, onUnrelateTouchstone, onAutoRelateAll,
   };
 }

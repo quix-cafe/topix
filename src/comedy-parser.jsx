@@ -32,7 +32,6 @@ import { useNotes } from "./hooks/useNotes";
 import NotesTab from "./components/NotesTab";
 import LLMConfigPanel from "./components/LLMConfigPanel";
 
-
 function ClearFiltersButton({ activeTab }) {
   const [hasFilters, setHasFilters] = useState(() => window.location.hash.includes("?"));
   useEffect(() => {
@@ -51,16 +50,7 @@ function ClearFiltersButton({ activeTab }) {
         setHasFilters(false);
       }}
       title="Clear all URL filters and reset to current tab"
-      style={{
-        padding: "5px 10px",
-        background: hasFilters ? "#1a2a1b" : "#1a1a2a",
-        border: `1px solid ${hasFilters ? "#6bff7f44" : "#2a2a40"}`,
-        color: hasFilters ? "#7fff6b" : "#444",
-        borderRadius: "6px",
-        fontSize: 16,
-        fontWeight: 600,
-        cursor: "pointer",
-      }}
+      className={`clear-filters-btn ${hasFilters ? "active" : "inactive"}`}
     >
       ↺
     </button>
@@ -97,16 +87,28 @@ const initialState = {
   transcriptSortCol: "file",
   transcriptSortDir: "asc",
   tagMergeResult: null,
+  universalCorrections: [],
 };
 
+
+// Preserve _unlinkedPairs when touchstones are replaced
+function preserveUnlinkedPairs(state, field, newValue) {
+  if (field === 'touchstones' && newValue && !newValue._unlinkedPairs && state.touchstones?._unlinkedPairs) {
+    return { ...newValue, _unlinkedPairs: state.touchstones._unlinkedPairs };
+  }
+  return newValue;
+}
 
 function reducer(state, action) {
   switch (action.type) {
     case 'SET':
-      return { ...state, [action.field]: action.value };
+      return { ...state, [action.field]: preserveUnlinkedPairs(state, action.field, action.value) };
     case 'UPDATE':
-      return { ...state, [action.field]: action.fn(state[action.field]) };
+      return { ...state, [action.field]: preserveUnlinkedPairs(state, action.field, action.fn(state[action.field])) };
     case 'MERGE':
+      if (action.payload.touchstones) {
+        action.payload.touchstones = preserveUnlinkedPairs(state, 'touchstones', action.payload.touchstones);
+      }
       return { ...state, ...action.payload };
     case 'CLEAR_ALL':
       return {
@@ -131,15 +133,7 @@ function ScrollToTop() {
   return (
     <button
       onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-      style={{
-        position: "fixed", bottom: 80, right: 24, zIndex: 9998,
-        width: 36, height: 36, borderRadius: "50%",
-        background: "#1a1a2e", border: "1px solid #2a2a40",
-        color: "#aaa", fontSize: 16, cursor: "pointer",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
-        transition: "opacity 0.2s",
-      }}
+      className="scroll-to-top"
       title="Scroll to top"
     >
       ↑
@@ -193,6 +187,9 @@ export default function ComedyParser() {
   const [nowPlaying, setNowPlaying] = useState(null);
   const [audioIsPlaying, setAudioIsPlaying] = useState(false);
   const [validationFilter, setValidationFilter] = useState("all");
+  const [validationBatchFixing, setValidationBatchFixing] = useState(null);
+  const [validationBatchProgress, setValidationBatchProgress] = useState(null);
+  const validationBatchStopRef = useRef(false);
   const [approvedGaps, setApprovedGaps] = useState(() => {
     try { return JSON.parse(localStorage.getItem("topix-approved-gaps") || "[]"); } catch { return []; }
   });
@@ -257,6 +254,7 @@ export default function ComedyParser() {
           matches: saved.matches || [],
           touchstones: saved.touchstones || { confirmed: [], possible: [] },
           notes: saved.notes || [],
+          universalCorrections: saved.universalCorrections || [],
         }});
       }
       set('vaultReady', true);
@@ -295,7 +293,7 @@ export default function ComedyParser() {
   // Auto-save vault state
   useEffect(() => {
     const timer = setTimeout(() => {
-      saveVaultState({ topics, matches, transcripts, touchstones })
+      saveVaultState({ topics, matches, transcripts, touchstones, universalCorrections: state.universalCorrections })
         .then(() => {
           set('lastSave', new Date());
           getDatabaseStats().then(stats => set('dbStats', stats)).catch(console.error);
@@ -303,7 +301,7 @@ export default function ComedyParser() {
         .catch((err) => console.error("Auto-save error:", err));
     }, 5000);
     return () => clearTimeout(timer);
-  }, [topics, matches, transcripts, touchstones]);
+  }, [topics, matches, transcripts, touchstones, state.universalCorrections]);
 
   // Pause background embedding queue while model operations are running
   useEffect(() => {
@@ -578,54 +576,24 @@ export default function ComedyParser() {
       .sort((a, b) => (b.matchPercentage || b.confidence * 100) - (a.matchPercentage || a.confidence * 100));
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: "#0a0a14",
-      color: "#d4d4e0",
-      fontFamily: "'DM Sans', 'Segoe UI', system-ui, sans-serif",
-    }}>
+    <div className="app-root">
 
       {/* Header */}
-      <div style={{
-        padding: "16px 32px 0",
-        borderBottom: "1px solid #1a1a2a",
-      }}>
+      <div className="app-header">
         {/* Row 1: Title + stats left, model + debug right */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-            <h1 style={{
-              fontFamily: "'Playfair Display', serif",
-              fontSize: 28,
-              fontWeight: 900,
-              background: "linear-gradient(135deg, #ff6b6b, #ffa94d)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-              letterSpacing: "-0.5px",
-              margin: 0,
-            }}>
-              Bit Parser
-            </h1>
-            <span style={{ color: "#555", fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}>
+        <div className="header-row">
+          <div className="header-left">
+            <h1 className="app-title">Bit Parser</h1>
+            <span className="header-stats">
               {topics.length} bits · {(touchstones?.confirmed?.length || 0) + (touchstones?.possible?.length || 0)} touchstones · {matches.length} connections · {transcripts.length} files
             </span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div className="header-right">
             {processing && (
               <button
                 onClick={transcriptOps.handleHardStop}
                 title="Abort all active LLM calls and restart Ollama"
-                style={{
-                  padding: "5px 14px",
-                  background: "#ff6b6b",
-                  border: "1px solid #ff6b6b",
-                  color: "#fff",
-                  borderRadius: "6px",
-                  fontSize: 11,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  animation: "pulse 1.5s infinite",
-                }}
+                className="stop-btn"
               >
                 STOP
               </button>
@@ -633,17 +601,7 @@ export default function ComedyParser() {
             <button
               onClick={() => update('debugMode', (v) => !v)}
               title="Toggle debug mode: shows prompts and raw responses"
-              style={{
-                padding: "5px 10px",
-                background: debugMode ? "#1a2a1a" : "#1a1a2a",
-                border: `1px solid ${debugMode ? "#51cf66" : "#2a2a40"}`,
-                color: debugMode ? "#51cf66" : "#555",
-                borderRadius: "6px",
-                fontSize: 11,
-                fontFamily: "'JetBrains Mono', monospace",
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
+              className={`debug-btn ${debugMode ? "on" : "off"}`}
             >
               {debugMode ? "DEBUG ON" : "DEBUG"}
             </button>
@@ -652,11 +610,11 @@ export default function ComedyParser() {
         </div>
 
         {/* Row 2: Info left, action buttons right */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 11, color: "#666", fontFamily: "'JetBrains Mono', monospace" }}>
+        <div className="header-row">
+          <div className="info-bar">
             {lastSave && (
-              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#51cf66" }} />
+              <span className="indicator">
+                <span className="status-dot green" />
                 Saved {lastSave.toLocaleTimeString()}
               </span>
             )}
@@ -666,8 +624,8 @@ export default function ComedyParser() {
               </span>
             )}
             {embeddingStatus.cached > 0 && (
-              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#8bc98b" }} />
+              <span className="indicator">
+                <span className="status-dot green-light" />
                 Embeddings: {embeddingStatus.cached}{embeddingStatus.total > 0 ? `/${embeddingStatus.total}` : ""} cached
               </span>
             )}
@@ -687,16 +645,7 @@ export default function ComedyParser() {
                   }
                 }}
                 title="Pre-compute embeddings for all bits"
-                style={{
-                  background: "none",
-                  border: "1px solid #2a3a2a",
-                  color: "#8bc98b",
-                  padding: "2px 8px",
-                  borderRadius: "4px",
-                  fontSize: 10,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  cursor: "pointer",
-                }}
+                className="embed-all-btn"
               >
                 Embed All
               </button>
@@ -706,13 +655,13 @@ export default function ComedyParser() {
             ref={restoreFileInput}
             type="file"
             accept=".json"
-            style={{ display: "none" }}
+            className="hidden"
             onChange={transcriptOps.handleRestoreFile}
           />
         </div>
 
         {/* Row 3: Tabs */}
-        <div style={{ display: "flex", gap: 0 }}>
+        <div className="tab-row">
           {["play", "transcripts", "bits", "touchstones", "notes", "errors", "analytics", "graph", "settings"].map((tab) => (
             <button
               key={tab}
@@ -727,31 +676,13 @@ export default function ComedyParser() {
 
       {/* Status bar */}
       {status && (
-        <div style={{
-          padding: "8px 32px",
-          background: "#12121f",
-          borderBottom: "1px solid #1a1a2a",
-          fontSize: 12,
-          color: processing ? "#ffa94d" : "#4ecdc4",
-          fontFamily: "'JetBrains Mono', monospace",
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-        }}>
-          {processing && (
-            <span style={{
-              display: "inline-block",
-              width: 8, height: 8,
-              borderRadius: "50%",
-              background: "#ffa94d",
-              animation: "pulse 1s infinite",
-            }} />
-          )}
+        <div className={`status-bar ${processing ? "busy" : "idle"}`}>
+          {processing && <span className="pulse-dot" />}
           {status}
         </div>
       )}
 
-      <div style={{ padding: activeTab === "play" ? "24px 32px 0" : "24px 32px", paddingBottom: activeTab === "play" ? 0 : ((streamingProgress || processing || huntProgress) && debugMode) ? "calc(60vh + 24px)" : (streamingProgress || processing || huntProgress) ? 370 : debugMode ? "calc(40vh + 24px)" : 24 }}>
+      <div className={`content-area ${activeTab === "play" ? "play" : ""}`} style={{ paddingBottom: activeTab === "play" ? 0 : ((streamingProgress || processing || huntProgress) && debugMode) ? "calc(60vh + 24px)" : (streamingProgress || processing || huntProgress) ? 370 : debugMode ? "calc(40vh + 24px)" : 24 }}>
         {/* PLAY TAB */}
         {activeTab === "play" && (
           <PlayTab
@@ -787,9 +718,7 @@ export default function ComedyParser() {
         {activeTab === "analytics" && (
           <div>
             {topics.length === 0 ? (
-              <div style={{ textAlign: "center", padding: 60, color: "#444" }}>
-                Parse some transcripts to see analytics.
-              </div>
+              <div className="empty-state">Parse some transcripts to see analytics.</div>
             ) : (
               <AnalyticsDashboard
                 topics={topics}
@@ -809,41 +738,27 @@ export default function ComedyParser() {
         {activeTab === "graph" && (
           <div>
             {topics.length === 0 ? (
-              <div style={{ textAlign: "center", padding: 60, color: "#444" }}>
-                <div style={{ fontSize: 32, marginBottom: 8 }}>🕸️</div>
+              <div className="empty-state">
+                <div className="empty-state-icon">🕸️</div>
                 Parse some transcripts to see the connection graph.
               </div>
             ) : (
               <>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <p style={{ fontSize: 12, color: "#555", margin: 0 }}>
-                      Drag nodes to rearrange. Scroll to zoom. Colors = source files. Lines = matched bits.
-                    </p>
+                <div className="graph-header">
+                  <div className="graph-instructions">
+                    <p>Drag nodes to rearrange. Scroll to zoom. Colors = source files. Lines = matched bits.</p>
                     {embeddingStatus.cached > 0 && (
-                      <span style={{ fontSize: 10, color: "#8bc98b", fontFamily: "'JetBrains Mono', monospace" }}>
-                        {embeddingStatus.cached} embeddings
-                      </span>
+                      <span className="graph-embed-count">{embeddingStatus.cached} embeddings</span>
                     )}
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div className="header-right">
                     <button
                       onClick={() => {
                         const next = !isEmbedPaused();
                         setEmbedPaused(next);
                         set('status', next ? 'Embedding paused — graph settling' : 'Embedding resumed');
                       }}
-                      style={{
-                        padding: "6px 14px",
-                        background: isEmbedPaused() ? "#ffa94d18" : "#1e1e30",
-                        color: isEmbedPaused() ? "#ffa94d" : "#666",
-                        border: `1px solid ${isEmbedPaused() ? "#ffa94d44" : "#2a2a40"}`,
-                        borderRadius: "6px",
-                        fontWeight: 600,
-                        fontSize: "11px",
-                        cursor: "pointer",
-                        whiteSpace: "nowrap",
-                      }}
+                      className={`freeze-btn ${isEmbedPaused() ? "on" : "off"}`}
                     >
                       {isEmbedPaused() ? "Unfreeze" : "Freeze"}
                     </button>
@@ -895,12 +810,16 @@ export default function ComedyParser() {
               onSynthesizeTouchstone={communion.handleSynthesizeTouchstone}
               onMassTouchstoneCommunion={communion.handleMassTouchstoneCommunion}
               onSaintInstance={tsHandlers.onSaintInstance}
+              onRelateTouchstone={tsHandlers.onRelateTouchstone}
+              onUnrelateTouchstone={tsHandlers.onUnrelateTouchstone}
+              onAutoRelateAll={tsHandlers.onAutoRelateAll}
               notes={notes}
               onGoToNote={(note) => {
                 const tag = (note.tags || [])[0] || null;
                 setNoteNav({ source: note.source || "all", tag });
                 setActiveTab("notes");
               }}
+              universalCorrections={state.universalCorrections}
             />
           </div>
         )}
@@ -969,6 +888,16 @@ export default function ComedyParser() {
             onJoinBits={bitOps.handleJoinBits}
             onReParseGap={bitMgmt.handleReParseGap}
             onDeleteBit={bitMgmt.handleDeleteBit}
+            batchFixing={validationBatchFixing}
+            setBatchFixing={setValidationBatchFixing}
+            batchProgress={validationBatchProgress}
+            setBatchProgress={setValidationBatchProgress}
+            batchStopRef={validationBatchStopRef}
+            universalCorrections={state.universalCorrections || []}
+            onUpdateUniversalCorrections={(corrections) => {
+              set('universalCorrections', corrections);
+              saveVaultState({ topics, matches, transcripts, touchstones, universalCorrections: corrections }).catch(console.error);
+            }}
           />
         )}
 
@@ -998,17 +927,17 @@ export default function ComedyParser() {
 
         {/* SETTINGS TAB */}
         {activeTab === "settings" && (
-          <div style={{ maxWidth: 700 }}>
+          <div className="settings-container">
             {/* Model Selection */}
-            <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, marginBottom: 20, color: "#eee" }}>Models</h2>
-            <div className="card" style={{ cursor: "default", display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
+            <h2 className="section-heading">Models</h2>
+            <div className="card card-static card-flex">
               {availableModels.length > 0 && (
                 <div>
-                  <div style={{ fontSize: 11, color: "#888", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>LLM Model</div>
+                  <div className="field-label">LLM Model</div>
                   <select
                     value={selectedModel}
                     onChange={(e) => set('selectedModel', e.target.value)}
-                    style={{ background: "#1a1a2a", border: "1px solid #2a2a40", color: "#ccc", padding: "8px 12px", borderRadius: 6, fontSize: 13, fontFamily: "'DM Sans', sans-serif", cursor: "pointer", minWidth: 200 }}
+                    className="dark-select"
                   >
                     {availableModels.map((model) => (
                       <option key={model} value={model}>{model}</option>
@@ -1018,7 +947,7 @@ export default function ComedyParser() {
               )}
               {availableModels.filter(m => m.toLowerCase().includes("embed")).length > 0 && (
                 <div>
-                  <div style={{ fontSize: 11, color: "#888", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>Embedding Model</div>
+                  <div className="field-label">Embedding Model</div>
                   <select
                     value={embeddingModel}
                     onChange={(e) => {
@@ -1030,7 +959,7 @@ export default function ComedyParser() {
                       set('embeddingModel', newModel);
                     }}
                     title="Embedding model for semantic search"
-                    style={{ background: "#1a1a2a", border: "1px solid #2a3a2a", color: "#8bc98b", padding: "8px 12px", borderRadius: 6, fontSize: 13, fontFamily: "'DM Sans', sans-serif", cursor: "pointer", minWidth: 200 }}
+                    className="dark-select embed"
                   >
                     {availableModels.filter(m => m.toLowerCase().includes("embed")).map((model) => (
                       <option key={model} value={model}>{model}</option>
@@ -1041,38 +970,29 @@ export default function ComedyParser() {
             </div>
 
             {/* API Keys */}
-            <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, marginBottom: 20, marginTop: 32, color: "#eee" }}>External LLMs</h2>
-            <div className="card" style={{ cursor: "default" }}>
-              <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>
+            <h2 className="section-heading mt">External LLMs</h2>
+            <div className="card card-static">
+              <p className="settings-description">
                 Configure API keys for high-end models. Used by "Send to..." on touchstone details. Keys are stored server-side only.
               </p>
               <LLMConfigPanel />
             </div>
 
             {/* Match Maintenance */}
-            <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, marginBottom: 20, marginTop: 32, color: "#eee" }}>Match Maintenance</h2>
-            <div className="card" style={{ cursor: "default" }}>
-              <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>
+            <h2 className="section-heading mt">Match Maintenance</h2>
+            <div className="card card-static">
+              <p className="settings-description">
                 Mass Communion re-evaluates every stored match via the LLM, removing false positives. Processes the most-matched bits first.
               </p>
-              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <div className="action-row">
                 <button
                   onClick={communion.handleMassCommunion}
                   disabled={processing || matches.length === 0}
-                  style={{
-                    padding: "8px 18px",
-                    background: processing ? "#33333a" : "#74c0fc18",
-                    color: processing ? "#666" : "#74c0fc",
-                    border: `1px solid ${processing ? "#33333a" : "#74c0fc44"}`,
-                    borderRadius: 6,
-                    fontWeight: 700,
-                    fontSize: 12,
-                    cursor: processing || matches.length === 0 ? "default" : "pointer",
-                  }}
+                  className={`mass-communion-btn ${processing || matches.length === 0 ? "disabled" : "enabled"}`}
                 >
                   {processing ? "Running..." : `Mass Communion (${matches.length} matches)`}
                 </button>
-                <span style={{ fontSize: 11, color: "#555" }}>
+                <span className="connection-count">
                   {topics.filter((t) => {
                     return matches.some((m) => m.sourceId === t.id || m.targetId === t.id);
                   }).length} bits with connections
@@ -1081,9 +1001,9 @@ export default function ComedyParser() {
             </div>
 
             {/* Data Management */}
-            <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, marginBottom: 20, marginTop: 32, color: "#eee" }}>Data Management</h2>
-            <div className="card" style={{ cursor: "default" }}>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <h2 className="section-heading mt">Data Management</h2>
+            <div className="card card-static">
+              <div className="data-btn-row">
                 {[
                   { label: "Backup", icon: "📥", onClick: transcriptOps.handleBackup, title: "Download a full database backup as JSON", bg: "#1a1a2a", border: "#2a2a40", color: "#888" },
                   { label: "Restore", icon: "📤", onClick: transcriptOps.handleRestore, title: "Restore database from a backup JSON file", bg: "#1a1a2a", border: "#2a2a40", color: "#888" },
@@ -1095,13 +1015,10 @@ export default function ComedyParser() {
                     key={label}
                     onClick={onClick}
                     title={title}
-                    style={{
-                      padding: "8px 14px", background: bg, border: `1px solid ${border}`, color,
-                      borderRadius: 6, fontSize: 12, fontFamily: "'DM Sans', sans-serif", fontWeight: 600,
-                      cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
-                    }}
-                    onMouseEnter={(e) => { e.target.style.borderColor = color; e.target.style.filter = "brightness(1.3)"; }}
-                    onMouseLeave={(e) => { e.target.style.borderColor = border; e.target.style.filter = "none"; }}
+                    className="data-btn"
+                    style={{ background: bg, border: `1px solid ${border}`, color }}
+                    onMouseEnter={(e) => { e.target.style.borderColor = color; }}
+                    onMouseLeave={(e) => { e.target.style.borderColor = border; }}
                   >
                     {icon} {label}
                   </button>
@@ -1110,13 +1027,14 @@ export default function ComedyParser() {
             </div>
 
             {/* Export */}
-            <div style={{ marginTop: 32 }} />
+            <div className="export-spacer" />
             <ExportTab
               topics={topics}
               exportVault={transcriptOps.exportVault}
               exportMarkdownZip={transcriptOps.exportMarkdownZip}
               exportSingleMd={transcriptOps.exportSingleMd}
               syncToVault={transcriptOps.syncToVault}
+              undoVaultSync={transcriptOps.undoVaultSync}
             />
           </div>
         )}
@@ -1130,14 +1048,11 @@ export default function ComedyParser() {
 
         if (bothActive) {
           return (
-            <div style={{
-              position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 1001,
-              display: "flex", flexDirection: "column", height: "60vh", maxHeight: "60vh",
-            }}>
-              <div style={{ flex: "0 0 auto", maxHeight: "50%", overflow: "hidden" }}>
+            <div className="bottom-panels-stacked">
+              <div className="bottom-panel-top">
                 <StreamingProgressPanel progress={streamingProgress} foundBits={foundBits} processing={processing} status={status} huntProgress={huntProgress} onDismiss={() => { set('huntProgress', null); set('streamingProgress', null); set('status', ''); }} docked />
               </div>
-              <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+              <div className="bottom-panel-bottom">
                 <DebugPanel log={debugLog} onClear={() => { set('debugLog', []); set('debugMode', false); }} docked />
               </div>
             </div>
@@ -1185,35 +1100,23 @@ export default function ComedyParser() {
       {/* Mini audio player */}
       <ScrollToTop />
       {nowPlaying && (activeTab === "play" || audioIsPlaying) && (
-        <div style={{
-          position: "fixed", bottom: 20, right: 20, zIndex: 9999,
-          background: "#1a1a2e", border: "1px solid #2a2a40", borderRadius: 12,
-          padding: "12px 16px", width: 480,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 12, color: "#ddd", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {nowPlaying.title}
-            </span>
+        <div className="mini-player">
+          <div className="mini-player-header">
+            <span className="mini-player-title">{nowPlaying.title}</span>
             <button
               onClick={() => { if (miniPlayerRef.current) miniPlayerRef.current.currentTime = Math.max(0, miniPlayerRef.current.currentTime - 10); }}
-              style={{ background: "#2a2a40", border: "1px solid #3a3a55", borderRadius: 6, color: "#aaa", fontSize: 11, padding: "2px 6px", cursor: "pointer", flexShrink: 0 }}
+              className="skip-btn"
             >-10s</button>
             <button
               onClick={() => { if (miniPlayerRef.current) miniPlayerRef.current.currentTime = Math.min(miniPlayerRef.current.duration || 0, miniPlayerRef.current.currentTime + 10); }}
-              style={{ background: "#2a2a40", border: "1px solid #3a3a55", borderRadius: 6, color: "#aaa", fontSize: 11, padding: "2px 6px", cursor: "pointer", flexShrink: 0 }}
+              className="skip-btn"
             >+10s</button>
             {activeTab !== "play" && (
-              <span
-                onClick={() => setActiveTab("play")}
-                style={{ fontSize: 10, color: "#74c0fc", cursor: "pointer", flexShrink: 0 }}
-              >
-                open
-              </span>
+              <span onClick={() => setActiveTab("play")} className="mini-player-link">open</span>
             )}
             <span
               onClick={() => { if (miniPlayerRef.current) miniPlayerRef.current.pause(); setNowPlaying(null); setAudioIsPlaying(false); }}
-              style={{ fontSize: 14, color: "#666", cursor: "pointer", flexShrink: 0, lineHeight: 1 }}
+              className="mini-player-close"
             >
               x
             </span>
@@ -1222,7 +1125,6 @@ export default function ComedyParser() {
             ref={miniPlayerRef}
             controls
             src={nowPlaying.url}
-            style={{ width: "100%", height: 32 }}
             onPlay={() => setAudioIsPlaying(true)}
             onPause={() => setAudioIsPlaying(false)}
             onEnded={() => { setAudioIsPlaying(false); setNowPlaying(null); }}

@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from "react";
 import { useHashParam, useHashParamSet } from "../hooks/useHashParam";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
+
 export function DatabaseTab({
   topics,
   setSelectedTopic,
@@ -223,7 +224,7 @@ export function DatabaseTab({
                 const active = selectedTags.has(tag);
                 return (
                   <span
-                    key={`${tag}-${i}`}
+                    key={tag}
                     className="tag-pill"
                     style={{
                       cursor: "pointer",

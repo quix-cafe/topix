@@ -202,10 +202,8 @@ export function useHunting(ctx) {
       let candidates;
       try {
         const embModel = stateRef.current.embeddingModel;
-        const vec = await embedText(
-          `Title: ${newBit.title || ""}\nSummary: ${newBit.summary || ""}\nText: ${newBit.fullText || ""}`,
-          embModel
-        );
+        const embedStr = `Title: ${newBit.title || ""}\nSummary: ${newBit.summary || ""}\nText: ${(newBit.fullText || "").slice(0, 1600)}`;
+        const vec = await embedText(embedStr, embModel);
         const sameFileIds = new Set(existingTopics.filter(b => b.sourceFile === newBit.sourceFile).map(b => b.id));
         sameFileIds.add(newBit.id);
         const neighbors = embeddingStore.findNearestByVector(vec, 10, sameFileIds);

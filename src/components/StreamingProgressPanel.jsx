@@ -39,6 +39,11 @@ export function StreamingProgressPanel({ progress, foundBits, processing, status
           <span style={{ fontSize: 13, fontWeight: 700, color: accentColor, textTransform: "uppercase", letterSpacing: 1.5 }}>
             {processLabel}
           </span>
+          {progress?.transcriptName && (
+            <span style={{ fontSize: 11, color: "#888", fontWeight: 500, marginLeft: 4 }}>
+              — {progress.transcriptName}
+            </span>
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 11, color: "#666", fontWeight: 600 }}>
           {progress && <span>{progress.currentBit} bits found</span>}

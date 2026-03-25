@@ -24,7 +24,7 @@ CRITICAL RULES:
 2. Work through the text IN ORDER from beginning to end — do not skip ahead
 3. Extract ALL comedic material — the bits should collectively cover the ENTIRE transcript with no gaps
 4. Return ONLY a valid JSON array — no markdown, no text outside brackets
-5. Return [] if you find no comedic bits
+5. This is ALWAYS a comedy transcript — there is ALWAYS material to extract. NEVER return an empty array. Even if the text seems sparse, extract whatever material is present as bits.
 6. Bits must NOT overlap — each piece of text belongs to exactly ONE bit. The endChar of one bit should be at or before the startChar of the next. Never assign the same text to multiple bits.
 
 WHAT IS A "BIT":
@@ -54,6 +54,32 @@ For each bit, provide:
 - textPosition: {startChar, endChar} approximate positions in the provided text
 
 RESPONSE: Valid JSON array only. Example: [{"title":"...","fullText":"...","summary":"...","tags":["observational","food","travel","dry","comparison"],"keywords":["airplane","meal","tray","prison","bland","flight-attendant","turbulence"],"textPosition":{"startChar":0,"endChar":100}}]`;
+
+// Todo: export const SYSTEM_PARSE_V3 =
+
+// 'You are a comedy transcript analyst. Extract comedic bits from the provided text. The comedian is a woman named Kai (she/her).
+
+// IMPORTANT: This is a dense stand-up comedy transcript. It is a continuous stream of jokes with no filler. Expect the entire text to be covered by bits.
+
+// CRITICAL EXTRACTION RULES:
+// 1. ONLY use provided text—do NOT generate, imagine, or hallucinate.
+// 2. Work IN ORDER from beginning to end.
+// 3. Extract ALL material—bits must collectively cover 100% of the transcript with NO gaps and NO overlaps (endChar <= next startChar).
+// 4. NEVER return an empty array. Always return ONLY a valid JSON array.
+
+// WHAT IS A "BIT" & GROUPING LOGIC:
+// A bit is a complete comedic unit: setup, punchlines, and all follow-up tags/riffs on the SAME premise.
+// Example: A bit about "airline food" includes the setup, punchline, AND any follow-up tags/riffs still on airline food.
+// Two jokes on the same broad theme (e.g., "dating") but with different premises are separate bits.
+// Err on keeping material together. Do not split bits just because of pauses, multiple punchlines, or brief digressions. Only split when the premise clearly changes.
+
+// JSON OUTPUT SCHEMA (Array of objects):
+// - title: 2-6 word memorable name.
+// - summary: 1-2 sentences describing the premise. Base this ONLY on the text. Do NOT infer backstory, interpret meaning, or explain why it is funny.
+// - fullText: Exact verbatim text.
+// - tags: Array of 5-15 tags. Mix broad categories (observational, self-deprecating, crowd-work, callback, one-liner, storytelling, physical, dark-humor, wordplay, topical, absurd, dry, energetic, vulnerable, confrontational, wholesome, act-out, riff, rule-of-three, misdirect) with specific themes (relationship, family, work, food, dating, gender, etc.).
+// - keywords: 8-15 specific semantic keywords explicitly present in the text (actual words/entities).
+// - textPosition: {startChar, endChar} approximate integer positions.'
 
 export const SYSTEM_MATCH = `You are a comedy bit similarity analyst. The comedian is a woman named Kai (she/her). Given a NEW topic and a list of EXISTING topics, determine which existing topics are the SAME JOKE — the same comedic premise leading to the same core punchline or payoff, even if worded differently across performances.
 
@@ -177,6 +203,7 @@ Rules:
 - If versions differ in punchline, pick the one that lands hardest
 - If one version has extra tags/callbacks that work, include them
 - Do NOT add new material — only combine and clean up what exists
+- Formatting can include line breaks, bullets, or basic structure if it helps readability.
 
 Respond with JSON only:
 {"idealText": "the synthesized ideal version of the bit", "notes": "brief explanation of which elements you chose and why"}

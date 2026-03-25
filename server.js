@@ -154,7 +154,7 @@ async function restartOllama() {
 
   console.log("[Ollama] All restart strategies failed");
   return { success: false, message: "All restart strategies failed (tried user systemctl, pkill + relaunch)" };
-  }
+  
 }
 
 // --- Server ---
@@ -801,6 +801,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // POST /api/export/obsidian — write generated vault files directly to ~/ownCloud/Comedy/
+    // Backs up existing files first so the sync can be undone.
     if (req.url === "/api/export/obsidian" && req.method === "POST") {
       const body = await parseBody(req);
       const { files } = body;
@@ -809,12 +810,40 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const VAULT_DIR = "/home/kai/ownCloud/Comedy";
+      const BACKUP_DIR = path.join(VAULT_DIR, ".topix-backup");
+
+      // Save backup of files we're about to overwrite
+      const backup = [];
+      for (const f of files) {
+        if (!f.name || typeof f.content !== "string") continue;
+        const filePath = path.join(VAULT_DIR, f.name);
+        if (!filePath.startsWith(VAULT_DIR)) continue;
+        try {
+          const existing = await fs.readFile(filePath, "utf-8");
+          backup.push({ name: f.name, content: existing });
+        } catch {
+          // File doesn't exist yet — record as new so undo can remove it
+          backup.push({ name: f.name, content: null });
+        }
+      }
+      // Write backup manifest
+      try {
+        await fs.mkdir(BACKUP_DIR, { recursive: true });
+        await fs.writeFile(
+          path.join(BACKUP_DIR, "last-sync.json"),
+          JSON.stringify({ timestamp: new Date().toISOString(), files: backup }),
+          "utf-8"
+        );
+      } catch (e) {
+        console.warn("[Export] Backup save failed:", e.message);
+      }
+
+      // Write new files
       const written = [];
       const errors = [];
       for (const f of files) {
         if (!f.name || typeof f.content !== "string") continue;
         const filePath = path.join(VAULT_DIR, f.name);
-        // Prevent path traversal
         if (!filePath.startsWith(VAULT_DIR)) {
           errors.push({ name: f.name, error: "path traversal rejected" });
           continue;
@@ -827,7 +856,41 @@ const server = http.createServer(async (req, res) => {
           errors.push({ name: f.name, error: e.message });
         }
       }
-      json(res, 200, { written: written.length, errors, files: written });
+      json(res, 200, { written: written.length, errors, files: written, hasBackup: backup.length > 0 });
+      return;
+    }
+
+    // POST /api/export/obsidian/undo — restore files from last sync backup
+    if (req.url === "/api/export/obsidian/undo" && req.method === "POST") {
+      const VAULT_DIR = "/home/kai/ownCloud/Comedy";
+      const BACKUP_DIR = path.join(VAULT_DIR, ".topix-backup");
+      const backupPath = path.join(BACKUP_DIR, "last-sync.json");
+      try {
+        const raw = await fs.readFile(backupPath, "utf-8");
+        const { files: backupFiles, timestamp } = JSON.parse(raw);
+        let restored = 0, removed = 0, errs = [];
+        for (const f of backupFiles) {
+          const filePath = path.join(VAULT_DIR, f.name);
+          if (!filePath.startsWith(VAULT_DIR)) continue;
+          try {
+            if (f.content === null) {
+              // File was new — remove it
+              await fs.unlink(filePath).catch(() => {});
+              removed++;
+            } else {
+              await fs.writeFile(filePath, f.content, "utf-8");
+              restored++;
+            }
+          } catch (e) {
+            errs.push({ name: f.name, error: e.message });
+          }
+        }
+        // Remove backup after successful undo
+        await fs.unlink(backupPath).catch(() => {});
+        json(res, 200, { restored, removed, errors: errs, backupTimestamp: timestamp });
+      } catch (e) {
+        json(res, 404, { error: "No backup found to undo" });
+      }
       return;
     }
 

@@ -348,11 +348,25 @@ export function useTranscriptOps(ctx, loadSavedData) {
     }
   }, []);
 
+  const undoVaultSync = useCallback(async () => {
+    set("status", "Undoing last vault sync...");
+    try {
+      const res = await fetch("/api/export/obsidian/undo", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Undo failed");
+      set("status", `Undo complete: ${data.restored} restored, ${data.removed} removed.`);
+      return data;
+    } catch (e) {
+      set("status", `Undo failed: ${e.message}`);
+      throw e;
+    }
+  }, []);
+
   return {
     purgeTranscriptData, removeTranscript, handleSyncApply,
     handleCreateTouchstoneFromBit, rectifyOverlaps,
     clearProcessedData, clearAllData, handleHardStop,
     handleBackup, handleRestore, handleRestoreFile, handleResetTouchstones,
-    exportVault, exportMarkdownZip, exportSingleMd, syncToVault,
+    exportVault, exportMarkdownZip, exportSingleMd, syncToVault, undoVaultSync,
   };
 }

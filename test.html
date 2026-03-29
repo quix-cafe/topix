@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Passthru</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 12px 20px;
+    background: #16213e;
+    border-bottom: 1px solid #2a2a4a;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #a0a0d0;
+  }
+  .provider-toggle {
+    display: flex;
+    background: #0f3460;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .provider-toggle button {
+    padding: 6px 18px;
+    border: none;
+    background: transparent;
+    color: #8888aa;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s;
+  }
+  .provider-toggle button.active {
+    background: #e94560;
+    color: #fff;
+  }
+  .provider-toggle button:hover:not(.active) {
+    color: #c0c0e0;
+  }
+  #gemini-model {
+    padding: 6px 12px;
+    background: #0f3460;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    outline: none;
+    display: none;
+  }
+  #gemini-model:focus { border-color: #e94560; }
+  #status {
+    margin-left: auto;
+    font-size: 12px;
+    color: #6a6a8a;
+  }
+  #status.online { color: #4ade80; }
+  #status.offline { color: #f87171; }
+
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .msg {
+    max-width: 80%;
+    padding: 12px 16px;
+    border-radius: 12px;
+    line-height: 1.6;
+    font-size: 14px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: #0f3460;
+    color: #d0d0f0;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.assistant {
+    align-self: flex-start;
+    background: #16213e;
+    border: 1px solid #2a2a4a;
+    border-bottom-left-radius: 4px;
+  }
+  .msg .provider-tag {
+    font-size: 11px;
+    color: #e94560;
+    margin-bottom: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .msg.loading::after {
+    content: "";
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid #4a4a6a;
+    border-top-color: #e94560;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+    margin-left: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #input-area {
+    padding: 12px 20px;
+    background: #16213e;
+    border-top: 1px solid #2a2a4a;
+    display: flex;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  #prompt {
+    flex: 1;
+    padding: 10px 14px;
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 10px;
+    color: #e0e0e0;
+    font-size: 14px;
+    font-family: inherit;
+    resize: none;
+    min-height: 44px;
+    max-height: 200px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  #prompt:focus { border-color: #e94560; }
+  #prompt::placeholder { color: #5a5a7a; }
+  #send {
+    padding: 10px 20px;
+    background: #e94560;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    align-self: flex-end;
+  }
+  #send:hover { background: #c73e54; }
+  #send:disabled { background: #4a4a6a; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>LLM Passthru</h1>
+  <div class="provider-toggle">
+    <button class="active" data-provider="claude">Claude</button>
+    <button data-provider="gemini">Gemini</button>
+  </div>
+  <select id="gemini-model">
+    <option value="">Auto (Thinking)</option>
+    <option value="thinking">Thinking</option>
+    <option value="pro">Pro</option>
+    <option value="flash">Fast</option>
+  </select>
+  <span id="status">checking...</span>
+</header>
+
+<div id="chat"></div>
+
+<div id="input-area">
+  <textarea id="prompt" rows="1" placeholder="Type a message..." autofocus></textarea>
+  <button id="send">Send</button>
+</div>
+
+<script>
+const API = "http://localhost:8899";
+let provider = "claude";
+
+const chat = document.getElementById("chat");
+const prompt = document.getElementById("prompt");
+const sendBtn = document.getElementById("send");
+const status = document.getElementById("status");
+const providerBtns = document.querySelectorAll(".provider-toggle button");
+const geminiModelSelect = document.getElementById("gemini-model");
+
+// Provider toggle
+providerBtns.forEach(btn => {
+  btn.addEventListener("click", () => {
+    providerBtns.forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    provider = btn.dataset.provider;
+    geminiModelSelect.style.display = provider === "gemini" ? "inline-block" : "none";
+  });
+});
+
+// Auto-resize textarea
+prompt.addEventListener("input", () => {
+  prompt.style.height = "auto";
+  prompt.style.height = Math.min(prompt.scrollHeight, 200) + "px";
+});
+
+// Send on Enter (Shift+Enter for newline)
+prompt.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+sendBtn.addEventListener("click", send);
+
+async function send() {
+  const text = prompt.value.trim();
+  if (!text) return;
+
+  prompt.value = "";
+  prompt.style.height = "auto";
+  sendBtn.disabled = true;
+
+  // User message
+  addMsg("user", text);
+
+  // Loading indicator
+  const loading = addMsg("assistant", "Thinking...", provider, true);
+
+  try {
+    const res = await fetch(`${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, prompt: text, gemini_model: provider === "gemini" ? geminiModelSelect.value || null : null }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      loading.querySelector(".content").textContent = data.response;
+    } else {
+      loading.querySelector(".content").textContent = `Error: ${data.detail || JSON.stringify(data)}`;
+    }
+  } catch (e) {
+    loading.querySelector(".content").textContent = `Connection error: ${e.message}`;
+  }
+
+  loading.classList.remove("loading");
+  sendBtn.disabled = false;
+  prompt.focus();
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addMsg(role, text, prov, isLoading) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}` + (isLoading ? " loading" : "");
+  if (role === "assistant" && prov) {
+    div.innerHTML = `<div class="provider-tag">${prov}</div><div class="content">${isLoading ? "Thinking..." : ""}</div>`;
+  } else {
+    div.innerHTML = `<div class="content"></div>`;
+    div.querySelector(".content").textContent = text;
+  }
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+// Health check
+async function checkHealth() {
+  try {
+    const res = await fetch(`${API}/health`);
+    if (res.ok) {
+      status.textContent = "connected";
+      status.className = "online";
+    } else {
+      status.textContent = "error";
+      status.className = "offline";
+    }
+  } catch {
+    status.textContent = "disconnected";
+    status.className = "offline";
+  }
+}
+checkHealth();
+setInterval(checkHealth, 10000);
+</script>
+</body>
+</html>

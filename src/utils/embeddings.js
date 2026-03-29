@@ -311,6 +311,17 @@ export class EmbeddingStore {
   }
 
   /**
+   * Store a pre-computed embedding vector for a bit
+   */
+  set(bitId, vector, model) {
+    const record = { id: bitId, vector, model: model || this.model, textHash: "", timestamp: Date.now() };
+    this.cache.set(bitId, record);
+    saveEmbeddingToDB(record).catch(err =>
+      console.warn(`[Embeddings] DB save failed for ${bitId}:`, err.message)
+    );
+  }
+
+  /**
    * Invalidate a bit's embedding (called on split/join/boundary change)
    */
   invalidate(bitId) {

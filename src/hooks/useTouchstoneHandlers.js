@@ -45,6 +45,16 @@ export function useTouchstoneHandlers(ctx) {
       return prev;
     });
 
+    // Remove rejected touchstone from all flow relations
+    update('touchstones', (prev) => {
+      const stripRelation = (list) => list.map((t) => {
+        const related = t.relatedTouchstoneIds || [];
+        if (!related.includes(touchstoneId)) return t;
+        return { ...t, relatedTouchstoneIds: related.filter((id) => id !== touchstoneId) };
+      });
+      return { confirmed: stripRelation(prev.confirmed || []), possible: stripRelation(prev.possible || []), rejected: prev.rejected || [], _unlinkedPairs: prev._unlinkedPairs || [] };
+    });
+
     // Unlink notes that were matched to this touchstone
     update('notes', (prev) =>
       prev.map((n) => n.matchedTouchstoneId === touchstoneId ? { ...n, matchedTouchstoneId: null, matchScore: null } : n)
@@ -196,21 +206,27 @@ export function useTouchstoneHandlers(ctx) {
       return result;
     };
 
-    const trustedInstances = ts.instances.filter((i) => i.communionStatus === 'sainted' || i.communionStatus === 'blessed');
-    const instancesToUse = trustedInstances.length >= 2 ? trustedInstances : ts.instances;
-    const groupBits = instancesToUse.map((i) => s.topics.find((b) => b.id === i.bitId)).filter(Boolean);
-    if (groupBits.length < 2) return;
+    const coreBitIds = new Set(ts.coreBitIds || []);
+    const saintedIds = new Set(ts.instances.filter((i) => i.communionStatus === 'sainted').map((i) => i.bitId));
+    const anchorIds = new Set([...coreBitIds, ...saintedIds]);
 
-    const anchorBit = groupBits[0];
-    const candidateBits = groupBits.slice(1);
-    const anchorText = `EXISTING 1 (from "${anchorBit.sourceFile}"):\nTitle: ${applyCorrections(anchorBit.title)}\n${applyCorrections(anchorBit.fullText || anchorBit.summary)}`;
+    // Use core/sainted bits as anchors; evaluate all other instances as candidates
+    const allBits = ts.instances.map((i) => s.topics.find((b) => b.id === i.bitId)).filter(Boolean);
+    const anchorBits = allBits.filter(b => anchorIds.has(b.id));
+    const candidateBits = allBits.filter(b => !anchorIds.has(b.id));
+
+    // Fallback: if no core/sainted bits, use first bit as anchor
+    if (anchorBits.length === 0) {
+      anchorBits.push(allBits[0]);
+      candidateBits.length = 0;
+      candidateBits.push(...allBits.slice(1));
+    }
+    if (candidateBits.length === 0) return;
+    const anchorText = anchorBits.map((b, i) => `ANCHOR ${i + 1} (core bit, from "${b.sourceFile}"):\nTitle: ${applyCorrections(b.title)}\n${applyCorrections(b.fullText || b.summary)}`).join('\n\n');
     const candidateText = candidateBits.map((b, i) => `CANDIDATE ${i + 1} (from "${b.sourceFile}"):\nTitle: ${applyCorrections(b.title)}\n${applyCorrections(b.fullText || b.summary)}`).join('\n\n');
     const userReasonsBlock = (ts.userReasons || []).length > 0
       ? `\n\n--- USER-CONFIRMED REASONING ---\n${ts.userReasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}` : '';
-    const rejectedBlock = (ts.rejectedReasons || []).length > 0
-      ? `\n\n--- REJECTED REASONING ---\n${ts.rejectedReasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}` : '';
-
-    const userMsg = `TOUCHSTONE: "${ts.name}"\n\n--- GROUP (1 anchor instance) ---\n${anchorText}${userReasonsBlock}${rejectedBlock}\n\n--- CANDIDATES TO EVALUATE (${candidateBits.length}) ---\n${candidateText}`;
+    const userMsg = `TOUCHSTONE: "${ts.name}"\n\n--- ANCHOR INSTANCES (${anchorBits.length} core/sainted bits) ---\n${anchorText}${userReasonsBlock}\n\n--- CANDIDATES TO EVALUATE (${candidateBits.length}) ---\n${candidateText}`;
 
     try {
       set('processing', true);
@@ -230,18 +246,39 @@ export function useTouchstoneHandlers(ctx) {
         }
       }
 
+      // Build set of rejected candidate bitIds (accepted:false, not core/sainted)
+      const rejectedBitIds = new Set();
+      for (const c of (result.candidates || [])) {
+        if (typeof c.candidate === 'number' && c.accepted === false) {
+          const idx = c.candidate - 1;
+          if (idx >= 0 && idx < candidateBits.length) {
+            const bitId = candidateBits[idx].id;
+            // Keep if core or sainted
+            if (!coreBitIds.has(bitId) && !saintedIds.has(bitId)) {
+              rejectedBitIds.add(bitId);
+            }
+          }
+        }
+      }
+
       update('touchstones', (prev) => {
         const updateIn = (list) => list.map((t) => {
           if (t.id !== touchstoneId) return t;
-          const updatedInstances = (t.instances || []).map((inst) => {
-            if (inst.bitId === anchorBit.id) return { ...inst, confidence: 1, relationship: 'same_bit' };
-            const score = candidateScores.get(inst.bitId);
-            if (!score) return inst;
-            return { ...inst, confidence: score.confidence, relationship: score.relationship };
-          });
+          const anchorIdSet = new Set(anchorBits.map(b => b.id));
+          const updatedInstances = (t.instances || [])
+            .filter((inst) => !rejectedBitIds.has(inst.bitId))
+            .map((inst) => {
+              if (anchorIdSet.has(inst.bitId)) return { ...inst, confidence: 1, relationship: 'same_bit' };
+              const score = candidateScores.get(inst.bitId);
+              if (!score) return inst;
+              return { ...inst, confidence: score.confidence, relationship: score.relationship };
+            });
+          const updatedBitIds = updatedInstances.map((i) => i.bitId);
+          const removedIds = [...rejectedBitIds].filter(id => t.bitIds.includes(id));
           const avgConf = updatedInstances.length > 0 ? updatedInstances.reduce((s, i) => s + (i.confidence || 0), 0) / updatedInstances.length : 0;
           return {
-            ...t, instances: updatedInstances,
+            ...t, instances: updatedInstances, bitIds: updatedBitIds, frequency: updatedInstances.length,
+            removedBitIds: [...new Set([...(t.removedBitIds || []), ...removedIds])],
             matchInfo: { ...t.matchInfo, reasons: finalReasons.length > 0 ? finalReasons : t.matchInfo?.reasons || [], totalMatches: updatedInstances.length, sameBitCount: updatedInstances.filter((i) => i.relationship === "same_bit").length, evolvedCount: updatedInstances.filter((i) => i.relationship === "evolved").length, avgConfidence: avgConf, avgMatchPercentage: Math.round(avgConf * 100) },
           };
         });
@@ -289,7 +326,12 @@ export function useTouchstoneHandlers(ctx) {
     const prev = stateRef.current.touchstones;
     const updateIn = (list) => list.map((t) => {
       if (t.id !== touchstoneId) return t;
-      return { ...t, instances: t.instances.map((inst) => inst.bitId === bitId ? { ...inst, communionStatus: newStatus } : inst) };
+      const updated = { ...t, instances: t.instances.map((inst) => inst.bitId === bitId ? { ...inst, communionStatus: newStatus } : inst) };
+      // Sainted bits automatically become core bits
+      if (newStatus === 'sainted' && !(t.coreBitIds || []).includes(bitId)) {
+        updated.coreBitIds = [...(t.coreBitIds || []), bitId];
+      }
+      return updated;
     });
     const updatedTouchstones = { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };
     set('touchstones', updatedTouchstones);
@@ -403,11 +445,74 @@ export function useTouchstoneHandlers(ctx) {
     return result !== s.touchstones;
   }, []);
 
+  const onToggleCoreBit = useCallback((touchstoneId, bitId) => {
+    const prev = stateRef.current.touchstones;
+    const updateIn = (list) => list.map((t) => {
+      if (t.id !== touchstoneId) return t;
+      const core = new Set(t.coreBitIds || []);
+      if (core.has(bitId)) { core.delete(bitId); } else { core.add(bitId); }
+      return { ...t, coreBitIds: [...core] };
+    });
+    const updatedTouchstones = { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };
+    set('touchstones', updatedTouchstones);
+    const s2 = stateRef.current;
+    saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: updatedTouchstones }).catch(console.error);
+  }, []);
+
+  const onRejectCoreless = useCallback(() => {
+    const s = stateRef.current;
+    const rejectedIds = [];
+
+    update('touchstones', (prev) => {
+      const toReject = [];
+      const keepConfirmed = [];
+      const keepPossible = [];
+
+      for (const t of (prev.confirmed || [])) {
+        const hasCore = (t.coreBitIds || []).length > 0;
+        const hasSainted = (t.instances || []).some((i) => i.communionStatus === 'sainted');
+        if (!hasCore && !hasSainted) { toReject.push({ ...t, category: 'rejected' }); rejectedIds.push(t.id); }
+        else keepConfirmed.push(t);
+      }
+      for (const t of (prev.possible || [])) {
+        const hasCore = (t.coreBitIds || []).length > 0;
+        const hasSainted = (t.instances || []).some((i) => i.communionStatus === 'sainted');
+        if (!hasCore && !hasSainted) { toReject.push({ ...t, category: 'rejected' }); rejectedIds.push(t.id); }
+        else keepPossible.push(t);
+      }
+
+      if (toReject.length === 0) return prev;
+
+      // Strip rejected touchstones from flow relations
+      const rejSet = new Set(rejectedIds);
+      const stripRelation = (list) => list.map((t) => {
+        const related = (t.relatedTouchstoneIds || []).filter((id) => !rejSet.has(id));
+        return related.length !== (t.relatedTouchstoneIds || []).length ? { ...t, relatedTouchstoneIds: related } : t;
+      });
+
+      return {
+        confirmed: stripRelation(keepConfirmed),
+        possible: stripRelation(keepPossible),
+        rejected: [...(prev.rejected || []), ...toReject],
+        _unlinkedPairs: prev._unlinkedPairs || [],
+      };
+    });
+
+    if (rejectedIds.length > 0) {
+      set('status', `Rejected ${rejectedIds.length} touchstone(s) with no core/sainted bits.`);
+      setTimeout(async () => {
+        const s2 = stateRef.current;
+        try { await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }); } catch {}
+      }, 100);
+    }
+    return rejectedIds.length;
+  }, []);
+
   return {
     onRenameTouchstone, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone,
     onRemoveInstance, onUpdateInstanceRelationship,
     onMergeTouchstone, onRefreshReasons, onUpdateTouchstoneEdits,
     onSaintInstance, onRemoveFromTouchstone, onAddToTouchstone,
-    onRelateTouchstone, onUnrelateTouchstone, onAutoRelateAll,
+    onRelateTouchstone, onUnrelateTouchstone, onAutoRelateAll, onToggleCoreBit, onRejectCoreless,
   };
 }

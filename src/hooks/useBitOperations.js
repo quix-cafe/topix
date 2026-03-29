@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { callOllama } from "../utils/ollama";
-import { SYSTEM_PARSE_V2 } from "../utils/prompts";
+import { SYSTEM_PARSE_V3 } from "../utils/prompts";
 import { saveVaultState } from "../utils/database";
 import { prepareSplitUpdate, prepareJoinUpdate, applyBoundaryChange, applyTakeOverlap, applyScrollBoundary } from "../utils/bitOperations";
 
@@ -14,39 +14,57 @@ export function useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate) {
     const { updatedTopics, updatedMatches, updatedTouchstones, bitsWithIds } = prepareSplitUpdate(bitId, newBits, s.topics, s.matches, s.touchstones);
 
     embeddingStore.invalidate(bitId);
-    dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches, touchstones: updatedTouchstones, editingMode: null, selectedTopic: null } });
+    dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches, touchstones: updatedTouchstones, editingMode: null, selectedTopic: null, lastSplitJoinTime: Date.now() } });
 
     try {
       await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: updatedTouchstones });
     } catch (err) { console.error("Error saving split bits:", err); }
 
+    // Delay baptism 60s to allow user adjustments (deleting unwanted split bits, etc.)
+    const bitIds = bitsWithIds.map(b => b.id);
+    set('status', `Split into ${bitsWithIds.length} bits — will baptize in 60s (delete unwanted bits first)`);
+    await new Promise(resolve => setTimeout(resolve, 60000));
+
+    // Baptize each split bit that still exists, then match with fresh metadata
     const model = stateRef.current.selectedModel;
-    for (const bit of bitsWithIds) {
+    const survivingBits = bitsWithIds.filter(b => stateRef.current.topics.some(t => t.id === b.id));
+    if (survivingBits.length === 0) { set('status', 'Split bits were all removed — skipping baptism'); return; }
+    set('status', `Baptizing ${survivingBits.length} split bit(s)...`);
+
+    for (const bit of survivingBits) {
       if (!bit.fullText?.trim()) continue;
-      callOllama(SYSTEM_PARSE_V2, `Parse this comedy transcript excerpt:\n\n${bit.fullText}`, () => {}, model, stateRef.current.debugMode ? addDebugEntry : null)
-        .then((result) => {
-          const parsed = Array.isArray(result) ? result[0] : result;
-          if (!parsed) return;
+      // Re-check existence (user may delete during loop)
+      if (!stateRef.current.topics.some(t => t.id === bit.id)) continue;
+      set('status', `Baptizing split bit "${bit.title}"...`);
+      try {
+        const result = await callOllama(SYSTEM_PARSE_V3, `Parse this comedy transcript excerpt:\n\n${bit.fullText}`, () => {}, model, stateRef.current.debugMode ? addDebugEntry : null);
+        const parsed = Array.isArray(result) ? result[0] : result;
+        if (parsed) {
           const updated = {
             ...bit,
             title: parsed.title || bit.title,
             summary: parsed.summary || bit.summary,
-            tags: (parsed.tags && parsed.tags.length > 0) ? parsed.tags : bit.tags,
-            keywords: (parsed.keywords && parsed.keywords.length > 0) ? parsed.keywords : bit.keywords,
+            tags: (parsed.tags && parsed.tags.length > 0) ? parsed.tags : [],
+            keywords: (parsed.keywords && parsed.keywords.length > 0) ? parsed.keywords : [],
+            parsedWithModel: model,
             editHistory: [...(bit.editHistory || []), { timestamp: Date.now(), action: "split_baptize", details: { from: bit.title, to: parsed.title } }],
           };
+          Object.assign(bit, updated); // update in-place for matching below
           update('topics', (prev) => prev.map((t) => t.id === bit.id ? updated : t));
-          const s2 = stateRef.current;
-          saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
-        }).catch((err) => console.warn("[Split baptize] Failed:", err.message));
+        }
+      } catch (err) { console.warn("[Split baptize] Failed:", err.message); }
     }
+    const s2 = stateRef.current;
+    await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
 
-    for (const bit of bitsWithIds) {
+    for (const bit of survivingBits) {
       if (!bit.fullText?.trim()) continue;
-      const crossTranscript = updatedTopics.filter((b) => b.sourceFile !== bit.sourceFile && b.id !== bit.id);
-      if (crossTranscript.length === 0) continue;
-      matchBitLiveRef.current?.(bit, crossTranscript).catch((err) => { if (err.name !== "AbortError") console.error("[Split rematch] Error:", err); });
+      if (!stateRef.current.topics.some(t => t.id === bit.id)) continue;
+      set('status', `Matching split bit "${bit.title}"...`);
+      const currentTopics = stateRef.current.topics;
+      await matchBitLiveRef.current?.(bit, currentTopics).catch((err) => { if (err.name !== "AbortError") console.error("[Split rematch] Error:", err); });
     }
+    set('status', `Split complete — ${survivingBits.length} bit(s) baptized and matched`);
   }, []);
 
   const handleJoinBits = useCallback(async (bitsToJoin, joinedBit) => {
@@ -54,39 +72,92 @@ export function useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate) {
     const { updatedTopics, updatedMatches, updatedTouchstones, completeBit } = prepareJoinUpdate(bitsToJoin, joinedBit, s.topics, s.matches, s.touchstones, s.selectedModel);
 
     for (const b of bitsToJoin) embeddingStore.invalidate(b.id);
-    dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches, touchstones: updatedTouchstones, editingMode: null, selectedTopic: null } });
+    dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches, touchstones: updatedTouchstones, editingMode: null, selectedTopic: null, lastSplitJoinTime: Date.now() } });
 
     try {
       await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: updatedTouchstones });
     } catch (err) { console.error("Error saving joined bits:", err); }
 
     if (completeBit.fullText?.trim()) {
-      const crossTranscript = updatedTopics.filter((b) => b.sourceFile !== completeBit.sourceFile && b.id !== completeBit.id);
-      if (crossTranscript.length > 0) {
-        matchBitLiveRef.current?.(completeBit, crossTranscript).catch((err) => { if (err.name !== "AbortError") console.error("[Join rematch] Error:", err); });
-      }
+      // Baptize joined bit before matching so metadata is fresh
+      set('status', `Baptizing joined bit "${completeBit.title}"...`);
+      try {
+        const model = stateRef.current.selectedModel;
+        const result = await callOllama(SYSTEM_PARSE_V3, `Parse this comedy transcript excerpt:\n\n${completeBit.fullText}`, () => {}, model, stateRef.current.debugMode ? addDebugEntry : null);
+        const parsed = Array.isArray(result) ? result[0] : result;
+        if (parsed) {
+          const updated = {
+            ...completeBit,
+            title: parsed.title || completeBit.title,
+            summary: parsed.summary || completeBit.summary,
+            tags: (parsed.tags && parsed.tags.length > 0) ? parsed.tags : [],
+            keywords: (parsed.keywords && parsed.keywords.length > 0) ? parsed.keywords : [],
+            parsedWithModel: model,
+            editHistory: [...(completeBit.editHistory || []), { timestamp: Date.now(), action: "join_baptize", details: { from: completeBit.title, to: parsed.title } }],
+          };
+          Object.assign(completeBit, updated);
+          update('topics', (prev) => prev.map((t) => t.id === completeBit.id ? updated : t));
+          const s2 = stateRef.current;
+          await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
+        }
+      } catch (err) { console.warn("[Join baptize] Failed:", err.message); }
+
+      set('status', `Matching joined bit "${completeBit.title}"...`);
+      const currentTopics = stateRef.current.topics;
+      await matchBitLiveRef.current?.(completeBit, currentTopics).catch((err) => { if (err.name !== "AbortError") console.error("[Join rematch] Error:", err); });
+      set('status', `Join complete — bit baptized and matched`);
     }
   }, []);
 
   const handleBoundaryChange = useCallback(async (bitId, newPosition) => {
     const s = stateRef.current;
     const { updatedTopics } = applyBoundaryChange(bitId, newPosition, s.topics, s.transcripts);
+    // Clear stale tags/keywords — text changed, old metadata no longer valid
+    const clearedTopics = updatedTopics.map((t) => t.id === bitId ? { ...t, tags: [], keywords: [] } : t);
     embeddingStore.invalidate(bitId);
-    dispatch({ type: 'MERGE', payload: { topics: updatedTopics, adjustingBit: null } });
+    dispatch({ type: 'MERGE', payload: { topics: clearedTopics, adjustingBit: null } });
     try {
-      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
+      await saveVaultState({ topics: clearedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
     } catch (err) { console.error("Error saving boundary change:", err); }
     debouncedRevalidate([bitId]);
+    // Re-parse to regenerate tags/keywords for the changed bit
+    const changedBit = clearedTopics.find((t) => t.id === bitId);
+    if (changedBit?.fullText?.trim()) {
+      callOllama(SYSTEM_PARSE_V3, `Parse this comedy transcript excerpt:\n\n${changedBit.fullText}`, () => {}, stateRef.current.selectedModel, stateRef.current.debugMode ? addDebugEntry : null)
+        .then((result) => {
+          const parsed = Array.isArray(result) ? result[0] : result;
+          if (!parsed) return;
+          update('topics', (prev) => prev.map((t) => t.id === bitId ? { ...t, tags: parsed.tags || [], keywords: parsed.keywords || [] } : t));
+          const s2 = stateRef.current;
+          saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
+        }).catch((err) => console.warn("[Boundary re-parse] Failed:", err.message));
+    }
   }, [debouncedRevalidate]);
 
   const handleTakeOverlap = useCallback(async (takerId, conflictingUpdates) => {
     const s = stateRef.current;
     const { updatedTopics, shrunkIds } = applyTakeOverlap(takerId, conflictingUpdates, s.topics, s.transcripts);
-    dispatch({ type: 'MERGE', payload: { topics: updatedTopics } });
+    // Clear stale tags/keywords on all affected bits
+    const affectedIds = new Set([takerId, ...shrunkIds]);
+    const clearedTopics = updatedTopics.map((t) => affectedIds.has(t.id) ? { ...t, tags: [], keywords: [] } : t);
+    dispatch({ type: 'MERGE', payload: { topics: clearedTopics } });
     try {
-      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
+      await saveVaultState({ topics: clearedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
     } catch (err) { console.error("Error saving take overlap:", err); }
     debouncedRevalidate(shrunkIds);
+    // Re-parse affected bits to regenerate tags/keywords
+    for (const id of affectedIds) {
+      const bit = clearedTopics.find((t) => t.id === id);
+      if (!bit?.fullText?.trim()) continue;
+      callOllama(SYSTEM_PARSE_V3, `Parse this comedy transcript excerpt:\n\n${bit.fullText}`, () => {}, stateRef.current.selectedModel, stateRef.current.debugMode ? addDebugEntry : null)
+        .then((result) => {
+          const parsed = Array.isArray(result) ? result[0] : result;
+          if (!parsed) return;
+          update('topics', (prev) => prev.map((t) => t.id === id ? { ...t, tags: parsed.tags || [], keywords: parsed.keywords || [] } : t));
+          const s2 = stateRef.current;
+          saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
+        }).catch((err) => console.warn("[Overlap re-parse] Failed:", err.message));
+    }
   }, [debouncedRevalidate]);
 
   const handleScrollBoundary = useCallback(async (bitId, nextBitId, direction) => {
@@ -94,11 +165,27 @@ export function useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate) {
     const result = applyScrollBoundary(bitId, nextBitId, direction, s.topics, s.transcripts);
     if (!result) return;
     const { updatedTopics, changedBitIds } = result;
-    dispatch({ type: 'MERGE', payload: { topics: updatedTopics } });
+    // Clear stale tags/keywords on all changed bits
+    const changedSet = new Set(changedBitIds);
+    const clearedTopics = updatedTopics.map((t) => changedSet.has(t.id) ? { ...t, tags: [], keywords: [] } : t);
+    dispatch({ type: 'MERGE', payload: { topics: clearedTopics } });
     try {
-      await saveVaultState({ topics: updatedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
+      await saveVaultState({ topics: clearedTopics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones });
     } catch (err) { console.error("Error saving boundary scroll:", err); }
     debouncedRevalidate(changedBitIds);
+    // Re-parse changed bits to regenerate tags/keywords
+    for (const id of changedBitIds) {
+      const bit = clearedTopics.find((t) => t.id === id);
+      if (!bit?.fullText?.trim()) continue;
+      callOllama(SYSTEM_PARSE_V3, `Parse this comedy transcript excerpt:\n\n${bit.fullText}`, () => {}, stateRef.current.selectedModel, stateRef.current.debugMode ? addDebugEntry : null)
+        .then((result) => {
+          const parsed = Array.isArray(result) ? result[0] : result;
+          if (!parsed) return;
+          update('topics', (prev) => prev.map((t) => t.id === id ? { ...t, tags: parsed.tags || [], keywords: parsed.keywords || [] } : t));
+          const s2 = stateRef.current;
+          saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
+        }).catch((err) => console.warn("[Scroll re-parse] Failed:", err.message));
+    }
   }, [debouncedRevalidate]);
 
   const handleGenerateTitle = useCallback(async (fullText) => {
@@ -138,9 +225,9 @@ export function useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate) {
     const bit = s.topics.find((t) => t.id === bitId);
     if (!bit || !bit.fullText?.trim()) return;
 
-    set('status', `Baptizing "${bit.title}"...`);
+    set('status', `Baptizing "${bit.title}" — parsing...`);
     try {
-      const result = await callOllama(SYSTEM_PARSE_V2, `Parse this comedy transcript excerpt:\n\n${bit.fullText}`, () => {}, s.selectedModel, s.debugMode ? addDebugEntry : null);
+      const result = await callOllama(SYSTEM_PARSE_V3, `Parse this comedy transcript excerpt:\n\n${bit.fullText}`, () => {}, s.selectedModel, s.debugMode ? addDebugEntry : null);
       const parsed = Array.isArray(result) ? result[0] : result;
       if (parsed) {
         const updatedBit = {
@@ -153,10 +240,15 @@ export function useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate) {
         };
         update('topics', (prev) => prev.map((t) => t.id === bitId ? updatedBit : t));
         set('selectedTopic', updatedBit);
-        matchBitLiveRef.current?.(updatedBit, stateRef.current.topics.map((t) => t.id === bitId ? updatedBit : t));
+        set('status', `Baptizing "${updatedBit.title}" — finding matches...`);
+        const updatedTopics = stateRef.current.topics.map((t) => t.id === bitId ? updatedBit : t);
+        const crossTranscript = updatedTopics.filter((b) => b.sourceFile !== updatedBit.sourceFile);
+        set('status', `Baptizing "${updatedBit.title}" — matching against ${crossTranscript.length} cross-transcript bits...`);
+        await matchBitLiveRef.current?.(updatedBit, updatedTopics);
         const s2 = stateRef.current;
+        const newMatches = s2.matches.filter((m) => m.sourceId === bitId || m.targetId === bitId);
         await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones });
-        set('status', `Baptized "${updatedBit.title}"`);
+        set('status', `Baptized "${updatedBit.title}" — ${newMatches.length} match(es) found`);
       }
     } catch (err) {
       set('status', `Baptize failed: ${err.message}`);

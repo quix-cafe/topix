@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { callOllama, uid } from "../utils/ollama";
-import { SYSTEM_MATCH_PAIR, SYSTEM_HUNT_BATCH } from "../utils/prompts";
-import { saveVaultState } from "../utils/database";
+import { SYSTEM_HUNT_BATCH } from "../utils/prompts";
+
 import { findSimilarBits } from "../utils/similaritySearch";
 import { embedText } from "../utils/embeddings";
 import { runHuntBatches } from "../utils/huntRunner";
@@ -10,6 +10,80 @@ export function useHunting(ctx) {
   const { dispatch, stateRef, addDebugEntry, embeddingStore, huntControllerRef } = ctx;
   const set = (field, value) => dispatch({ type: 'SET', field, value });
   const update = (field, fn) => dispatch({ type: 'UPDATE', field, fn });
+
+  /**
+   * Immediately absorb a bit into any touchstone that contains a strong match target.
+   * For confirmed touchstones, target must be core, sainted, or blessed.
+   * For possible touchstones, any member qualifies.
+   */
+  const absorbIntoTouchstones = useCallback((bit, strongMatchTargets) => {
+    if (strongMatchTargets.length === 0) return;
+    const ts = stateRef.current.touchstones || {};
+    const allTouchstones = [...(ts.confirmed || []), ...(ts.possible || [])];
+    const absorbed = new Set();
+    for (const { targetId, mp, rel } of strongMatchTargets) {
+      for (const touchstone of allTouchstones) {
+        if (absorbed.has(touchstone.id)) continue;
+        if (!touchstone.bitIds.includes(targetId)) continue;
+        if (touchstone.bitIds.includes(bit.id)) continue;
+        const removedSet = new Set(touchstone.removedBitIds || []);
+        if (removedSet.has(bit.id)) continue;
+
+        // For confirmed touchstones, only absorb if target is core, sainted, or blessed
+        if (touchstone.category === 'confirmed') {
+          const coreSet = new Set(touchstone.coreBitIds || []);
+          const saintedIds = new Set((touchstone.instances || []).filter(i => i.communionStatus === 'sainted').map(i => i.bitId));
+          const blessedIds = new Set((touchstone.instances || []).filter(i => i.communionStatus === 'blessed').map(i => i.bitId));
+          if (!coreSet.has(targetId) && !saintedIds.has(targetId) && !blessedIds.has(targetId)) continue;
+        }
+
+        absorbed.add(touchstone.id);
+        const category = touchstone.category || 'possible';
+        const newInstance = {
+          bitId: bit.id, sourceFile: bit.sourceFile, title: bit.title,
+          instanceNumber: touchstone.instances.length + 1,
+          confidence: mp / 100, relationship: rel,
+        };
+        update('touchstones', (prev) => {
+          const list = prev[category] || [];
+          // Re-check in the updater since state may have changed between dispatch calls
+          const existing = list.find(t => t.id === touchstone.id);
+          if (!existing || existing.bitIds.includes(bit.id)) return prev;
+          return {
+            ...prev,
+            [category]: list.map(t => t.id !== touchstone.id ? t : {
+              ...t,
+              bitIds: [...t.bitIds, bit.id],
+              instances: [...t.instances, newInstance],
+              frequency: t.instances.length + 1,
+            }),
+          };
+        });
+        console.log(`[Absorb] "${bit.title}" into ${category} "${touchstone.name}" (${mp}% ${rel})`);
+      }
+    }
+  }, []);
+
+  /**
+   * Process hunt batch matches: save matches and immediately absorb into touchstones.
+   * Shared by huntTouchstones and huntTranscript.
+   */
+  const handleBatchMatches = useCallback((batchMatches, bitsById) => {
+    update('matches', (prev) => [...prev, ...batchMatches]);
+
+    // Immediate touchstone absorption for strong matches
+    for (const m of batchMatches) {
+      if (m.matchPercentage < 85) continue;
+      const rel = m.relationship;
+      if (rel !== 'same_bit' && rel !== 'evolved') continue;
+
+      // Try absorbing source into touchstones containing target, and vice versa
+      const srcBit = bitsById.get(m.sourceId);
+      const tgtBit = bitsById.get(m.targetId);
+      if (srcBit) absorbIntoTouchstones(srcBit, [{ targetId: m.targetId, mp: m.matchPercentage, rel }]);
+      if (tgtBit) absorbIntoTouchstones(tgtBit, [{ targetId: m.sourceId, mp: m.matchPercentage, rel }]);
+    }
+  }, [absorbIntoTouchstones]);
 
   const huntTouchstones = useCallback(async () => {
     const s = stateRef.current;
@@ -47,9 +121,9 @@ export function useHunting(ctx) {
       if (useEmbeddings) {
         const excludeIds = new Set(s.topics.filter(b => b.sourceFile === bit.sourceFile).map(b => b.id));
         const crossIds = new Set(crossTranscript.map(b => b.id));
-        const neighbors = embeddingStore.findNearest(bit.id, 8, excludeIds);
+        const neighbors = embeddingStore.findNearest(bit.id, 16, excludeIds);
         candidates = neighbors
-          .filter(n => n.score >= 0.65 && crossIds.has(n.bitId))
+          .filter(n => n.score >= 0.6 && crossIds.has(n.bitId))
           .filter(n => !existingPairs.has([bit.id, n.bitId].sort().join(':')))
           .map(n => bitsById.get(n.bitId)).filter(Boolean);
       } else {
@@ -93,18 +167,14 @@ export function useHunting(ctx) {
           ...(p.recentMatches ? { recentMatches: [...(prev.recentMatches || []), p.recentMatches].slice(-20) } : {}),
         }));
       },
-      onBatchMatches: (batchMatches) => {
-        update('matches', (prev) => [...prev, ...batchMatches]);
-        const s2 = stateRef.current;
-        saveVaultState({ topics: s2.topics, matches: [...s2.matches, ...batchMatches], transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
-      },
+      onBatchMatches: (batchMatches) => handleBatchMatches(batchMatches, bitsById),
       debugLogger: addDebugEntry,
     });
 
     huntControllerRef.current = null;
     set('processing', false);
     update('huntProgress', (prev) => ({ ...prev, current: batches.length, total: batches.length, found: allMatches.length, status: `Done. Found ${allMatches.length} new match${allMatches.length !== 1 ? 'es' : ''}.` }));
-  }, []);
+  }, [handleBatchMatches]);
 
   const huntTranscript = useCallback(async (transcript) => {
     const s = stateRef.current;
@@ -137,7 +207,7 @@ export function useHunting(ctx) {
         const sameFileIds = new Set(trBits.map(b => b.id));
         const neighbors = embeddingStore.findNearest(bit.id, 8, sameFileIds);
         candidates = neighbors
-          .filter(n => n.score >= 0.65)
+          .filter(n => n.score >= 0.55)
           .filter(n => !existingPairs.has([bit.id, n.bitId].sort().join(':')))
           .map(n => bitsById.get(n.bitId)).filter(Boolean);
       } else {
@@ -178,18 +248,14 @@ export function useHunting(ctx) {
           ...(p.recentMatches ? { recentMatches: [...(prev.recentMatches || []), p.recentMatches].slice(-20) } : {}),
         }));
       },
-      onBatchMatches: (batchMatches) => {
-        update('matches', (prev) => [...prev, ...batchMatches]);
-        const s2 = stateRef.current;
-        saveVaultState({ topics: s2.topics, matches: [...s2.matches, ...batchMatches], transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
-      },
+      onBatchMatches: (batchMatches) => handleBatchMatches(batchMatches, bitsById),
       debugLogger: addDebugEntry,
     });
 
     huntControllerRef.current = null;
     set('processing', false);
     update('huntProgress', (prev) => ({ ...prev, current: batches.length, total: batches.length, found: allMatches.length, status: `Done "${transcript.name}". Found ${allMatches.length} new match${allMatches.length !== 1 ? 'es' : ''}.` }));
-  }, []);
+  }, [handleBatchMatches]);
 
   const matchBitLive = useCallback(async (newBit, existingTopics, signal) => {
     try {
@@ -198,66 +264,129 @@ export function useHunting(ctx) {
       if (crossTranscript.length === 0) return;
 
       const newBitWords = (newBit.fullText || "").split(/\s+/).length;
+      if (newBitWords < 15) return;
 
       let candidates;
       try {
+        set('status', `Matching "${newBit.title}" — computing embeddings...`);
         const embModel = stateRef.current.embeddingModel;
         const embedStr = `Title: ${newBit.title || ""}\nSummary: ${newBit.summary || ""}\nText: ${(newBit.fullText || "").slice(0, 1600)}`;
         const vec = await embedText(embedStr, embModel);
+        embeddingStore.set(newBit.id, vec, embModel);
         const sameFileIds = new Set(existingTopics.filter(b => b.sourceFile === newBit.sourceFile).map(b => b.id));
         sameFileIds.add(newBit.id);
         const neighbors = embeddingStore.findNearestByVector(vec, 10, sameFileIds);
         candidates = neighbors.filter(n => n.score >= 0.65).map(n => existingTopics.find(b => b.id === n.bitId)).filter(Boolean);
+        set('status', `Matching "${newBit.title}" — ${candidates.length} embedding candidates found`);
       } catch {
         const preFilterThreshold = newBitWords < 40 ? 0.3 : 0.15;
         candidates = findSimilarBits(newBit, crossTranscript, preFilterThreshold).slice(0, 10).map((r) => r.bit);
+        set('status', `Matching "${newBit.title}" — ${candidates.length} text-similarity candidates`);
       }
 
+      // Filter out very short candidates
+      candidates = candidates.filter(c => (c.fullText || "").split(/\s+/).length >= 15);
       if (candidates.length === 0) return;
-      if (newBitWords < 15) return;
 
+      // Batch match: single LLM call for all candidates (same approach as Hunt)
       const selectedModel = stateRef.current.selectedModel;
       const debugMode = stateRef.current.debugMode;
 
-      for (const candidate of candidates) {
-        if (signal?.aborted) return;
-        const candidateWords = (candidate.fullText || "").split(/\s+/).length;
-        if (candidateWords < 15) continue;
+      set('status', `Matching "${newBit.title}" — batch comparing ${candidates.length} candidates...`);
 
-        try {
-          const userMsg = `BIT A:\nTitle: ${newBit.title}\nFull text: ${newBit.fullText}\n\nBIT B:\nTitle: ${candidate.title}\nFull text: ${candidate.fullText}`;
-          const result = await callOllama(SYSTEM_MATCH_PAIR, userMsg, () => {}, selectedModel, debugMode ? addDebugEntry : null, signal);
-          const matchData = Array.isArray(result) ? result[0] : result;
+      try {
+        const candidateList = candidates.map((c, i) =>
+          `CANDIDATE ${i + 1}:\nTitle: ${c.title}\nFull text: ${c.fullText}`
+        ).join('\n\n');
 
-          if (matchData && typeof matchData.match_percentage === "number") {
-            const mp = Math.round(matchData.match_percentage);
-            const rel = matchData.relationship || "none";
-            if (mp < 35 || (rel !== "same_bit" && rel !== "evolved")) continue;
+        const userMsg = `SOURCE BIT:\nTitle: ${newBit.title}\nFull text: ${newBit.fullText}\n\n${candidateList}`;
 
-            const newMatch = {
-              id: uid(),
-              sourceId: newBit.id,
-              targetId: candidate.id,
-              confidence: mp / 100,
-              matchPercentage: mp,
-              relationship: rel,
-              reason: matchData.reason || "",
-              timestamp: Date.now(),
-            };
-            update('matches', (prev) => [...prev, newMatch]);
-            const s = stateRef.current;
-            saveVaultState({ topics: s.topics, matches: [...s.matches, newMatch], transcripts: s.transcripts, touchstones: s.touchstones }).catch(console.error);
-          }
-        } catch (pairErr) {
-          if (pairErr.name === "AbortError") return;
-          console.error(`[MatchPair] Error comparing with "${candidate.title}":`, pairErr.message);
+        const result = await callOllama(SYSTEM_HUNT_BATCH, userMsg, () => {}, selectedModel, debugMode ? addDebugEntry : null, signal);
+        const hits = Array.isArray(result) ? result : [result];
+
+        let matchCount = 0;
+        const strongMatchTargets = [];
+        for (const hit of hits) {
+          if (!hit || typeof hit.match_percentage !== 'number' || typeof hit.candidate !== 'number') continue;
+          const candIdx = hit.candidate - 1;
+          if (candIdx < 0 || candIdx >= candidates.length) continue;
+          const mp = Math.round(hit.match_percentage);
+          const rel = hit.relationship || 'none';
+          if (mp < 75 || (rel !== 'same_bit' && rel !== 'evolved')) continue;
+
+          update('matches', (prev) => [...prev, {
+            id: uid(),
+            sourceId: newBit.id,
+            targetId: candidates[candIdx].id,
+            confidence: mp / 100,
+            matchPercentage: mp,
+            relationship: rel,
+            reason: hit.reason || '',
+            timestamp: Date.now(),
+          }]);
+          matchCount++;
+          if (mp >= 85) strongMatchTargets.push({ targetId: candidates[candIdx].id, mp, rel });
+          console.log(`[MatchLive] "${newBit.title}" vs "${candidates[candIdx].title}": ${mp}% (${rel})`);
         }
+
+        // Immediate touchstone absorption
+        absorbIntoTouchstones(newBit, strongMatchTargets);
+
+        set('status', `Matched "${newBit.title}" — ${matchCount} match(es) from ${candidates.length} candidates`);
+      } catch (err) {
+        if (err.name === "AbortError") return;
+        console.error(`[MatchLive] Batch error for "${newBit.title}":`, err.message);
       }
     } catch (err) {
       if (err.name === "AbortError") return;
       console.error("Error matching bit live:", err);
     }
-  }, [addDebugEntry]);
+  }, [addDebugEntry, absorbIntoTouchstones]);
 
-  return { huntTouchstones, huntTranscript, matchBitLive };
+  /**
+   * Scan all matches for bits that are bit-matched (85%+ same_bit/evolved)
+   * to a touchstone member but not yet in that touchstone. Absorb them.
+   */
+  const absorbAllUnmatched = useCallback(() => {
+    const s = stateRef.current;
+    const ts = s.touchstones || {};
+    const allTouchstones = [...(ts.confirmed || []), ...(ts.possible || [])];
+    const touchstoneBitIds = new Set(allTouchstones.flatMap(t => t.bitIds));
+    const bitsById = new Map(s.topics.map(b => [b.id, b]));
+    let totalAbsorbed = 0;
+
+    for (const m of (s.matches || [])) {
+      const mp = m.matchPercentage || (m.confidence || 0) * 100;
+      if (mp < 85) continue;
+      const rel = m.relationship;
+      if (rel !== 'same_bit' && rel !== 'evolved') continue;
+
+      // Check both directions: if one end is in a touchstone and the other isn't
+      const srcInTs = touchstoneBitIds.has(m.sourceId);
+      const tgtInTs = touchstoneBitIds.has(m.targetId);
+
+      if (srcInTs && !tgtInTs) {
+        const bit = bitsById.get(m.targetId);
+        if (bit) {
+          absorbIntoTouchstones(bit, [{ targetId: m.sourceId, mp: Math.round(mp), rel }]);
+          touchstoneBitIds.add(m.targetId); // track so we don't double-absorb
+          totalAbsorbed++;
+        }
+      } else if (tgtInTs && !srcInTs) {
+        const bit = bitsById.get(m.sourceId);
+        if (bit) {
+          absorbIntoTouchstones(bit, [{ targetId: m.targetId, mp: Math.round(mp), rel }]);
+          touchstoneBitIds.add(m.sourceId);
+          totalAbsorbed++;
+        }
+      }
+    }
+
+    set('status', totalAbsorbed > 0
+      ? `Absorbed ${totalAbsorbed} bit(s) into touchstones`
+      : 'No unmatched bits to absorb — all strong matches already in touchstones');
+    return totalAbsorbed;
+  }, [absorbIntoTouchstones]);
+
+  return { huntTouchstones, huntTranscript, matchBitLive, absorbAllUnmatched };
 }

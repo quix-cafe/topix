@@ -5,7 +5,7 @@ import { validateAllBits } from "./utils/textContinuityValidator";
 import { TouchstonePanel } from "./components/TouchstonePanel";
 import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
 import { getDB, saveVaultState, loadVaultState, getDatabaseStats } from "./utils/database";
-import { EmbeddingStore, setEmbedPaused, isEmbedPaused } from "./utils/embeddings";
+import { EmbeddingStore, setEmbedPaused, isEmbedPaused, embedBatch, cosineSimilarity } from "./utils/embeddings";
 import { OpQueue } from "./utils/opQueue";
 import { NetworkGraph } from "./components/NetworkGraph";
 import { DebugPanel } from "./components/DebugPanel";
@@ -318,7 +318,7 @@ export default function ComedyParser() {
 
   // ── Hooks ──────────────────────────────────────────────────────
 
-  const { touchstoneNameCache, touchstoneNamingController } =
+  const { touchstoneNameCache, touchstoneNamingController, runDetection } =
     useTouchstoneDetection({ dispatch, stateRef }, { topics, matches, processing });
 
   const ctx = {
@@ -328,7 +328,7 @@ export default function ComedyParser() {
   };
 
   const { revalidateMatchesRef, debouncedRevalidate } = useMatchRevalidation(ctx);
-  const { huntTouchstones, huntTranscript, matchBitLive } = useHunting(ctx);
+  const { huntTouchstones, huntTranscript, matchBitLive, absorbAllUnmatched } = useHunting(ctx);
   matchBitLiveRef.current = matchBitLive;
 
   const bitOps = useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate);
@@ -390,7 +390,6 @@ export default function ComedyParser() {
 
   const onMergeTags = useCallback(async () => {
     const s = stateRef.current;
-    const BATCH_SIZE = 100;
 
     // Collect all tags with counts
     const tagCounts = new Map();
@@ -399,25 +398,57 @@ export default function ComedyParser() {
         tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
       }
     }
-    const allTags = [...tagCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const allTags = [...tagCounts.entries()];
     if (allTags.length === 0) { set('status', 'No tags to merge.'); return; }
 
     set('processing', true);
-    const allMerges = [];
-    const allDescriptions = [];
-
-    // Split into batches
-    const batches = [];
-    for (let i = 0; i < allTags.length; i += BATCH_SIZE) {
-      batches.push(allTags.slice(i, i + BATCH_SIZE));
-    }
 
     try {
-      // Pass 1: merge within each batch
-      for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i];
-        set('status', `Analyzing tags batch ${i + 1}/${batches.length} (${batch.length} tags)...`);
-        const tagList = batch.map(([tag, count]) => `${tag} (${count})`).join(", ");
+      // Step 1: Embed all unique tags for semantic clustering
+      const tagNames = allTags.map(([tag]) => tag);
+      set('status', `Embedding ${tagNames.length} tags for semantic clustering...`);
+      const vectors = await embedBatch(tagNames, s.embeddingModel || "mxbai-embed-large", ({ textsDone, textsTotal }) => {
+        set('status', `Embedding tags: ${textsDone}/${textsTotal}...`);
+      });
+
+      // Step 2: Cluster tags by cosine similarity (greedy single-linkage)
+      const SIM_THRESHOLD = 0.7;
+      const assigned = new Set();
+      const clusters = []; // Array of arrays of indices
+
+      for (let i = 0; i < tagNames.length; i++) {
+        if (assigned.has(i)) continue;
+        const cluster = [i];
+        assigned.add(i);
+        for (let j = i + 1; j < tagNames.length; j++) {
+          if (assigned.has(j)) continue;
+          // Check similarity to any member of this cluster
+          const sim = cluster.some(ci => cosineSimilarity(vectors[ci], vectors[j]) >= SIM_THRESHOLD);
+          if (sim) {
+            cluster.push(j);
+            assigned.add(j);
+          }
+        }
+        if (cluster.length >= 2) {
+          clusters.push(cluster);
+        }
+      }
+
+      if (clusters.length === 0) {
+        set('status', 'No semantically similar tags found — nothing to merge.');
+        set('processing', false);
+        return;
+      }
+
+      set('status', `Found ${clusters.length} tag clusters. Asking LLM to evaluate merges...`);
+
+      // Step 3: Send each cluster to the LLM for merge decisions
+      const allMerges = [];
+      for (let i = 0; i < clusters.length; i++) {
+        const cluster = clusters[i];
+        const clusterTags = cluster.map(idx => [tagNames[idx], tagCounts.get(tagNames[idx])]);
+        set('status', `Evaluating cluster ${i + 1}/${clusters.length} (${clusterTags.length} tags)...`);
+        const tagList = clusterTags.map(([tag, count]) => `${tag} (${count})`).join(", ");
         const result = await callOllama(
           SYSTEM_MERGE_TAGS,
           `Here are the tags with usage counts:\n${tagList}`,
@@ -425,86 +456,10 @@ export default function ComedyParser() {
           s.selectedModel,
           s.debugMode ? addDebugEntry : null,
           null,
-          { label: `merge-tags-batch-${i + 1}` }
+          { label: `merge-tags-cluster-${i + 1}` }
         );
         const merges = Array.isArray(result) ? result.filter((m) => m.merge && m.into) : [];
         allMerges.push(...merges);
-      }
-
-      // Apply batch merges to get the surviving tag list
-      const renameMap = new Map();
-      for (const op of allMerges) {
-        for (const oldTag of op.merge) {
-          if (oldTag !== op.into) renameMap.set(oldTag, op.into);
-        }
-      }
-
-      // Pass 2: cross-batch — if we had multiple batches, check survivors against each other
-      if (batches.length > 1) {
-        // Rebuild tag list after batch merges
-        const survivingTags = new Map();
-        for (const [tag, count] of allTags) {
-          const resolved = renameMap.get(tag) || tag;
-          survivingTags.set(resolved, (survivingTags.get(resolved) || 0) + count);
-        }
-        const crossList = [...survivingTags.entries()].sort((a, b) => b[1] - a[1]);
-
-        // Run cross-batch in batches too if still large
-        const crossBatches = [];
-        for (let i = 0; i < crossList.length; i += BATCH_SIZE) {
-          crossBatches.push(crossList.slice(i, i + BATCH_SIZE));
-        }
-        // But we also need overlap between batches to catch cross-batch dupes
-        // Strategy: sliding window with overlap
-        if (crossList.length > BATCH_SIZE) {
-          const OVERLAP = 15;
-          for (let i = 0; i < crossList.length; i += BATCH_SIZE - OVERLAP) {
-            const window = crossList.slice(i, i + BATCH_SIZE);
-            if (window.length < 5) break;
-            set('status', `Cross-checking tags (window ${Math.floor(i / (BATCH_SIZE - OVERLAP)) + 1}, ${window.length} tags)...`);
-            const tagList = window.map(([tag, count]) => `${tag} (${count})`).join(", ");
-            const result = await callOllama(
-              SYSTEM_MERGE_TAGS,
-              `Here are the tags with usage counts:\n${tagList}`,
-              () => {},
-              s.selectedModel,
-              s.debugMode ? addDebugEntry : null,
-              null,
-              { label: `merge-tags-cross-${i}` }
-            );
-            const merges = Array.isArray(result) ? result.filter((m) => m.merge && m.into) : [];
-            for (const op of merges) {
-              // Only add if this is a new merge not already captured
-              for (const oldTag of op.merge) {
-                if (oldTag !== op.into && !renameMap.has(oldTag)) {
-                  renameMap.set(oldTag, op.into);
-                  allMerges.push(op);
-                }
-              }
-            }
-          }
-        } else if (crossList.length > 1) {
-          set('status', `Cross-checking ${crossList.length} surviving tags...`);
-          const tagList = crossList.map(([tag, count]) => `${tag} (${count})`).join(", ");
-          const result = await callOllama(
-            SYSTEM_MERGE_TAGS,
-            `Here are the tags with usage counts:\n${tagList}`,
-            () => {},
-            s.selectedModel,
-            s.debugMode ? addDebugEntry : null,
-            null,
-            { label: "merge-tags-cross" }
-          );
-          const merges = Array.isArray(result) ? result.filter((m) => m.merge && m.into) : [];
-          for (const op of merges) {
-            for (const oldTag of op.merge) {
-              if (oldTag !== op.into && !renameMap.has(oldTag)) {
-                renameMap.set(oldTag, op.into);
-                allMerges.push(op);
-              }
-            }
-          }
-        }
       }
 
       if (allMerges.length === 0) {
@@ -513,14 +468,13 @@ export default function ComedyParser() {
         return;
       }
 
-      // Rebuild final rename map (resolving chains: a→b→c becomes a→c)
+      // Build final rename map (resolving chains: a→b→c becomes a→c)
       const finalMap = new Map();
       for (const op of allMerges) {
         for (const oldTag of op.merge) {
           if (oldTag !== op.into) finalMap.set(oldTag, op.into);
         }
       }
-      // Resolve chains
       for (const [from, to] of finalMap) {
         let resolved = to;
         let depth = 0;
@@ -662,7 +616,7 @@ export default function ComedyParser() {
 
         {/* Row 3: Tabs */}
         <div className="tab-row">
-          {["play", "transcripts", "bits", "touchstones", "notes", "errors", "analytics", "graph", "settings"].map((tab) => (
+          {["play", "transcripts", "bits", "touchstones", "notes", "analytics", "graph", "errors", "settings"].map((tab) => (
             <button
               key={tab}
               className={`tab-btn ${activeTab === tab ? "active" : ""}`}
@@ -770,6 +724,40 @@ export default function ComedyParser() {
           </div>
         )}
 
+        {/* ERRORS TAB */}
+        {activeTab === "errors" && (
+          <ValidationTab
+            topics={topics}
+            transcripts={transcripts}
+            touchstones={touchstones}
+            matches={matches}
+            filter={validationFilter}
+            onFilterChange={setValidationFilter}
+            onUpdateBitPosition={bitOps.handleBoundaryChange}
+            onGoToMix={(tr, bitId, gapInfo) => { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setMixGapInit(gapInfo || null); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
+            onSelectBit={setSelectedTopic}
+            approvedGaps={approvedGaps}
+            onApproveGap={handleApproveGap}
+            onRevalidateBits={(bitIds) => {
+              const s = stateRef.current;
+              revalidateMatchesRef.current?.(bitIds, s.topics, s.matches);
+            }}
+            onJoinBits={bitOps.handleJoinBits}
+            onReParseGap={bitMgmt.handleReParseGap}
+            onDeleteBit={bitMgmt.handleDeleteBit}
+            batchFixing={validationBatchFixing}
+            setBatchFixing={setValidationBatchFixing}
+            batchProgress={validationBatchProgress}
+            setBatchProgress={setValidationBatchProgress}
+            batchStopRef={validationBatchStopRef}
+            universalCorrections={state.universalCorrections || []}
+            onUpdateUniversalCorrections={(corrections) => {
+              set('universalCorrections', corrections);
+              saveVaultState({ topics, matches, transcripts, touchstones, universalCorrections: corrections }).catch(console.error);
+            }}
+          />
+        )}
+
         {/* TOUCHSTONES TAB */}
         {activeTab === "touchstones" && (
           <div>
@@ -809,10 +797,16 @@ export default function ComedyParser() {
               onCommuneTouchstone={communion.handleCommuneTouchstone}
               onSynthesizeTouchstone={communion.handleSynthesizeTouchstone}
               onMassTouchstoneCommunion={communion.handleMassTouchstoneCommunion}
+              onPruneTouchstone={communion.handlePruneTouchstone}
+              onMassPrune={communion.handleMassPrune}
+              onRecalcScores={communion.handleRecalcScores}
               onSaintInstance={tsHandlers.onSaintInstance}
+              onToggleCoreBit={tsHandlers.onToggleCoreBit}
               onRelateTouchstone={tsHandlers.onRelateTouchstone}
               onUnrelateTouchstone={tsHandlers.onUnrelateTouchstone}
               onAutoRelateAll={tsHandlers.onAutoRelateAll}
+              onRejectCoreless={tsHandlers.onRejectCoreless}
+              onRedetect={runDetection}
               notes={notes}
               onGoToNote={(note) => {
                 const tag = (note.tags || [])[0] || null;
@@ -820,6 +814,7 @@ export default function ComedyParser() {
                 setActiveTab("notes");
               }}
               universalCorrections={state.universalCorrections}
+              selectedModel={selectedModel}
             />
           </div>
         )}
@@ -841,9 +836,11 @@ export default function ComedyParser() {
             setSelectedTranscript={setSelectedTranscript}
             setSelectedTopic={setSelectedTopic}
             reParseTranscript={parsing.reParseTranscript}
+            onImportParsedJSON={transcriptOps.importParsedJSON}
             purgeTranscriptData={transcriptOps.purgeTranscriptData}
             removeTranscript={transcriptOps.removeTranscript}
             onHuntTranscript={huntTranscript}
+            onAbsorbUnmatched={absorbAllUnmatched}
             onJoinBits={bitOps.handleJoinBits}
             onSplitBit={bitOps.handleSplitBit}
             onTakeOverlap={bitOps.handleTakeOverlap}
@@ -864,40 +861,6 @@ export default function ComedyParser() {
             sortCol={state.transcriptSortCol}
             sortDir={state.transcriptSortDir}
             onSortChange={(col, dir) => dispatch({ type: 'MERGE', payload: { transcriptSortCol: col, transcriptSortDir: dir } })}
-          />
-        )}
-
-        {/* ERRORS TAB */}
-        {activeTab === "errors" && (
-          <ValidationTab
-            topics={topics}
-            transcripts={transcripts}
-            touchstones={touchstones}
-            matches={matches}
-            filter={validationFilter}
-            onFilterChange={setValidationFilter}
-            onUpdateBitPosition={bitOps.handleBoundaryChange}
-            onGoToMix={(tr, bitId, gapInfo) => { setMixTranscriptInit(tr); setMixBitInit(bitId || null); setMixGapInit(gapInfo || null); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
-            onSelectBit={setSelectedTopic}
-            approvedGaps={approvedGaps}
-            onApproveGap={handleApproveGap}
-            onRevalidateBits={(bitIds) => {
-              const s = stateRef.current;
-              revalidateMatchesRef.current?.(bitIds, s.topics, s.matches);
-            }}
-            onJoinBits={bitOps.handleJoinBits}
-            onReParseGap={bitMgmt.handleReParseGap}
-            onDeleteBit={bitMgmt.handleDeleteBit}
-            batchFixing={validationBatchFixing}
-            setBatchFixing={setValidationBatchFixing}
-            batchProgress={validationBatchProgress}
-            setBatchProgress={setValidationBatchProgress}
-            batchStopRef={validationBatchStopRef}
-            universalCorrections={state.universalCorrections || []}
-            onUpdateUniversalCorrections={(corrections) => {
-              set('universalCorrections', corrections);
-              saveVaultState({ topics, matches, transcripts, touchstones, universalCorrections: corrections }).catch(console.error);
-            }}
           />
         )}
 
@@ -1095,6 +1058,7 @@ export default function ComedyParser() {
         onRemoveFromTouchstone={tsHandlers.onRemoveFromTouchstone}
         onCreateTouchstone={transcriptOps.handleCreateTouchstoneFromBit}
         onAddToTouchstone={tsHandlers.onAddToTouchstone}
+        onRecalcBitConnections={communion.handleRecalcBitConnections}
       />
 
       {/* Mini audio player */}

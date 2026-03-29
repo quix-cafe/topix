@@ -33,6 +33,7 @@ export function DetailPanel({
   onDeleteBit,
   onApproveGap,
   onCreateTouchstone,
+  onRecalcBitConnections,
 }) {
   const [addToTouchstoneOpen, setAddToTouchstoneOpen] = useState(false);
   const [touchstoneSearch, setTouchstoneSearch] = useState("");
@@ -518,8 +519,23 @@ export function DetailPanel({
 
       {getMatchesForTopic(selectedTopic.id).length > 0 && (
         <div>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
-            Connections
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: 1 }}>
+              Connections
+            </div>
+            {onRecalcBitConnections && (
+              <button
+                onClick={() => onRecalcBitConnections(selectedTopic.id)}
+                title="Recalculate match scores using text similarity"
+                style={{
+                  background: "#ffa94d12", border: "1px solid #ffa94d44", color: "#ffa94d",
+                  borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer",
+                  fontWeight: 600,
+                }}
+              >
+                Recalc
+              </button>
+            )}
           </div>
           {getMatchesForTopic(selectedTopic.id).map((m) => (
             <div

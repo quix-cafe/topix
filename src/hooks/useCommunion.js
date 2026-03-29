@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { callOllama } from "../utils/ollama";
 import { SYSTEM_MATCH_PAIR, SYSTEM_TOUCHSTONE_COMMUNE, SYSTEM_SYNTHESIZE_TOUCHSTONE } from "../utils/prompts";
 import { saveVaultState } from "../utils/database";
+import { pruneWeakBits, recalcMatchScores, rebuildMatchInfo } from "../utils/touchstoneDetector";
 
 export function useCommunion(ctx) {
   const { dispatch, stateRef, addDebugEntry, setShouldStop } = ctx;
@@ -376,5 +377,164 @@ export function useCommunion(ctx) {
     set('status', `Mass touchstone communion complete: ${eligible.length} touchstones, ${totalBlessed} blessed, ${totalDamned} damned, ${totalRemoved} removed.`);
   }, [handleCommuneTouchstone]);
 
-  return { handleCommuneBit, handleMassCommunion, handleCommuneTouchstone, handleSynthesizeTouchstone, handleMassTouchstoneCommunion };
+  const handlePruneTouchstone = useCallback((touchstoneId) => {
+    const s = stateRef.current;
+    const allTs = [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || []), ...(s.touchstones.rejected || [])];
+    const ts = allTs.find(t => t.id === touchstoneId);
+    if (!ts) return;
+
+    // Step 1: Recalc match scores for this touchstone's bits (caps inflated LLM scores)
+    const bitIdSet = new Set(ts.bitIds);
+    const touchstoneMatches = s.matches.filter(m => bitIdSet.has(m.sourceId) && bitIdSet.has(m.targetId));
+    const otherMatches = s.matches.filter(m => !(bitIdSet.has(m.sourceId) && bitIdSet.has(m.targetId)));
+    const { updated: recalcedMatches, stats: recalcStats } = recalcMatchScores(touchstoneMatches, s.topics);
+    const updatedMatches = [...otherMatches, ...recalcedMatches];
+
+    // Step 2: Rebuild touchstone matchInfo from recalced matches
+    const rebuiltTs = rebuildMatchInfo(ts, recalcedMatches);
+
+    // Step 3: Prune weak bits using corrected match data
+    const { pruned, removed, details } = pruneWeakBits(rebuiltTs, updatedMatches, s.topics);
+
+    for (const d of details) {
+      console.log(`[Prune] Removed "${d.title}": anchorSim=${(d.anchorSim * 100).toFixed(0)}%, avgSim=${(d.avgSim * 100).toFixed(0)}%, neighbors=${d.neighbors}, threshold=${(d.threshold * 100).toFixed(0)}%`);
+    }
+
+    // Step 4: Rebuild matchInfo again on the pruned result
+    const remainingBitIds = new Set(pruned.bitIds);
+    const finalTsMatches = updatedMatches.filter(m => remainingBitIds.has(m.sourceId) && remainingBitIds.has(m.targetId));
+    const finalTs = rebuildMatchInfo(pruned, finalTsMatches);
+
+    const curTouchstones = stateRef.current.touchstones;
+    const applyUpdate = (list) => list.map(t => t.id === touchstoneId ? finalTs : t).filter(Boolean);
+    const updatedTouchstones = {
+      confirmed: applyUpdate(curTouchstones.confirmed || []),
+      possible: applyUpdate(curTouchstones.possible || []),
+      rejected: applyUpdate(curTouchstones.rejected || []),
+    };
+
+    dispatch({ type: 'MERGE', payload: { touchstones: updatedTouchstones, matches: updatedMatches } });
+
+    const s2 = stateRef.current;
+    saveVaultState({ topics: s2.topics, matches: updatedMatches, transcripts: s2.transcripts, touchstones: updatedTouchstones }).catch(console.error);
+
+    const scoreParts = [];
+    if (recalcStats.capped > 0) scoreParts.push(`${recalcStats.capped} scores capped`);
+    if (recalcStats.downgraded > 0) scoreParts.push(`${recalcStats.downgraded} downgraded`);
+    if (recalcStats.removed > 0) scoreParts.push(`${recalcStats.removed} matches removed`);
+    const prunePart = removed.length > 0 ? `removed ${removed.length} bit(s)` : 'no bits pruned';
+    set('status', `"${ts.name}": ${prunePart}${scoreParts.length ? `, ${scoreParts.join(', ')}` : ''}.`);
+    return { removed: removed.length };
+  }, []);
+
+  const handleMassPrune = useCallback(() => {
+    const s = stateRef.current;
+    const categories = ['confirmed', 'possible', 'rejected'];
+    let totalRemoved = 0, totalPruned = 0, totalCapped = 0;
+
+    let currentMatches = [...s.matches];
+    const updatedTouchstones = { ...s.touchstones };
+
+    for (const cat of categories) {
+      updatedTouchstones[cat] = (s.touchstones[cat] || []).map(ts => {
+        const bitIdSet = new Set(ts.bitIds);
+        const tsMatches = currentMatches.filter(m => bitIdSet.has(m.sourceId) && bitIdSet.has(m.targetId));
+        const otherMatches = currentMatches.filter(m => !(bitIdSet.has(m.sourceId) && bitIdSet.has(m.targetId)));
+        const { updated: recalced, stats } = recalcMatchScores(tsMatches, s.topics);
+        currentMatches = [...otherMatches, ...recalced];
+        totalCapped += stats.capped;
+
+        const rebuilt = rebuildMatchInfo(ts, recalced);
+        const { pruned, removed, details } = pruneWeakBits(rebuilt, currentMatches, s.topics);
+        if (removed.length > 0) {
+          totalRemoved += removed.length;
+          totalPruned++;
+          for (const d of details) {
+            console.log(`[MassPrune] "${ts.name}" → removed "${d.title}": anchorSim=${(d.anchorSim * 100).toFixed(0)}%, avgSim=${(d.avgSim * 100).toFixed(0)}%`);
+          }
+        }
+        const remainingIds = new Set(pruned.bitIds);
+        const finalMatches = currentMatches.filter(m => remainingIds.has(m.sourceId) && remainingIds.has(m.targetId));
+        return rebuildMatchInfo(pruned, finalMatches);
+      }).filter(Boolean);
+    }
+
+    if (totalRemoved === 0 && totalCapped === 0) {
+      set('status', 'All touchstones well-connected — nothing to prune or recalc.');
+      return;
+    }
+
+    dispatch({ type: 'MERGE', payload: { touchstones: updatedTouchstones, matches: currentMatches } });
+    const s2 = stateRef.current;
+    saveVaultState({ topics: s2.topics, matches: currentMatches, transcripts: s2.transcripts, touchstones: updatedTouchstones }).catch(console.error);
+    set('status', `Mass prune: ${totalPruned} touchstone(s) pruned (${totalRemoved} bits removed), ${totalCapped} match scores recalculated.`);
+  }, []);
+
+  const handleRecalcScores = useCallback(async () => {
+    const s = stateRef.current;
+    if (s.matches.length === 0) {
+      set('status', 'No matches to recalculate.');
+      return;
+    }
+
+    set('status', `Recalculating ${s.matches.length} match scores using text similarity...`);
+    const { updated, stats } = recalcMatchScores(s.matches, s.topics);
+
+    console.log(`[Recalc] ${stats.capped} capped, ${stats.downgraded} downgraded, ${stats.removed} removed, ${stats.unchanged} unchanged`);
+
+    // Also rebuild matchInfo on all touchstones
+    const rebuildAll = (list) => list.map(ts => rebuildMatchInfo(ts, updated));
+    const updatedTouchstones = {
+      confirmed: rebuildAll(s.touchstones.confirmed || []),
+      possible: rebuildAll(s.touchstones.possible || []),
+      rejected: rebuildAll(s.touchstones.rejected || []),
+    };
+
+    dispatch({ type: 'MERGE', payload: { matches: updated, touchstones: updatedTouchstones } });
+    const s2 = stateRef.current;
+    await saveVaultState({ topics: s2.topics, matches: updated, transcripts: s2.transcripts, touchstones: updatedTouchstones }).catch(console.error);
+
+    const parts = [];
+    if (stats.capped > 0) parts.push(`${stats.capped} capped`);
+    if (stats.downgraded > 0) parts.push(`${stats.downgraded} downgraded`);
+    if (stats.removed > 0) parts.push(`${stats.removed} removed`);
+    if (stats.unchanged > 0) parts.push(`${stats.unchanged} unchanged`);
+    set('status', `Recalculated match scores: ${parts.join(', ')}.`);
+  }, []);
+
+  const handleRecalcBitConnections = useCallback(async (bitId) => {
+    const s = stateRef.current;
+    const bitMatches = s.matches.filter(m => m.sourceId === bitId || m.targetId === bitId);
+    const otherMatches = s.matches.filter(m => m.sourceId !== bitId && m.targetId !== bitId);
+    if (bitMatches.length === 0) {
+      set('status', 'No connections to recalculate.');
+      return;
+    }
+
+    const { updated, stats } = recalcMatchScores(bitMatches, s.topics);
+    const newMatches = [...otherMatches, ...updated];
+
+    // Rebuild matchInfo on touchstones that contain this bit
+    const allTs = [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || []), ...(s.touchstones.rejected || [])];
+    const affectedTsIds = new Set(allTs.filter(ts => ts.bitIds.includes(bitId)).map(ts => ts.id));
+    const rebuildIfAffected = (list) => list.map(ts => affectedTsIds.has(ts.id) ? rebuildMatchInfo(ts, newMatches) : ts);
+    const updatedTouchstones = {
+      confirmed: rebuildIfAffected(s.touchstones.confirmed || []),
+      possible: rebuildIfAffected(s.touchstones.possible || []),
+      rejected: rebuildIfAffected(s.touchstones.rejected || []),
+    };
+
+    dispatch({ type: 'MERGE', payload: { matches: newMatches, touchstones: updatedTouchstones } });
+    const s2 = stateRef.current;
+    await saveVaultState({ topics: s2.topics, matches: newMatches, transcripts: s2.transcripts, touchstones: updatedTouchstones }).catch(console.error);
+
+    const parts = [];
+    if (stats.capped > 0) parts.push(`${stats.capped} capped`);
+    if (stats.downgraded > 0) parts.push(`${stats.downgraded} downgraded`);
+    if (stats.removed > 0) parts.push(`${stats.removed} removed`);
+    if (stats.unchanged > 0) parts.push(`${stats.unchanged} unchanged`);
+    set('status', `Recalculated ${bitMatches.length} connections: ${parts.join(', ')}.`);
+  }, []);
+
+  return { handleCommuneBit, handleMassCommunion, handleCommuneTouchstone, handleSynthesizeTouchstone, handleMassTouchstoneCommunion, handlePruneTouchstone, handleMassPrune, handleRecalcScores, handleRecalcBitConnections };
 }

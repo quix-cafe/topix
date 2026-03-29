@@ -77,7 +77,7 @@ export async function runHuntBatches({
         const rel = hit.relationship || 'none';
         // Only store same_bit and evolved — related/callback don't form touchstones
         // 85% threshold: must be clearly the same joke, not just same topic
-        if (mp < 85 || (rel !== 'same_bit' && rel !== 'evolved')) continue;
+        if (mp < 75 || (rel !== 'same_bit' && rel !== 'evolved')) continue;
 
         const matchDetail = {
           sourceTitle: source.title,

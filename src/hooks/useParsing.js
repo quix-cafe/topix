@@ -1,8 +1,8 @@
 import { useCallback } from "react";
 import { callOllama, callOllamaStream, calculateCharPosition, uid } from "../utils/ollama";
 import { findTextPosition } from "../utils/textMatcher";
-import { SYSTEM_PARSE_V2 } from "../utils/prompts";
-import { saveVaultState, saveSingleTopic } from "../utils/database";
+import { SYSTEM_PARSE_V3 } from "../utils/prompts";
+import { saveSingleTopic } from "../utils/database";
 import { absorbOrMerge } from "../utils/autoDedup";
 import { runParseLoop } from "../utils/parseLoop";
 
@@ -41,7 +41,7 @@ export function useParsing(ctx, matchBitLiveRef) {
     const sessionController = controller || new AbortController();
     const parsePromise = new Promise((resolve) => {
       callOllamaStream(
-        SYSTEM_PARSE_V2,
+        SYSTEM_PARSE_V3,
         `Parse this comedy transcript:\n\n${textToProcess}`,
         {
           onChunk: (fullAccumulatedText) => {
@@ -102,7 +102,7 @@ export function useParsing(ctx, matchBitLiveRef) {
             saveSingleTopic(enhancedBit).catch((err) => console.error("[DB] Immediate save failed:", err));
 
             if (isIncomplete && enhancedBit.fullText) {
-              callOllama(SYSTEM_PARSE_V2, `Parse this comedy transcript excerpt:\n\n${enhancedBit.fullText}`, () => {}, selectedModel, debugMode ? addDebugEntry : null)
+              callOllama(SYSTEM_PARSE_V3, `Parse this comedy transcript excerpt:\n\n${enhancedBit.fullText}`, () => {}, selectedModel, debugMode ? addDebugEntry : null)
                 .then((result) => {
                   const parsed = Array.isArray(result) ? result[0] : result;
                   if (parsed) {
@@ -178,9 +178,7 @@ export function useParsing(ctx, matchBitLiveRef) {
                     } else {
                       update('topics', (prev) => [...prev, enhancedBit]);
                     }
-                    const s2 = stateRef.current;
-                    saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }).catch(console.error);
-                    if (dedupResult.action === "none" && s2.topics.length > 0) {
+                    if (dedupResult.action === "none" && stateRef.current.topics.length > 0) {
                       matchBitLive?.(enhancedBit, s2.topics, sessionController.signal).catch((err) => { if (err.name !== "AbortError") console.error("Live match error:", err); });
                     }
                   }).catch((err) => {
@@ -248,8 +246,6 @@ export function useParsing(ctx, matchBitLiveRef) {
           findTextPosition,
           onFreezeRollback: (lastBit) => {
             update('topics', prev => prev.filter(t => t.fullText !== lastBit.fullText));
-            const s = stateRef.current;
-            saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }).catch(console.error);
           },
           selectedModel,
           logPrefix: "Parse",
@@ -289,14 +285,30 @@ export function useParsing(ctx, matchBitLiveRef) {
     const selectedModel = stateRef.current.selectedModel;
 
     try {
+      // Clear existing bits, their matches, and stale references from touchstones
+      const existingBitIds = new Set(stateRef.current.topics.filter(t => t.sourceFile === tr.name || t.transcriptId === tr.id).map(t => t.id));
+      if (existingBitIds.size > 0) {
+        update('topics', prev => prev.filter(t => !existingBitIds.has(t.id)));
+        update('matches', prev => prev.filter(m => !existingBitIds.has(m.sourceId) && !existingBitIds.has(m.targetId)));
+        // Remove stale bit IDs from touchstones so absorption/overlap detection works with new bits
+        update('touchstones', prev => {
+          const clean = list => (list || []).map(ts => {
+            const staleBits = ts.bitIds.filter(id => existingBitIds.has(id));
+            if (staleBits.length === 0) return ts;
+            return {
+              ...ts,
+              bitIds: ts.bitIds.filter(id => !existingBitIds.has(id)),
+              instances: ts.instances.filter(i => !existingBitIds.has(i.bitId)),
+              frequency: ts.instances.filter(i => !existingBitIds.has(i.bitId)).length,
+            };
+          });
+          return { confirmed: clean(prev.confirmed), possible: clean(prev.possible), rejected: prev.rejected || [] };
+        });
+      }
+
       set('status', `Re-parsing "${tr.name}" with ${selectedModel}...`);
       const originalText = tr.text.replace(/\n/g, " ");
       const coveredRanges = [];
-      for (const bit of stateRef.current.topics) {
-        if (bit.sourceFile === tr.name && bit.textPosition && bit.textPosition.endChar > bit.textPosition.startChar) {
-          coveredRanges.push({ startChar: bit.textPosition.startChar, endChar: bit.textPosition.endChar });
-        }
-      }
 
       const { foundBitTexts, coveragePercent, passes } = await runParseLoop({
         transcript: tr, originalText, coveredRanges, processRemainingText, controller,
@@ -306,8 +318,6 @@ export function useParsing(ctx, matchBitLiveRef) {
         trackFailedBits: false, trackSeenHashes: false,
         onFreezeRollback: (lastBit) => {
           update('topics', prev => prev.filter(t => t.fullText !== lastBit.fullText));
-          const s = stateRef.current;
-          saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }).catch(console.error);
         },
         selectedModel,
         logPrefix: "Re-parse",

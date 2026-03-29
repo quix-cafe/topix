@@ -6,11 +6,12 @@ import {
   tryParsePartialJSON,
   tryParsePartialBits,
   extractCompleteJsonObjects,
+  extractCompleteJsonObjectsFrom,
   extractRawJsonObjects,
 } from "./jsonParser.js";
 
 // Re-export from extracted modules for backward compatibility
-export { tryParsePartialJSON, tryParsePartialBits, extractCompleteJsonObjects, extractRawJsonObjects } from "./jsonParser.js";
+export { tryParsePartialJSON, tryParsePartialBits, extractCompleteJsonObjects, extractCompleteJsonObjectsFrom, extractRawJsonObjects } from "./jsonParser.js";
 export { calculateCharPosition, extractTextByPosition, adjustBoundary, findWordBoundary, getLineColumn, getLineBoundaries } from "./positionTracker.js";
 
 // ─── Passthru support (Claude / Gemini via web UI automation) ────────
@@ -106,6 +107,8 @@ const _genQueue = [];
 let _genRunning = false;
 let _genActive = null; // { label, startedAt } for the currently running item
 const _genListeners = new Set();
+let _consecutiveHighCount = 0; // Fairness: after 3 consecutive high-priority tasks, let a normal one through
+const _FAIRNESS_THRESHOLD = 3;
 
 /** Subscribe to queue state changes. Returns unsubscribe function. */
 export function onQueueChange(fn) {
@@ -156,7 +159,19 @@ async function _drainGenQueue() {
   if (_genRunning || _genQueue.length === 0) return;
   _genRunning = true;
   while (_genQueue.length > 0) {
-    const { fn, resolve, reject, label } = _genQueue.shift();
+    // Fairness: after N consecutive high-priority tasks, let a normal-priority task through
+    let pickIdx = 0;
+    if (_consecutiveHighCount >= _FAIRNESS_THRESHOLD) {
+      const normalIdx = _genQueue.findIndex(q => q.priority !== "high");
+      if (normalIdx !== -1) pickIdx = normalIdx;
+    }
+    const [item] = _genQueue.splice(pickIdx, 1);
+    const { fn, resolve, reject, label, priority } = item;
+    if (priority === "high") {
+      _consecutiveHighCount++;
+    } else {
+      _consecutiveHighCount = 0;
+    }
     _genActive = { label, startedAt: Date.now() };
     _notifyListeners();
     try {
@@ -282,7 +297,7 @@ export async function getAvailableModels() {
 }
 
 // ─── Non-streaming call with retry ──────────────────────────────────
-async function callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal) {
+async function callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal, ollamaOptions = {}, returnRawText = false) {
   debugCallback?.({ type: "prompt", system, userMsg, model });
 
   // Route through passthru for Claude/Gemini
@@ -335,7 +350,7 @@ async function callOllamaOnce(system, userMsg, onStatus, model, debugCallback, e
       messages,
       stream: false,
       think: false,
-      options: { num_predict: 8192, num_ctx: 16384 },
+      options: { num_predict: 8192, num_ctx: 16384, ...ollamaOptions },
     }),
     signal: controller.signal,
   });
@@ -356,6 +371,9 @@ async function callOllamaOnce(system, userMsg, onStatus, model, debugCallback, e
   text = text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
   // Strip markdown fences
   text = text.replace(/```json\s?|```/g, "").trim();
+
+  // Return cleaned text without JSON parsing when requested
+  if (returnRawText) return text;
 
   // Try multiple parsing strategies
   // 1. Strict JSON parse
@@ -379,12 +397,12 @@ async function callOllamaOnce(system, userMsg, onStatus, model, debugCallback, e
   }
 }
 
-export async function callOllama(system, userMsg, onStatus, model = "qwen3.5:9b", debugCallback = null, externalSignal = null, { label = "chat", priority = "normal" } = {}) {
+export async function callOllama(system, userMsg, onStatus, model = "qwen3.5:9b", debugCallback = null, externalSignal = null, { label = "chat", priority = "normal", ollamaOptions = {}, rawText: returnRawText = false } = {}) {
   return enqueueGeneration(async () => {
     onStatus?.("Calling " + model + " via Ollama...");
 
     try {
-      return await callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal);
+      return await callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal, ollamaOptions, returnRawText);
     } catch (e) {
       // Don't retry user-initiated aborts
       if (e.name === "AbortError") throw e;
@@ -398,7 +416,7 @@ export async function callOllama(system, userMsg, onStatus, model = "qwen3.5:9b"
         console.warn(`[callOllama] Retrying after transient error: ${e.message}`);
         onStatus?.("Retrying " + model + "...");
         await new Promise(r => setTimeout(r, 2000));
-        return await callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal);
+        return await callOllamaOnce(system, userMsg, onStatus, model, debugCallback, externalSignal, ollamaOptions, returnRawText);
       }
       throw e;
     }
@@ -550,6 +568,8 @@ async function _callOllamaStreamInner(system, userMsg, callbacks = {}, model = "
     let fullText = "";
     let buffer = "";
     let timedOut = false;
+    let parseCursor = 0;  // Tracks how far we've successfully parsed in fullText
+    const PARSE_LOOKBACK = 200;  // Chars to re-scan before cursor for straddling objects
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -611,11 +631,14 @@ async function _callOllamaStreamInner(system, userMsg, callbacks = {}, model = "
 
           if (allBits.length > 0) {
             console.log("[Streaming] Total bits from frozen stream:", allBits.length);
-            allBits.forEach((bit, idx) => {
-              if (idx >= finalResult.length) {
+            allBits.forEach((bit) => {
+              const isDuplicate = finalResult.some(existing =>
+                existing && existing.fullText === bit.fullText
+              );
+              if (!isDuplicate) {
                 bitCount++;
                 onBitFound?.(bit, bitCount);
-                finalResult[idx] = bit;
+                finalResult.push(bit);
                 console.log("[Streaming] Frozen stream bit:", bit.title, `(${bit.fullText.length} chars)`);
               }
             });
@@ -664,19 +687,29 @@ async function _callOllamaStreamInner(system, userMsg, callbacks = {}, model = "
               onChunk?.(fullText);
 
               // Extract complete JSON objects from stream in real-time
-              const completeObjects = extractCompleteJsonObjects(fullText);
+              // Use cursor to avoid re-scanning already-parsed text (O(N) instead of O(N²))
+              const scanStart = Math.max(0, parseCursor - PARSE_LOOKBACK);
+              const { objects: newObjects, endPos } = extractCompleteJsonObjectsFrom(fullText, scanStart);
+
+              // Advance cursor past the last complete object found
+              if (endPos > parseCursor) {
+                parseCursor = endPos;
+              }
 
               // Emit any newly found bits
-              if (completeObjects && completeObjects.length > 0) {
-                const lastEmittedLength = finalResult.length;
-                completeObjects.forEach((bit, idx) => {
-                  if (idx >= lastEmittedLength) {
+              if (newObjects.length > 0) {
+                for (const bit of newObjects) {
+                  // Deduplicate: only emit bits we haven't already emitted
+                  const isDuplicate = finalResult.some(existing =>
+                    existing && existing.fullText === bit.fullText
+                  );
+                  if (!isDuplicate) {
                     bitCount++;
                     onBitFound?.(bit, bitCount);
-                    finalResult[idx] = bit;
+                    finalResult.push(bit);
                     console.log("[Stream] Found bit #" + bitCount + " (real-time):", bit.title);
                   }
-                });
+                }
               }
             }
           } catch (e) {

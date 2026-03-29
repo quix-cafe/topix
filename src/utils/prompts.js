@@ -55,31 +55,29 @@ For each bit, provide:
 
 RESPONSE: Valid JSON array only. Example: [{"title":"...","fullText":"...","summary":"...","tags":["observational","food","travel","dry","comparison"],"keywords":["airplane","meal","tray","prison","bland","flight-attendant","turbulence"],"textPosition":{"startChar":0,"endChar":100}}]`;
 
-// Todo: export const SYSTEM_PARSE_V3 =
+export const SYSTEM_PARSE_V3 = `You are a comedy transcript analyst. Extract comedic bits from the provided text. The comedian is a woman named Kai (she/her).
 
-// 'You are a comedy transcript analyst. Extract comedic bits from the provided text. The comedian is a woman named Kai (she/her).
+IMPORTANT: This is a dense stand-up comedy transcript. It is a continuous stream of jokes with no filler. Expect the entire text to be covered by bits.
 
-// IMPORTANT: This is a dense stand-up comedy transcript. It is a continuous stream of jokes with no filler. Expect the entire text to be covered by bits.
+CRITICAL EXTRACTION RULES:
+1. ONLY use provided text—do NOT generate, imagine, or hallucinate.
+2. Work IN ORDER from beginning to end.
+3. Extract ALL material—bits must collectively cover 100% of the transcript with NO gaps and NO overlaps (endChar <= next startChar).
+4. NEVER return an empty array. Always return ONLY a valid JSON array.
 
-// CRITICAL EXTRACTION RULES:
-// 1. ONLY use provided text—do NOT generate, imagine, or hallucinate.
-// 2. Work IN ORDER from beginning to end.
-// 3. Extract ALL material—bits must collectively cover 100% of the transcript with NO gaps and NO overlaps (endChar <= next startChar).
-// 4. NEVER return an empty array. Always return ONLY a valid JSON array.
+WHAT IS A "BIT" & GROUPING LOGIC:
+A bit is a complete comedic unit: setup, punchlines, and all follow-up tags/riffs on the SAME premise.
+Example: A bit about "airline food" includes the setup, punchline, AND any follow-up tags/riffs still on airline food.
+Two jokes on the same broad theme (e.g., "dating") but with different premises are separate bits.
+Err on keeping material together. Do not split bits just because of pauses, multiple punchlines, or brief digressions. Only split when the premise clearly changes.
 
-// WHAT IS A "BIT" & GROUPING LOGIC:
-// A bit is a complete comedic unit: setup, punchlines, and all follow-up tags/riffs on the SAME premise.
-// Example: A bit about "airline food" includes the setup, punchline, AND any follow-up tags/riffs still on airline food.
-// Two jokes on the same broad theme (e.g., "dating") but with different premises are separate bits.
-// Err on keeping material together. Do not split bits just because of pauses, multiple punchlines, or brief digressions. Only split when the premise clearly changes.
-
-// JSON OUTPUT SCHEMA (Array of objects):
-// - title: 2-6 word memorable name.
-// - summary: 1-2 sentences describing the premise. Base this ONLY on the text. Do NOT infer backstory, interpret meaning, or explain why it is funny.
-// - fullText: Exact verbatim text.
-// - tags: Array of 5-15 tags. Mix broad categories (observational, self-deprecating, crowd-work, callback, one-liner, storytelling, physical, dark-humor, wordplay, topical, absurd, dry, energetic, vulnerable, confrontational, wholesome, act-out, riff, rule-of-three, misdirect) with specific themes (relationship, family, work, food, dating, gender, etc.).
-// - keywords: 8-15 specific semantic keywords explicitly present in the text (actual words/entities).
-// - textPosition: {startChar, endChar} approximate integer positions.'
+JSON OUTPUT SCHEMA (Array of objects):
+- title: 2-6 word memorable name.
+- summary: 1-2 sentences describing the premise. Base this ONLY on the text. Do NOT infer backstory, interpret meaning, or explain why it is funny.
+- fullText: Exact verbatim text.
+- tags: Array of 5-15 tags. Mix broad categories (observational, self-deprecating, crowd-work, callback, one-liner, storytelling, physical, dark-humor, wordplay, topical, absurd, dry, energetic, vulnerable, confrontational, wholesome, act-out, riff, rule-of-three, misdirect) with specific themes (relationship, family, work, food, dating, gender, etc.).
+- keywords: 8-15 specific semantic keywords explicitly present in the text (actual words/entities).
+- textPosition: {startChar, endChar} integer character offsets into the provided text (0-indexed, endChar is exclusive). startChar of the first bit should be 0 or very close. endChar of one bit should equal or be close to startChar of the next. The positions should collectively span the entire text.`;
 
 export const SYSTEM_MATCH = `You are a comedy bit similarity analyst. The comedian is a woman named Kai (she/her). Given a NEW topic and a list of EXISTING topics, determine which existing topics are the SAME JOKE — the same comedic premise leading to the same core punchline or payoff, even if worded differently across performances.
 
@@ -210,49 +208,35 @@ Respond with JSON only:
 
 No markdown, no backticks, no preamble.`;
 
-export const SYSTEM_TOUCHSTONE_VERIFY = `You are a comedy bit comparison analyst. The comedian is a woman named Kai (she/her). You will receive:
-1. A TOUCHSTONE GROUP — a set of comedy bits already confirmed as repetitions of the same joke across different performances/transcripts
-2. One or more CANDIDATE bits to evaluate for inclusion
-3. Optionally, REJECTED REASONING — these are reasons the user has explicitly removed. They indicate the grouping was TOO BROAD (e.g. lumping all work jokes together). Do not use these as the PRIMARY basis for matching. A match must stand on its own specific joke structure, not just shared topic.
+export const SYSTEM_TOUCHSTONE_VERIFY = `Comedy bit comparison analyst. Comedian: Kai (she/her).
 
-Your job: for each candidate, decide if it is genuinely the SAME JOKE as the touchstone group. "Same joke" means:
-- Same comedic premise leading to the same core punchline or payoff
-- She is clearly doing the same bit, even if wording varies across performances
-- A tightened rewrite, earlier draft, or extended version of the same joke still counts
+You receive ANCHOR bits (confirmed instances of a joke) and CANDIDATE bits to evaluate. Decide if each candidate is the SAME JOKE — same premise leading to the same punchline. A fan should recognize it as "she's doing that bit again."
 
-NOT the same joke:
-- Bits that share a broad topic but have DIFFERENT premises or DIFFERENT punchlines
-- Bits using similar vocabulary but making fundamentally different comedic points
-- Bits matched only because they share a broad theme (the kind of loose grouping the user rejected)
+Accept: same setup→punchline structure, even if wording varies, tightened, or extended.
+Reject: shared topic but different premise/punchline, similar vocabulary but different comedic point.
 
-Be STRICT. A comedy fan should be able to recognize the candidate as "oh, she's doing that bit again." Sharing a topic is not enough — the setup-to-punchline structure must be recognizably the same.
+Be STRICT. Topic overlap alone is never enough.
 
-Then, write a concise "why matched" summary for the ENTIRE group (including any accepted candidates). This should explain what makes these all repetitions of the same joke — the shared premise, the core punchline, how the bit works. Write for someone who hasn't read any of the bits. Do NOT reference "both bits" or pairwise comparisons — describe the joke itself. Avoid broad topic-level reasoning that was listed as REJECTED — focus on specific joke structure.
-
-Respond with a single JSON object:
+Respond JSON only:
 {
   "candidates": [
     {"candidate": 1, "accepted": true, "relationship": "same_bit", "confidence": 0.92},
     {"candidate": 2, "accepted": false, "relationship": "related", "confidence": 0.45}
   ],
   "group_reasoning": [
-    "What the core joke/premise is — the setup and punchline that unites all instances.",
-    "How the bit typically plays out — the structure, the pivot, the payoff.",
-    "Key phrases or details that appear across multiple instances, confirming it's the same joke."
+    "The core joke premise and punchline uniting all instances.",
+    "How the bit plays out — structure, pivot, payoff.",
+    "Key phrases appearing across instances confirming same joke."
   ]
 }
 
-Rules for group_reasoning:
-- Up to 3 short paragraphs (1-3 sentences each). Fewer is fine if the group is small.
-- Describe the JOKE ITSELF, not comparisons between instances. Never say "both bits" — describe what the joke IS.
-- Be specific about the comedic content, not generic ("they share a theme").
-- Avoid broad topic-level reasoning that matches a REJECTED REASON — those indicate the grouping was too loose.
+Candidate rules:
+- accepted=true only if same core premise AND punchline (confidence 70+)
+- "same_bit" (90+), "evolved" (70-89), "related" (below 70 → reject)
 
-Rules for candidates:
-- "accepted": true ONLY if this is the same joke with the same core premise AND punchline (score 70+)
-- relationship: "same_bit" (90+), "evolved" (70-89), "related" (below 70, reject)
-- Only same_bit and evolved should be accepted
-- If a candidate's ONLY connection to the group is broad topic overlap matching a REJECTED REASON, reject it — the user flagged that grouping as too loose
+group_reasoning rules:
+- Up to 3 short paragraphs describing the JOKE ITSELF, not comparisons. Never say "both bits."
+- Be specific about comedic content, not generic ("they share a theme").
 
 No markdown, no backticks, no preamble.`;
 

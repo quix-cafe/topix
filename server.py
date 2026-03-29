@@ -23,8 +23,6 @@ API:
         {"model": "claude" | "gemini", "messages": [{"role": "user", "content": "Hello"}]}
 """
 
-# Todo: if possible, perform the prompt in a 'temporary chat' in gemini, found by clicking the hamburger menu, and then clicking the button with aria-label="Temporary chat". Then select the correct model, then paste and send the prompt.
-
 import argparse
 import asyncio
 import logging
@@ -179,7 +177,7 @@ async def _human_type(page: Page, text: str):
         await page.keyboard.insert_text(chunk)
         i += chunk_size
         if i < len(text):
-            await page.wait_for_timeout(random.randint(50, 200))
+            await page.wait_for_timeout(random.randint(30, 100))
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +203,7 @@ async def _get_persistent_page(provider: str, url: str) -> tuple[Page, bool]:
     # Create a new page
     page = await mgr.new_page()
     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(random.randint(2000, 4000))
+    await page.wait_for_timeout(random.randint(1500, 2500))
     mgr._persistent_pages[provider] = page
     return page, True
 
@@ -218,25 +216,22 @@ async def send_to_claude(prompt: str) -> str:
         try:
             if not is_new:
                 # Already have a tab — click "New chat" or navigate within the tab
-                # Try the sidebar new-chat button first
                 new_chat = page.locator('a[href="/new"]').first
                 if await new_chat.count() > 0 and await new_chat.is_visible():
                     await new_chat.click()
-                    await page.wait_for_timeout(random.randint(1500, 3000))
+                    await page.wait_for_timeout(random.randint(1000, 2000))
                 else:
-                    # Fallback: navigate but within the same tab
                     await page.goto("https://claude.ai/new", wait_until="domcontentloaded", timeout=30000)
-                    await page.wait_for_timeout(random.randint(2000, 4000))
+                    await page.wait_for_timeout(random.randint(1500, 2500))
 
             # Find the input area and type the prompt
             editor = page.locator('[contenteditable="true"]').last
             await editor.wait_for(state="visible", timeout=15000)
             await editor.click()
-            await page.wait_for_timeout(random.randint(300, 800))
+            await page.wait_for_timeout(random.randint(200, 500))
 
-            # Type with human-like chunking
             await _human_type(page, prompt)
-            await page.wait_for_timeout(random.randint(400, 1000))
+            await page.wait_for_timeout(random.randint(300, 600))
 
             # Press Enter or click send button
             send_btn = page.locator('button[aria-label="Send Message"]')
@@ -261,7 +256,7 @@ async def send_to_claude(prompt: str) -> str:
                         break
                 await page.wait_for_timeout(1000)
 
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(300)
 
             # Extract the response text
             resp = page.locator('.font-claude-response')
@@ -280,200 +275,161 @@ async def send_to_claude(prompt: str) -> str:
             raise
 
 
-async def _ensure_gemini_model(page: Page):
-    """Ensure Gemini is set to 'pro' or 'thinking' rather than 'flash'."""
+async def _ensure_gemini_model(page: Page, preferred_model: str | None = None):
+    """Ensure Gemini is set to an acceptable model (defaults to Thinking).
+
+    Menu items have data-test-id attributes:
+      bard-mode-option-fast, bard-mode-option-thinking, bard-mode-option-pro
+    The picker button is data-test-id="bard-mode-menu-button".
+    JS .click() does NOT work on Angular Material menu items — must use Playwright clicks.
+    """
+    MODEL_IDS = {"thinking": "thinking", "pro": "pro", "fast": "fast", "flash": "fast"}
+
+    target = (preferred_model or "thinking").lower()
+    order = [target] + [m for m in ["thinking", "pro", "fast"] if m != target]
+
     try:
-        # Try multiple possible selectors for the model picker
-        picker_selectors = [
-            '.model-picker-container',
-            'model-picker',
-            '[data-test-id="model-selector"]',
-            'button[aria-haspopup="listbox"]',
-            'button[aria-haspopup="menu"]',
-            'button[aria-haspopup="dialog"]',
-        ]
-
-        picker = None
-        for sel in picker_selectors:
-            loc = page.locator(sel)
-            if await loc.count() > 0 and await loc.first.is_visible():
-                picker = loc.first
-                log.info("Found model picker via selector: %s", sel)
-                break
-
-        if not picker:
-            # Broader search: look for buttons containing model-related text
-            for text in ["Flash", "Pro", "Gemini"]:
-                loc = page.locator(f'button:has-text("{text}")').first
-                if await loc.count() > 0 and await loc.is_visible():
-                    inner = (await loc.inner_text()).strip()
-                    # Make sure it's actually a model selector, not the send button etc
-                    if len(inner) < 60 and any(m in inner.lower() for m in ["flash", "pro", "gemini", "thinking"]):
-                        picker = loc
-                        log.info("Found model picker via text match: '%s'", inner)
-                        break
-
-        if not picker:
+        picker = page.locator('[data-test-id="bard-mode-menu-button"]')
+        if await picker.count() == 0 or not await picker.is_visible():
             log.info("No model picker found on page, skipping model check")
             return
 
         picker_text = (await picker.inner_text()).strip().lower()
-        if "pro" in picker_text or "thinking" in picker_text:
-            if "flash" not in picker_text:
-                log.info("Model already set to acceptable tier: '%s'", picker_text)
-                return
+        if target in picker_text or MODEL_IDS.get(target, target) in picker_text:
+            log.info("Model already set to '%s'", picker_text)
+            return
 
-        log.info("Gemini model is '%s', switching to pro/thinking", picker_text)
+        log.info("Gemini model is '%s', switching to '%s'", picker_text, target)
         await picker.click()
-        await page.wait_for_timeout(random.randint(1200, 2000))
+        await page.wait_for_timeout(random.randint(800, 1200))
 
-        # Now we know the structure: [role="menu"].gds-mode-switch-menu
-        # contains children with text like "Pro\nAdvanced math and code..."
-        # Use Playwright's real mouse clicks (not JS .click() which Angular ignores)
-
-        # First, get the menu item structure for debugging
-        try:
-            dump = await page.evaluate("""() => {
-                const menu = document.querySelector('[role="menu"]');
-                if (!menu) return 'no [role=menu] found';
-                const items = menu.querySelectorAll('*');
-                const result = [];
-                for (const el of items) {
-                    if (el.children.length === 0 || el.getAttribute('role')) {
-                        const text = el.innerText?.trim();
-                        if (text && text.length > 1 && text.length < 100) {
-                            result.push({tag: el.tagName, role: el.getAttribute('role'), cls: el.className?.toString().slice(0, 80), text: text.slice(0, 60)});
-                        }
-                    }
-                }
-                return JSON.stringify(result.slice(0, 30), null, 2);
-            }""")
-            log.info("Menu items: %s", dump[:1500])
-        except Exception as e:
-            log.warning("Menu dump failed: %s", e)
-
-        # Check if Pro is disabled/greyed out (quota exhausted)
-        pro_disabled = await page.evaluate("""() => {
-            const menu = document.querySelector('[role="menu"]');
-            if (!menu) return false;
-            const items = menu.querySelectorAll('*');
-            for (const el of items) {
-                const text = el.innerText?.trim();
-                if (text && text.startsWith('Pro')) {
-                    // Check for disabled state: aria-disabled, disabled attribute, or greyed-out styling
-                    if (el.getAttribute('aria-disabled') === 'true' || el.hasAttribute('disabled')) return true;
-                    const style = window.getComputedStyle(el);
-                    if (parseFloat(style.opacity) < 0.5) return true;
-                    if (el.classList.contains('disabled') || el.classList.contains('is-disabled')) return true;
-                    // Check parent for disabled state too
-                    const parent = el.closest('[role="menuitem"], [role="option"]');
-                    if (parent) {
-                        if (parent.getAttribute('aria-disabled') === 'true' || parent.hasAttribute('disabled')) return true;
-                        const ps = window.getComputedStyle(parent);
-                        if (parseFloat(ps.opacity) < 0.5) return true;
-                        if (parent.classList.contains('disabled') || parent.classList.contains('is-disabled')) return true;
-                    }
-                }
-            }
-            return false;
-        }""")
-
-        if pro_disabled:
-            log.warning("Gemini Pro appears disabled (quota exhausted), falling back to Thinking")
-
-        # Try Pro first, fall back to Thinking if Pro is disabled
-        labels_to_try = ["Thinking", "Pro"] if pro_disabled else ["Pro", "Thinking"]
-
-        # Use Playwright locator to click within the menu overlay
-        menu = page.locator('[role="menu"]')
         clicked = False
-        for label in labels_to_try:
-            # Find children of the menu whose text starts with the label
-            # Use xpath to match direct/near text
-            for sel in [
-                f'[role="menu"] >> text=/^{label}$/i',
-                f'[role="menu"] >> text=/^{label}\\n/i',
-                f'.cdk-overlay-container >> text=/^{label}$/i',
-                f'.cdk-overlay-container >> text=/^{label}\\n/i',
-            ]:
-                try:
-                    loc = page.locator(sel)
-                    if await loc.count() > 0:
-                        await loc.first.click(timeout=3000)
-                        await page.wait_for_timeout(random.randint(500, 1000))
-                        log.info("Switched Gemini model to '%s' via Playwright: %s", label, sel)
-                        clicked = True
-                        break
-                except Exception as e:
-                    log.info("Selector %s failed: %s", sel, e)
+        for model in order:
+            test_id = MODEL_IDS.get(model, model)
+            option = page.locator(f'[data-test-id="bard-mode-option-{test_id}"]')
+            if await option.count() > 0 and await option.is_visible():
+                disabled = await option.get_attribute("aria-disabled")
+                if disabled == "true":
+                    log.info("Model '%s' is disabled (quota?), trying next", model)
                     continue
-            if clicked:
+                await option.click()
+                await page.wait_for_timeout(random.randint(300, 600))
+                log.info("Switched Gemini model to '%s'", model)
+                clicked = True
                 break
 
         if not clicked:
-            # Fallback: use bounding box of text node to do a real mouse click
-            for label in labels_to_try:
-                try:
-                    box = await page.evaluate("""(targetLabel) => {
-                        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-                        while (walker.nextNode()) {
-                            const t = walker.currentNode.textContent?.trim();
-                            if (t === targetLabel) {
-                                const range = document.createRange();
-                                range.selectNode(walker.currentNode);
-                                const rect = range.getBoundingClientRect();
-                                if (rect.width > 0 && rect.height > 0) {
-                                    return {x: rect.x + rect.width/2, y: rect.y + rect.height/2};
-                                }
-                            }
-                        }
-                        return null;
-                    }""", label)
-                    if box:
-                        await page.mouse.click(box['x'], box['y'])
-                        await page.wait_for_timeout(random.randint(500, 1000))
-                        log.info("Switched Gemini model to %s via mouse click at (%d, %d)", label, box['x'], box['y'])
-                        clicked = True
-                        break
-                except Exception as e:
-                    log.warning("Mouse click fallback for %s failed: %s", label, e)
-
-        if not clicked:
             await page.keyboard.press("Escape")
-            await page.wait_for_timeout(300)
-            log.warning("Could not find model option, keeping current selection")
+            await page.wait_for_timeout(200)
+            log.warning("Could not switch model, keeping current selection")
     except Exception as e:
-        log.warning("Model picker check failed: %s", e)
+        log.warning("Model picker failed: %s", e)
         try:
             await page.keyboard.press("Escape")
         except Exception:
             pass
 
 
-async def _gemini_attempt(page: Page, prompt: str) -> str:
+async def _is_temp_chat_active(page: Page) -> bool:
+    """Check if temporary chat mode is currently on without interacting with sidebar."""
+    try:
+        return await page.evaluate("""() => {
+            const btn = document.querySelector('[data-test-id="temp-chat-button"]');
+            return btn ? btn.classList.contains('temp-chat-on') : false;
+        }""")
+    except Exception:
+        return False
+
+
+async def _enter_temporary_chat(page: Page):
+    """Switch Gemini to a temporary chat so prompts don't clutter history."""
+    try:
+        hamburger = page.locator('[data-test-id="side-nav-menu-button"]')
+        await hamburger.wait_for(state="visible", timeout=5000)
+
+        # Sidebar is a toggle — only click to expand if currently collapsed
+        sw = await page.evaluate(
+            "() => document.querySelector('bard-sidenav')?.getBoundingClientRect().width || 0"
+        )
+        if sw < 200:
+            await hamburger.click()
+            # Wait for sidebar expansion animation — poll instead of fixed sleep
+            for _ in range(15):
+                sw = await page.evaluate(
+                    "() => document.querySelector('bard-sidenav')?.getBoundingClientRect().width || 0"
+                )
+                if sw > 200:
+                    break
+                await page.wait_for_timeout(100)
+            await page.wait_for_timeout(200)
+
+        # Check if temp-chat is already on
+        already_on = await page.evaluate("""() => {
+            const btn = document.querySelector('[data-test-id="temp-chat-button"]');
+            return btn ? btn.classList.contains('temp-chat-on') : false;
+        }""")
+
+        if already_on:
+            log.info("Temporary chat already enabled")
+        else:
+            temp_btn = page.locator('[data-test-id="temp-chat-button"]')
+            await temp_btn.wait_for(state="visible", timeout=3000)
+            await temp_btn.click()
+            await page.wait_for_timeout(random.randint(300, 600))
+            log.info("Enabled temporary chat mode")
+
+        # Collapse sidebar
+        await hamburger.click()
+        await page.wait_for_timeout(random.randint(200, 400))
+    except Exception as e:
+        log.warning("Failed to enable temporary chat: %s", e)
+        try:
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(200)
+        except Exception:
+            pass
+
+
+async def _gemini_attempt(page: Page, prompt: str, gemini_model: str | None = None) -> str:
     """Single attempt to send a prompt on a Gemini page. Returns response or raises."""
-    await _ensure_gemini_model(page)
+    await _ensure_gemini_model(page, preferred_model=gemini_model)
+
+    # Wait for editor — try .ql-editor first, fall back to contenteditable
     editor = page.locator('.ql-editor').first
-    await editor.wait_for(state="visible", timeout=15000)
+    try:
+        await editor.wait_for(state="visible", timeout=10000)
+    except Exception:
+        log.warning("Gemini .ql-editor not found, trying contenteditable fallback")
+        editor = page.locator('[contenteditable="true"]').first
+        await editor.wait_for(state="visible", timeout=10000)
+
     await editor.click()
-    await page.wait_for_timeout(random.randint(200, 600))
+    await page.wait_for_timeout(random.randint(100, 300))
 
     # Clear any leftover text
     await page.keyboard.press("Control+a")
-    await page.wait_for_timeout(random.randint(50, 150))
+    await page.wait_for_timeout(random.randint(30, 80))
     await page.keyboard.press("Backspace")
-    await page.wait_for_timeout(random.randint(200, 500))
+    await page.wait_for_timeout(random.randint(100, 300))
 
     # Paste the whole prompt at once — Gemini handles it fine and typing hangs
     await page.keyboard.insert_text(prompt)
-    await page.wait_for_timeout(random.randint(400, 1000))
+    await page.wait_for_timeout(random.randint(200, 500))
 
-    # Click send
+    # Count existing responses BEFORE sending so we can detect the new one
+    resp_before = await page.locator('.model-response-text').count()
+    log.info("Gemini: %d existing responses before send, prompt length=%d", resp_before, len(prompt))
+
+    # Click send — try aria-label first, fall back to Enter key
     send_btn = page.locator('button[aria-label="Send message"]')
-    await send_btn.wait_for(state="visible", timeout=5000)
-    await send_btn.click()
+    try:
+        await send_btn.wait_for(state="visible", timeout=5000)
+        await send_btn.click()
+    except Exception:
+        log.warning("Gemini send button not found, pressing Enter")
+        await page.keyboard.press("Enter")
 
-    await page.wait_for_timeout(3000)
+    await page.wait_for_timeout(1500)
 
     # Check for error dialogs
     for retry_attempt in range(3):
@@ -481,11 +437,11 @@ async def _gemini_attempt(page: Page, prompt: str) -> str:
         if await error_btn.count() > 0 and await error_btn.first.is_visible():
             log.warning("Gemini showed an error, clicking retry (attempt %d)", retry_attempt + 1)
             await error_btn.first.click()
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2000)
         else:
             break
 
-    # Wait until .model-response-text has content and stabilizes
+    # Wait until a NEW .model-response-text appears (after resp_before) and stabilizes
     last_text = ""
     stable_count = 0
     for _ in range(360):
@@ -493,12 +449,12 @@ async def _gemini_attempt(page: Page, prompt: str) -> str:
         if await error_btn.count() > 0 and await error_btn.first.is_visible():
             log.warning("Gemini error during generation, clicking retry")
             await error_btn.first.click()
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2000)
             continue
 
         resp = page.locator('.model-response-text')
         count = await resp.count()
-        if count > 0:
+        if count > resp_before:
             text = (await resp.nth(count - 1).inner_text()).strip()
             if text and text == last_text:
                 stable_count += 1
@@ -514,7 +470,23 @@ async def _gemini_attempt(page: Page, prompt: str) -> str:
     raise RuntimeError("Gemini did not produce a response")
 
 
-async def send_to_gemini(prompt: str) -> str:
+async def _gemini_ready_for_input(page: Page) -> bool:
+    """Check if Gemini page is on a FRESH chat with no prior conversation."""
+    try:
+        # If there are any model responses on the page, it's not a fresh chat
+        resp = page.locator('.model-response-text')
+        if await resp.count() > 0:
+            return False
+        editor = page.locator('.ql-editor').first
+        if await editor.count() == 0 or not await editor.is_visible():
+            return False
+        text = (await editor.inner_text()).strip()
+        return text == "" or text == "\n"
+    except Exception:
+        return False
+
+
+async def send_to_gemini(prompt: str, gemini_model: str | None = None) -> str:
     """Send prompt to Gemini using a persistent tab."""
     async with mgr._locks["gemini"]:
         page, is_new = await _get_persistent_page("gemini", "https://gemini.google.com/app")
@@ -526,33 +498,56 @@ async def send_to_gemini(prompt: str) -> str:
                     dismiss = page.locator('button:has-text("Got it"), button:has-text("Dismiss"), button:has-text("Close")')
                     if await dismiss.count() > 0 and await dismiss.first.is_visible():
                         await dismiss.first.click()
-                        await page.wait_for_timeout(random.randint(800, 1500))
+                        await page.wait_for_timeout(random.randint(500, 1000))
                 except Exception:
                     pass
+                await _enter_temporary_chat(page)
             else:
-                # Reuse tab — click "New chat" button within Gemini
-                new_chat = page.locator('a[href="/app"], button:has-text("New chat")')
-                if await new_chat.count() > 0 and await new_chat.first.is_visible():
-                    await new_chat.first.click()
-                    await page.wait_for_timeout(random.randint(1500, 3000))
-                else:
-                    await page.goto("https://gemini.google.com/app", wait_until="domcontentloaded", timeout=30000)
-                    await page.wait_for_timeout(random.randint(2000, 4000))
+                # Always close and reopen — Gemini's SPA state is unreliable
+                log.info("Gemini tab exists, closing and opening fresh tab")
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                mgr._persistent_pages["gemini"] = None
+                page = await mgr.new_page()
+                await page.goto("https://gemini.google.com/app", wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(random.randint(1500, 2500))
+                mgr._persistent_pages["gemini"] = page
+                try:
+                    dismiss = page.locator('button:has-text("Got it"), button:has-text("Dismiss"), button:has-text("Close")')
+                    if await dismiss.count() > 0 and await dismiss.first.is_visible():
+                        await dismiss.first.click()
+                        await page.wait_for_timeout(random.randint(500, 1000))
+                except Exception:
+                    pass
+                await _enter_temporary_chat(page)
 
-            # Try up to 2 times with a page reload on failure
+            # Try up to 2 times — on failure, close tab and open fresh
             for attempt in range(2):
                 try:
-                    return await _gemini_attempt(page, prompt)
+                    log.info("Gemini attempt %d/2", attempt + 1)
+                    return await _gemini_attempt(page, prompt, gemini_model=gemini_model)
                 except Exception as e:
+                    log.warning("Gemini attempt %d failed: %s", attempt + 1, e)
                     if attempt == 0:
-                        log.warning("Gemini attempt failed (%s), reloading page", e)
-                        await page.reload(wait_until="domcontentloaded", timeout=30000)
-                        await page.wait_for_timeout(random.randint(2000, 4000))
+                        # Close and open a completely fresh tab
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+                        mgr._persistent_pages["gemini"] = None
+                        page = await mgr.new_page()
+                        await page.goto("https://gemini.google.com/app", wait_until="domcontentloaded", timeout=30000)
+                        await page.wait_for_timeout(random.randint(1500, 2500))
+                        mgr._persistent_pages["gemini"] = page
+                        await _enter_temporary_chat(page)
                     else:
                         raise
 
             return "[Could not extract response — check the browser window]"
         except Exception:
+            log.exception("Gemini send_to_gemini failed, discarding page")
             mgr._persistent_pages["gemini"] = None
             try:
                 await page.close()
@@ -573,6 +568,7 @@ PROVIDERS = {
 class SimpleRequest(BaseModel):
     provider: str = "claude"
     prompt: str
+    gemini_model: str | None = None
 
 class ChatMessage(BaseModel):
     role: str
@@ -601,7 +597,7 @@ WEB_DIR = Path(__file__).parent
 
 @app.get("/")
 async def index():
-    return FileResponse(WEB_DIR / "passthru-test.html")
+    return FileResponse(WEB_DIR / "test.html")
 
 
 @app.post("/ask")
@@ -611,7 +607,10 @@ async def ask(req: SimpleRequest):
         raise HTTPException(400, f"Unknown provider: {provider}. Use: {list(PROVIDERS.keys())}")
     log.info("Request to %s: %s", provider, req.prompt[:80])
     try:
-        response = await PROVIDERS[provider](req.prompt)
+        if provider == "gemini":
+            response = await send_to_gemini(req.prompt, gemini_model=req.gemini_model)
+        else:
+            response = await PROVIDERS[provider](req.prompt)
     except Exception as e:
         log.exception("Error from %s", provider)
         raise HTTPException(500, f"Browser automation error: {e}")

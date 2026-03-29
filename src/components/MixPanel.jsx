@@ -136,7 +136,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
   // Detect gaps and overlaps between adjacent bits (including trailing gap after last bit)
   const bitAnalysis = useMemo(() => {
     const analysis = [];
-    const textLen = selectedTranscript?.text?.replace(/\n/g, " ").length || 0;
+    const textLen = selectedTranscript?.text?.length || 0;
     for (let i = 0; i < sortedBits.length; i++) {
       const bit = sortedBits[i];
       const next = sortedBits[i + 1];
@@ -749,6 +749,20 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                 }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  {onViewBitDetail && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onViewBitDetail(bit); }}
+                      title="Open bit detail panel"
+                      style={{
+                        background: "#74c0fc12", border: "1px solid #74c0fc44", color: "#74c0fc",
+                        borderRadius: 4, padding: "4px 5px", fontSize: 9, cursor: "pointer",
+                        fontWeight: 600, whiteSpace: "nowrap", alignSelf: "stretch",
+                        display: "flex", alignItems: "center", marginRight: 6, flexShrink: 0,
+                      }}
+                    >
+                      &#x25B6;
+                    </button>
+                  )}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span style={{
@@ -927,18 +941,12 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                     )}
                     {onViewBitDetail && (
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onViewBitDetail(bit);
-                        }}
+                        onClick={(e) => { e.stopPropagation(); onViewBitDetail(bit); }}
                         title="Open bit detail panel"
                         style={{
-                          background: "#74c0fc12",
-                          border: "1px solid #74c0fc44", color: "#74c0fc",
-                          borderRadius: 4, padding: "12px 8px", fontSize: 10, cursor: "pointer",
-                          whiteSpace: "nowrap", fontWeight: 600,
-                          display: "flex", alignItems: "center",
-                          marginLeft: 8,
+                          background: "#74c0fc12", border: "1px solid #74c0fc44", color: "#74c0fc",
+                          borderRadius: 4, padding: "6px 8px", fontSize: 10, cursor: "pointer",
+                          fontWeight: 600, whiteSpace: "nowrap", display: "flex", alignItems: "center",
                         }}
                       >
                         Detail

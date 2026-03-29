@@ -1,6 +1,8 @@
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { MixPanel } from "./MixPanel";
 import { parseFilenameClient, ratingColor, ratingValue, RATING_FONT } from "../utils/filenameUtils";
+import { SYSTEM_PARSE_V3 } from "../utils/prompts";
+import { extractCompleteJsonObjects } from "../utils/jsonParser";
 
 const TOUCHSTONE_PALETTE = [
   "#ff6b6b", "#ffa94d", "#ffd43b", "#51cf66",
@@ -95,6 +97,188 @@ function PageTimeline({ timeline, onViewBitDetail, onSelectBit, topics }) {
   );
 }
 
+/**
+ * ReParseMenu — dropdown replacing the old Re-parse button.
+ * Options: Ollama (default), Gemini/Claude via server.py, paste raw JSON, copy prompt.
+ */
+const PASTE_MODEL_OPTIONS = [
+  { value: "gemini-thinking", label: "Gemini Thinking" },
+  { value: "gemini-pro", label: "Gemini Pro" },
+  { value: "gemini-flash", label: "Gemini Flash" },
+  { value: "claude", label: "Claude" },
+  { value: "chatgpt", label: "ChatGPT" },
+  { value: "other", label: "Other..." },
+];
+
+function ReParseMenu({ transcript, processing, reParseTranscript, onImportParsedJSON, actionBtnStyle, selectedModel }) {
+  const [open, setOpen] = useState(null); // null | "menu" | "paste"
+  const [pasteText, setPasteText] = useState("");
+  const [pasteModel, setPasteModel] = useState("gemini-thinking");
+  const [customModel, setCustomModel] = useState("");
+  const [copyFeedback, setCopyFeedback] = useState(false);
+  const menuRef = useRef(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(null); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const buildParsePrompt = () => {
+    const text = transcript.text?.replace(/\n/g, " ") || "";
+    return { system: SYSTEM_PARSE_V3, user: `Parse this comedy transcript:\n\n${text}` };
+  };
+
+  const handleCopyPrompt = async () => {
+    const { system, user } = buildParsePrompt();
+    await navigator.clipboard.writeText(`${system}\n\n${user}`);
+    setCopyFeedback(true);
+    setTimeout(() => setCopyFeedback(false), 1500);
+    setOpen(null);
+  };
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleExternalReparse = async (provider, geminiModel) => {
+    setOpen(null);
+    setBusy(true);
+    setError(null);
+    const { system, user } = buildParsePrompt();
+    try {
+      const res = await fetch("/api/llm/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, system, user, ...(geminiModel && { gemini_model: geminiModel }) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "API call failed");
+
+      // Try direct JSON.parse first, fall back to extracting objects from markdown-wrapped response
+      let parsed;
+      try {
+        parsed = JSON.parse(data.result);
+      } catch {
+        parsed = extractCompleteJsonObjects(data.result);
+      }
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const modelName = provider === "gemini" ? `gemini-${geminiModel || "unknown"}` : provider;
+        onImportParsedJSON(transcript, parsed, { model: modelName });
+      } else {
+        throw new Error(`No bits found in ${provider} response`);
+      }
+    } catch (e) {
+      console.error(`[Re-parse] ${provider} error:`, e.message);
+      setError(e.message);
+      setTimeout(() => setError(null), 5000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePasteSubmit = () => {
+    try {
+      const parsed = JSON.parse(pasteText);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const model = pasteModel === "other" ? (customModel.trim() || "unknown") : pasteModel;
+        onImportParsedJSON(transcript, parsed, { model });
+        setOpen(null);
+        setPasteText("");
+      }
+    } catch (e) {
+      console.error("[Re-parse] Invalid JSON:", e.message);
+    }
+  };
+
+  const menuItemStyle = (color) => ({
+    display: "block", width: "100%", background: "none", border: "none", color,
+    padding: "5px 10px", fontSize: 11, cursor: "pointer", textAlign: "left", borderRadius: 4, fontWeight: 600,
+  });
+
+  return (
+    <div ref={menuRef} style={{ position: "relative", display: "inline-block" }}>
+      <button
+        onClick={() => setOpen(open ? null : "menu")}
+        disabled={processing || busy}
+        style={actionBtnStyle(error ? "#ff6b6b" : copyFeedback ? "#51cf66" : busy ? "#888" : "#ffa94d", { disabled: processing || busy })}
+      >
+        {error ? "Error" : busy ? "Waiting..." : copyFeedback ? "Copied!" : "Re-parse \u25BE"}
+      </button>
+      {open === "menu" && (
+        <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "#1a1a2e", border: "1px solid #333", borderRadius: 6, padding: 4, zIndex: 100, minWidth: 180 }}>
+          <button onClick={() => { setOpen(null); reParseTranscript(transcript); }} style={menuItemStyle("#ffa94d")}
+            onMouseEnter={(e) => e.target.style.background = "#ffa94d11"} onMouseLeave={(e) => e.target.style.background = "none"}>
+            Ollama (local)
+          </button>
+          <div style={{ borderTop: "1px solid #252538", margin: "2px 0" }} />
+          <div style={{ fontSize: 10, color: "#4285f4", padding: "4px 10px", fontWeight: 600 }}>Gemini</div>
+          {[{ id: "pro", label: "Pro" }, { id: "thinking", label: "Thinking" }, { id: "flash", label: "Flash" }].map((v) => (
+            <button key={v.id} onClick={() => handleExternalReparse("gemini", v.id)} style={menuItemStyle("#4285f4")}
+              onMouseEnter={(e) => e.target.style.background = "#4285f411"} onMouseLeave={(e) => e.target.style.background = "none"}>
+              <span style={{ paddingLeft: 8 }}>{v.label}</span>
+            </button>
+          ))}
+          <button onClick={() => handleExternalReparse("claude")} style={menuItemStyle("#c4946a")}
+            onMouseEnter={(e) => e.target.style.background = "#c4946a11"} onMouseLeave={(e) => e.target.style.background = "none"}>
+            Claude Sonnet
+          </button>
+          <div style={{ borderTop: "1px solid #252538", margin: "2px 0" }} />
+          <button onClick={() => { setOpen("paste"); setPasteText(""); }} style={menuItemStyle("#4ecdc4")}
+            onMouseEnter={(e) => e.target.style.background = "#4ecdc411"} onMouseLeave={(e) => e.target.style.background = "none"}>
+            Paste JSON...
+          </button>
+          <button onClick={handleCopyPrompt} style={menuItemStyle("#aaa")}
+            onMouseEnter={(e) => e.target.style.background = "#ffffff08"} onMouseLeave={(e) => e.target.style.background = "none"}>
+            Copy prompt
+          </button>
+        </div>
+      )}
+      {open === "paste" && (
+        <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "#1a1a2e", border: "1px solid #333", borderRadius: 6, padding: 8, zIndex: 100, minWidth: 340 }}>
+          <div style={{ fontSize: 10, color: "#4ecdc4", marginBottom: 6, fontWeight: 600 }}>Paste parsed JSON array:</div>
+          <textarea
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value)}
+            placeholder='[{"title":"...","fullText":"...","summary":"...","tags":[...],"keywords":[...],"textPosition":{"startChar":0,"endChar":100}}]'
+            style={{ width: "100%", minHeight: 140, background: "#0d0d16", border: "1px solid #333", borderRadius: 4, color: "#ccc", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", padding: 8, resize: "vertical", boxSizing: "border-box" }}
+          />
+          <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 9, color: "#888" }}>Model:</span>
+            <select
+              value={pasteModel}
+              onChange={(e) => setPasteModel(e.target.value)}
+              style={{ background: "#0d0d16", border: "1px solid #333", borderRadius: 4, color: "#ccc", fontSize: 10, padding: "3px 6px", flex: 1 }}
+            >
+              {selectedModel && <option value={selectedModel}>{selectedModel} (Ollama)</option>}
+              {PASTE_MODEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            {pasteModel === "other" && (
+              <input
+                value={customModel}
+                onChange={(e) => setCustomModel(e.target.value)}
+                placeholder="model name"
+                style={{ background: "#0d0d16", border: "1px solid #333", borderRadius: 4, color: "#ccc", fontSize: 10, padding: "3px 6px", width: 100 }}
+              />
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "flex-end" }}>
+            <button onClick={() => setOpen("menu")}
+              style={{ background: "none", border: "1px solid #333", color: "#666", borderRadius: 4, padding: "3px 10px", fontSize: 10, cursor: "pointer" }}>
+              Back
+            </button>
+            <button onClick={handlePasteSubmit} disabled={!pasteText.trim()}
+              style={{ background: pasteText.trim() ? "#51cf6622" : "none", border: `1px solid ${pasteText.trim() ? "#51cf6644" : "#333"}`, color: pasteText.trim() ? "#51cf66" : "#555", borderRadius: 4, padding: "3px 10px", fontSize: 10, cursor: pasteText.trim() ? "pointer" : "default", fontWeight: 600 }}>
+              Import
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TranscriptTab({
   transcripts,
   topics,
@@ -111,6 +295,7 @@ export function TranscriptTab({
   setSelectedTranscript,
   setSelectedTopic,
   reParseTranscript,
+  onImportParsedJSON,
   purgeTranscriptData,
   removeTranscript,
   onHuntTranscript,
@@ -132,6 +317,7 @@ export function TranscriptTab({
   approvedGaps,
   onApproveGap,
   onGoToPlay,
+  onAbsorbUnmatched,
   sortCol: sortColProp,
   sortDir: sortDirProp,
   onSortChange,
@@ -175,6 +361,21 @@ export function TranscriptTab({
     return ids;
   }, [touchstones]);
 
+  // Count bits that have strong matches to touchstone members but aren't in any touchstone
+  const unmatchedCount = useMemo(() => {
+    if (!matches || !topics) return 0;
+    const seen = new Set();
+    for (const m of matches) {
+      const mp = m.matchPercentage || (m.confidence || 0) * 100;
+      if (mp < 85) continue;
+      const rel = m.relationship;
+      if (rel !== 'same_bit' && rel !== 'evolved') continue;
+      if (touchstoneBitIds.has(m.sourceId) && !touchstoneBitIds.has(m.targetId)) seen.add(m.targetId);
+      else if (touchstoneBitIds.has(m.targetId) && !touchstoneBitIds.has(m.sourceId)) seen.add(m.sourceId);
+    }
+    return seen.size;
+  }, [matches, topics, touchstoneBitIds]);
+
   // Build bit→touchstone and touchstone-by-id maps for timeline coloring
   const { bitToTouchstone, tsById } = useMemo(() => {
     const btMap = new Map();
@@ -195,9 +396,11 @@ export function TranscriptTab({
   const rows = useMemo(() => {
     return transcripts.map((tr) => {
       const bitsParsed = topics.filter((t) => t.sourceFile === tr.name || t.transcriptId === tr.id);
-      const lastModel = bitsParsed.length > 0
-        ? bitsParsed[bitsParsed.length - 1]?.parsedWithModel || "unknown"
+      const lastModelRaw = bitsParsed.length > 0
+        ? ([...bitsParsed].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0]?.parsedWithModel || "unknown")
         : "-";
+      const bareGemini = new Set(["pro", "thinking", "flash"]);
+      const lastModel = bareGemini.has(lastModelRaw) ? `gemini-${lastModelRaw}` : lastModelRaw;
       const wordCount = tr.text.split(/\s+/).length;
 
       const textLen = tr.text.length;
@@ -285,6 +488,7 @@ export function TranscriptTab({
         case "file": return dir * (a.parsed.title || a.tr.name).localeCompare(b.parsed.title || b.tr.name, undefined, { numeric: true });
         case "size": return dir * (a.wordCount - b.wordCount);
         case "bits": return dir * (a.bitsParsed.length - b.bitsParsed.length);
+        case "model": return dir * (a.lastModel || "").localeCompare(b.lastModel || "");
         case "coverage": return dir * (a.coverage - b.coverage);
         case "touchstones": return dir * (a.touchstonePct - b.touchstonePct);
         case "unmatched": return dir * (a.unmatchedPct - b.unmatchedPct);
@@ -352,9 +556,12 @@ export function TranscriptTab({
   });
 
   // Page view: when a transcript is selected, show full-page MixPanel
+  // Always look up from the transcripts array to get the freshest version
+  // (selectedTranscript is a separate state ref that goes stale after sync/trim)
   if (selectedTranscript) {
-    const selectedParsed = parseFilenameClient(selectedTranscript.name);
-    const selectedRow = rows.find(r => r.tr.id === selectedTranscript.id);
+    const freshTranscript = transcripts.find(t => t.id === selectedTranscript.id) || selectedTranscript;
+    const selectedParsed = parseFilenameClient(freshTranscript.name);
+    const selectedRow = rows.find(r => r.tr.id === freshTranscript.id);
     return (
       <div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid #1e1e30" }}>
@@ -366,7 +573,7 @@ export function TranscriptTab({
           </button>
           {onGoToPlay && (
             <button
-              onClick={() => onGoToPlay(selectedTranscript)}
+              onClick={() => onGoToPlay(freshTranscript)}
               style={{ padding: "6px 12px", background: "#6c5ce718", color: "#a78bfa", border: "1px solid #6c5ce733", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
             >
               Play
@@ -380,7 +587,7 @@ export function TranscriptTab({
                 </span>
               )}
               <span style={{ color: "#ddd", fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {selectedParsed.title || selectedTranscript.name.replace(/\.\w+$/, "")}
+                {selectedParsed.title || freshTranscript.name.replace(/\.\w+$/, "")}
               </span>
               {selectedParsed.duration && <span style={{ fontSize: 12, color: "#74c0fc" }}>{selectedParsed.duration}</span>}
             </div>
@@ -388,7 +595,7 @@ export function TranscriptTab({
               {selectedRow && <span style={{ color: "#4ecdc4" }}>{selectedRow.bitsParsed.length} bits</span>}
               {selectedRow && selectedRow.bitsParsed.length > 0 && <span style={{ color: selectedRow.coverage >= 80 ? "#51cf66" : selectedRow.coverage >= 50 ? "#ffa94d" : "#ff6b6b" }}>{selectedRow.coverage}% cov</span>}
               {selectedRow && (() => {
-                const trBits = topics.filter(t => t.sourceFile === selectedTranscript.name || t.transcriptId === selectedTranscript.id);
+                const trBits = topics.filter(t => t.sourceFile === freshTranscript.name || t.transcriptId === freshTranscript.id);
                 const allTs = [...(touchstones?.confirmed || []), ...(touchstones?.possible || [])];
                 const inTs = trBits.filter(b => allTs.some(ts => (ts.instances || []).some(inst => inst.bitId === b.id))).length;
                 if (inTs === 0 || trBits.length === 0) return null;
@@ -398,10 +605,15 @@ export function TranscriptTab({
             </div>
           </div>
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-            <button onClick={() => onHuntTranscript?.(selectedTranscript)} disabled={processing || !selectedRow?.bitsParsed.length} style={actionBtnStyle("#da77f2", { disabled: processing || !selectedRow?.bitsParsed.length })}>Hunt</button>
-            <button onClick={() => reParseTranscript(selectedTranscript)} disabled={processing} style={actionBtnStyle("#ffa94d", { disabled: processing })}>Re-parse</button>
-            <button onClick={() => purgeTranscriptData(selectedTranscript)} disabled={processing} style={actionBtnStyle("#ff6b6b", { disabled: processing })}>Purge</button>
+            <button onClick={() => onHuntTranscript?.(freshTranscript)} disabled={processing || !selectedRow?.bitsParsed.length} style={actionBtnStyle("#da77f2", { disabled: processing || !selectedRow?.bitsParsed.length })}>Hunt</button>
+            <ReParseMenu transcript={freshTranscript} processing={processing} reParseTranscript={reParseTranscript} onImportParsedJSON={onImportParsedJSON} actionBtnStyle={actionBtnStyle} selectedModel={selectedModel} />
+            <button onClick={() => purgeTranscriptData(freshTranscript)} disabled={processing} style={actionBtnStyle("#ff6b6b", { disabled: processing })}>Purge</button>
           </div>
+          {selectedRow?.bitsParsed.length > 0 && selectedRow.lastModel !== "-" && (
+            <div style={{ fontSize: 9, color: "#666", marginTop: 2, textAlign: "right" }}>
+              parsed with {selectedRow.lastModel}
+            </div>
+          )}
         </div>
         {/* Set Timeline */}
         {selectedRow && selectedRow.timeline.bits.length > 0 && <PageTimeline
@@ -412,7 +624,7 @@ export function TranscriptTab({
 
         <MixPanel
           hideHeader
-          onGoToPlay={onGoToPlay ? () => onGoToPlay(selectedTranscript) : null}
+          onGoToPlay={onGoToPlay ? () => onGoToPlay(freshTranscript) : null}
           topics={topics}
           transcripts={transcripts}
           touchstones={touchstones}
@@ -428,9 +640,9 @@ export function TranscriptTab({
           onViewBitDetail={onViewBitDetail}
           scrollToBitId={timelineScrollBitId}
           onConsumeScrollToBit={() => setTimelineScrollBitId(null)}
-          initialTranscript={selectedTranscript}
-          initialBitId={mixTranscriptInit?.id === selectedTranscript.id ? mixBitInit : null}
-          initialGap={mixTranscriptInit?.id === selectedTranscript.id ? mixGapInit : null}
+          initialTranscript={freshTranscript}
+          initialBitId={mixTranscriptInit?.id === freshTranscript.id ? mixBitInit : null}
+          initialGap={mixTranscriptInit?.id === freshTranscript.id ? mixGapInit : null}
           onConsumeInitialTranscript={onConsumeMixInit}
           approvedGaps={approvedGaps}
           onApproveGap={onApproveGap}
@@ -485,6 +697,17 @@ export function TranscriptTab({
                 Stop
               </button>
             )}
+            {onAbsorbUnmatched && unmatchedCount > 0 && !processing && (
+              <button
+                onClick={onAbsorbUnmatched}
+                style={{
+                  padding: "6px 14px", background: "#da77f2", color: "#fff", border: "none",
+                  borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                Absorb {unmatchedCount} Unmatched
+              </button>
+            )}
           </div>
         );
       })()}
@@ -520,7 +743,7 @@ export function TranscriptTab({
       </div>
 
       <div style={{ marginBottom: 24 }}>
-        <div style={{ overflowX: "hidden" }}>
+        <div style={{ overflow: "visible" }}>
         <table style={{
           width: "100%",
           tableLayout: "fixed",
@@ -533,6 +756,7 @@ export function TranscriptTab({
             <col style={{ width: 50 }} />{/* dur */}
             <col style={{ width: 50 }} />{/* size */}
             <col style={{ width: 38 }} />{/* bits */}
+            <col style={{ width: 80 }} />{/* model */}
             <col style={{ width: 38 }} />{/* cov */}
             <col style={{ width: 50 }} />{/* ts */}
             <col style={{ width: 50 }} />{/* unmatched */}
@@ -545,6 +769,7 @@ export function TranscriptTab({
               <th style={{ ...thStyle("duration"), whiteSpace: "nowrap" }} onClick={() => handleSort("duration")}>Dur{sortArrow("duration")}</th>
               <th style={{ ...thStyle("size"), whiteSpace: "nowrap" }} onClick={() => handleSort("size")}>Size{sortArrow("size")}</th>
               <th style={{ ...thStyle("bits"), whiteSpace: "nowrap" }} onClick={() => handleSort("bits")}>Bits{sortArrow("bits")}</th>
+              <th style={{ ...thStyle("model"), whiteSpace: "nowrap" }} onClick={() => handleSort("model")}>Model{sortArrow("model")}</th>
               <th style={{ ...thStyle("coverage"), whiteSpace: "nowrap" }} onClick={() => handleSort("coverage")}>Cov{sortArrow("coverage")}</th>
               <th style={{ ...thStyle("unmatched"), whiteSpace: "nowrap" }} onClick={() => handleSort("unmatched")}>UNM{sortArrow("unmatched")}</th>
               <th style={{ ...thStyle("touchstones"), whiteSpace: "nowrap" }} onClick={() => handleSort("touchstones")}>TS{sortArrow("touchstones")}</th>
@@ -611,6 +836,9 @@ export function TranscriptTab({
                   <td style={{ padding: "10px 6px", textAlign: "center", color: "#4ecdc4", fontWeight: 600 }}>
                     {bitsParsed.length}
                   </td>
+                  <td style={{ padding: "10px 6px", textAlign: "center", fontSize: 9, color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={lastModel}>
+                    {bitsParsed.length > 0 ? lastModel : "-"}
+                  </td>
                   <td style={{ padding: "10px 6px", textAlign: "center" }}>
                     {bitsParsed.length > 0 ? (
                       <span style={{
@@ -658,13 +886,7 @@ export function TranscriptTab({
                     >
                       Hunt
                     </button>
-                    <button
-                      onClick={() => reParseTranscript(tr)}
-                      disabled={processing}
-                      style={actionBtnStyle("#ffa94d", { disabled: processing })}
-                    >
-                      Re-parse
-                    </button>
+                    <ReParseMenu transcript={tr} processing={processing} reParseTranscript={reParseTranscript} onImportParsedJSON={onImportParsedJSON} actionBtnStyle={actionBtnStyle} selectedModel={selectedModel} />
                     <button
                       onClick={() => purgeTranscriptData(tr)}
                       disabled={processing}

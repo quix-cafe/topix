@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { uid, requestOllamaRestart } from "../utils/ollama";
 import { saveVaultState, exportDatabaseAsJSON, importDatabaseFromJSON, getDatabaseStats } from "../utils/database";
 import { generateObsidianVault } from "../utils/obsidianExport";
+import { findTextPosition } from "../utils/textMatcher";
 
 export function useTranscriptOps(ctx, loadSavedData) {
   const { dispatch, stateRef, setShouldStop, embeddingStore, opQueue, abortControllerRef, huntControllerRef, touchstoneNamingController, touchstoneNameCache, restoreFileInput } = ctx;
@@ -21,6 +22,85 @@ export function useTranscriptOps(ctx, loadSavedData) {
       set('status', `Purged all data for "${tr.name}"`);
       if (stateRef.current.selectedTranscript?.id === tr.id) dispatch({ type: 'SET', field: 'selectedTranscript', value: null });
     } catch (err) { set('status', `Error purging data: ${err.message}`); }
+  }, []);
+
+  const importParsedJSON = useCallback(async (tr, parsedBits, { model = "external-import" } = {}) => {
+    try {
+      // Clear existing bits and their matches for this transcript
+      const s = stateRef.current;
+      const existingBitIds = new Set(s.topics.filter(t => t.sourceFile === tr.name || t.transcriptId === tr.id).map(t => t.id));
+      const clearedTopics = existingBitIds.size > 0 ? s.topics.filter(t => !existingBitIds.has(t.id)) : s.topics;
+      const clearedMatches = existingBitIds.size > 0 ? s.matches.filter(m => !existingBitIds.has(m.sourceId) && !existingBitIds.has(m.targetId)) : s.matches;
+
+      set('status', `Importing ${parsedBits.length} bits for "${tr.name}" — aligning positions...`);
+
+      // Normalize transcript text the same way it was sent to the LLM
+      const originalText = (tr.text || "").replace(/\n/g, " ");
+
+      // Sort bits by LLM-reported position (or by order received) to process sequentially
+      const sorted = [...parsedBits].sort((a, b) =>
+        (a.textPosition?.startChar || 0) - (b.textPosition?.startChar || 0)
+      );
+
+      let lastEndChar = 0;
+      let aligned = 0;
+      const newBits = sorted.map((bit, i) => {
+        const fullText = bit.fullText || "";
+        let textPosition = bit.textPosition || { startChar: 0, endChar: 0 };
+
+        if (fullText.trim().length >= 10) {
+          // Search within a constrained window starting from the last bit's end
+          // to avoid matching the wrong occurrence of similar text
+          const searchStart = Math.max(0, lastEndChar - 50);
+          const searchRegion = originalText.substring(searchStart);
+
+          const posResult = findTextPosition(searchRegion, fullText);
+          if (posResult && posResult.confidence >= 0.65) {
+            textPosition = {
+              startChar: searchStart + posResult.startChar,
+              endChar: searchStart + posResult.endChar,
+            };
+            aligned++;
+          } else {
+            // Fallback: try the full text without constraining
+            const fullResult = findTextPosition(originalText, fullText);
+            if (fullResult && fullResult.confidence >= 0.65) {
+              textPosition = { startChar: fullResult.startChar, endChar: fullResult.endChar };
+              aligned++;
+            } else {
+              // Last resort: use LLM positions but snap fullText from transcript
+              const llmStart = textPosition.startChar || 0;
+              const llmEnd = textPosition.endChar || 0;
+              if (llmStart >= 0 && llmEnd > llmStart && llmEnd <= originalText.length) {
+                // Keep LLM positions but they may be off
+              } else {
+                textPosition = { startChar: lastEndChar, endChar: lastEndChar + fullText.length };
+              }
+              console.warn(`[Import align] Could not align bit ${i + 1}: "${(bit.title || fullText.substring(0, 40))}..."`);
+            }
+          }
+        }
+
+        lastEndChar = textPosition.endChar;
+
+        return {
+          ...bit,
+          id: uid(),
+          sourceFile: tr.name,
+          transcriptId: tr.id,
+          fullText,
+          textPosition,
+          editHistory: [],
+          parsedWithModel: model,
+          timestamp: Date.now(),
+        };
+      });
+      console.log(`[Import] Aligned ${aligned}/${newBits.length} bit positions using fullText matching`);
+      const updatedTopics = [...clearedTopics, ...newBits];
+      dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: clearedMatches } });
+      await saveVaultState({ topics: updatedTopics, matches: clearedMatches, transcripts: s.transcripts, touchstones: s.touchstones });
+      set('status', `Imported ${newBits.length} bits for "${tr.name}" (cleared ${existingBitIds.size} old bits)`);
+    } catch (err) { set('status', `Error importing bits: ${err.message}`); }
   }, []);
 
   const removeTranscript = useCallback(async (tr) => {
@@ -363,7 +443,7 @@ export function useTranscriptOps(ctx, loadSavedData) {
   }, []);
 
   return {
-    purgeTranscriptData, removeTranscript, handleSyncApply,
+    purgeTranscriptData, importParsedJSON, removeTranscript, handleSyncApply,
     handleCreateTouchstoneFromBit, rectifyOverlaps,
     clearProcessedData, clearAllData, handleHardStop,
     handleBackup, handleRestore, handleRestoreFile, handleResetTouchstones,

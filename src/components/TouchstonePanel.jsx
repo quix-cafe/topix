@@ -3,6 +3,7 @@ import { useHashParam } from "../hooks/useHashParam";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 import { SYSTEM_SYNTHESIZE_TOUCHSTONE, SYSTEM_TOUCHSTONE_COMMUNE, SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
 import { searchTouchstones } from "../utils/touchstoneSearch";
+import { callOllama, onQueueChange, getQueueSnapshot, cancelPendingGenerations } from "../utils/ollama";
 
 
 function StyledFilename({ sourceFile, style }) {
@@ -20,6 +21,27 @@ function StyledFilename({ sourceFile, style }) {
 const RELATIONSHIP_OPTIONS = ["same_bit", "evolved", "related", "callback", "tag-on"];
 const EXCLUSIVE_RELATIONSHIPS = new Set(["same_bit", "evolved"]);
 
+function LLMQueueStatus() {
+  const [queue, setQueue] = useState(getQueueSnapshot);
+  useEffect(() => onQueueChange(setQueue), []);
+  if (queue.total === 0) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: "#0a0a14", borderRadius: 5, border: "1px solid #1a1a2a", fontSize: 10, color: "#888" }}>
+      <span style={{ color: "#ffa94d", fontWeight: 600 }}>
+        {queue.active ? queue.active.label : "waiting"}
+      </span>
+      {queue.pending.length > 0 && (
+        <span style={{ color: "#666" }}>+ {queue.pending.length} queued</span>
+      )}
+      {queue.pending.length > 0 && (
+        <button onClick={cancelPendingGenerations} style={{ background: "none", border: "1px solid #ff6b6b33", color: "#ff6b6b", padding: "1px 5px", borderRadius: 3, cursor: "pointer", fontSize: 9 }}>
+          cancel
+        </button>
+      )}
+    </div>
+  );
+}
+
 /**
  * TouchstonePanel - Display and explore touchstones (recurring jokes across transcripts)
  */
@@ -28,10 +50,11 @@ export function TouchstonePanel({
   touchstones, bits, matches, notes, onSelectBit, onHunt, onRectifyOverlaps, huntProgress, processing,
   onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onCreateTouchstone,
   onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, onUpdateTouchstoneEdits,
-  onCommuneTouchstone, onSynthesizeTouchstone, onMassTouchstoneCommunion, onSaintInstance,
-  onRelateTouchstone, onUnrelateTouchstone, onAutoRelateAll,
+  onCommuneTouchstone, onSynthesizeTouchstone, onMassTouchstoneCommunion, onPruneTouchstone, onMassPrune, onRecalcScores, onSaintInstance, onToggleCoreBit,
+  onRelateTouchstone, onUnrelateTouchstone, onAutoRelateAll, onRejectCoreless, onRedetect,
   initialTouchstoneId, onConsumeInitialTouchstone, onGoToNote,
   universalCorrections,
+  selectedModel,
 }) {
   const [selectedTouchstoneId, setSelectedTouchstoneIdRaw] = useHashParam("tsid", "");
   const setSelectedTouchstoneId = (id) => { setSelectedTouchstoneIdRaw(id || ""); if (id) window.scrollTo(0, 0); };
@@ -131,6 +154,7 @@ export function TouchstonePanel({
   if (selectedTouchstone) {
     return (
       <TouchstoneDetail
+        key={selectedTouchstone.id}
         touchstone={selectedTouchstone}
         bits={bits}
         allTouchstones={allTouchstones}
@@ -154,6 +178,8 @@ export function TouchstonePanel({
         onConsumeAutoOpenRelate={() => setAutoOpenRelate(false)}
         onUpdateTouchstoneEdits={onUpdateTouchstoneEdits}
         onCommuneTouchstone={onCommuneTouchstone}
+        onPruneTouchstone={onPruneTouchstone}
+        onToggleCoreBit={onToggleCoreBit}
         onSynthesizeTouchstone={onSynthesizeTouchstone}
         onSaintInstance={onSaintInstance}
         onRelateTouchstone={onRelateTouchstone}
@@ -162,6 +188,7 @@ export function TouchstonePanel({
         notes={notes}
         onGoToNote={onGoToNote}
         universalCorrections={universalCorrections}
+        selectedModel={selectedModel}
       />
     );
   }
@@ -188,6 +215,23 @@ export function TouchstonePanel({
             Rectify
           </button>
         )}
+        {onRecalcScores && (
+          <button onClick={onRecalcScores} disabled={processing} style={{
+            padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#ffd43b",
+            border: "1px solid #ffd43b40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
+          }}
+            title="Cap inflated LLM match scores using actual text similarity — instant, no LLM calls">
+            Recalc Scores
+          </button>
+        )}
+        {onMassPrune && (confirmed.length + possible.length + rejected.length) > 0 && (
+          <button onClick={onMassPrune} disabled={processing} style={{
+            padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#ff6b6b",
+            border: "1px solid #ff6b6b40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
+          }}>
+            Prune All
+          </button>
+        )}
         {onMassTouchstoneCommunion && (confirmed.length + possible.length + rejected.length) > 0 && (
           <button onClick={onMassTouchstoneCommunion} disabled={processing} style={{
             padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#c4b5fd",
@@ -207,7 +251,29 @@ export function TouchstonePanel({
             Auto-Relate
           </button>
         )}
+        {onRejectCoreless && (confirmed.length + possible.length) > 0 && (
+          <button onClick={() => {
+            const count = onRejectCoreless();
+            if (!count) alert("All touchstones have core or sainted bits.");
+          }} disabled={processing} style={{
+            padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#ff6b6b",
+            border: "1px solid #ff6b6b40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
+          }}>
+            Reject Coreless
+          </button>
+        )}
+        {onRedetect && (
+          <button onClick={onRedetect} disabled={processing} style={{
+            padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#74c0fc",
+            border: "1px solid #74c0fc40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
+          }}>
+            Re-detect
+          </button>
+        )}
       </div>
+
+      {/* LLM Queue Status */}
+      <LLMQueueStatus />
 
       {/* Hunt progress bar */}
       {huntProgress && huntProgress.total > 0 && (
@@ -417,7 +483,7 @@ function pctColor(pct) {
 
 function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, onMerge, onRelate, processing, bits, notes, allTouchstones }) {
   const instances = touchstone.instances || [];
-  const sourceCount = new Set(instances.map((i) => i.sourceFile)).size;
+  const sourceCount = new Set(instances.map((i) => { const b = bits.find(b => b.id === i.bitId); return b?.sourceFile || i.sourceFile; })).size;
   const instanceCount = instances.length;
   const sameBitCount = instances.filter((i) => i.relationship === "same_bit").length;
   const evolvedCount = instances.filter((i) => i.relationship === "evolved").length;
@@ -440,6 +506,8 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
     ? Math.round(instances.reduce((sum, i) => sum + (i.confidence || 0), 0) / instances.length * 100)
     : touchstone.matchInfo?.avgMatchPercentage || 0;
 
+  const hasCore = (touchstone.coreBitIds || []).length > 0;
+  const hasSainted = instances.some((i) => i.communionStatus === 'sainted');
   const saintedCount = instances.filter((i) => i.communionStatus === 'sainted').length;
   const blessedCount = instances.filter((i) => i.communionStatus === 'blessed').length;
   const damnedCount = instances.filter((i) => i.communionStatus === 'damned').length;
@@ -466,6 +534,7 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
           <div style={{ fontWeight: 700, color: "#eee", fontSize: 14, lineHeight: 1.3, marginBottom: 4 }}>
             {touchstone.name}
             {touchstone.manualName && <span style={{ fontSize: 9, color: "#c4b5fd", marginLeft: 6, fontWeight: 400 }}>edited</span>}
+            {!isRejected && !hasCore && !hasSainted && <span title="No core bit — may drift" style={{ fontSize: 9, color: "#ff6b6b", marginLeft: 6, fontWeight: 600 }}>no core</span>}
           </div>
 
           {/* Ideal text preview */}
@@ -549,19 +618,16 @@ function Badge({ bg, color, children }) {
   return <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: bg, color }}>{children}</span>;
 }
 
-function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBack, onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, mergeTargets, processing, autoOpenMerge, onConsumeAutoOpenMerge, autoOpenRelate, onConsumeAutoOpenRelate, onUpdateTouchstoneEdits, onCommuneTouchstone, onSynthesizeTouchstone, onSaintInstance, onRelateTouchstone, onUnrelateTouchstone, onNavigateToTouchstone, notes, onGoToNote, universalCorrections }) {
+function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBack, onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, mergeTargets, processing, autoOpenMerge, onConsumeAutoOpenMerge, autoOpenRelate, onConsumeAutoOpenRelate, onUpdateTouchstoneEdits, onCommuneTouchstone, onPruneTouchstone, onToggleCoreBit, onSynthesizeTouchstone, onSaintInstance, onRelateTouchstone, onUnrelateTouchstone, onNavigateToTouchstone, notes, onGoToNote, universalCorrections, selectedModel }) {
   const [renamePending, setRenamePending] = useState(null);
   const [expandedInstances, setExpandedInstances] = useState(new Set(touchstone.instances.map((i) => i.bitId)));
-  // Reset expanded instances when touchstone changes (useState only initializes once)
-  useEffect(() => {
-    setExpandedInstances(new Set(touchstone.instances.map((i) => i.bitId)));
-  }, [touchstone.id]);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [mergeSearch, setMergeSearch] = useState("");
   const [mergeResult, setMergeResult] = useState(null); // {accepted, rejected}
   const [relateOpen, setRelateOpen] = useState(false);
   const [relateSearch, setRelateSearch] = useState("");
   const [flowNeighborsOpen, setFlowNeighborsOpen] = useState(false);
+  const [rejectedReasonsOpen, setRejectedReasonsOpen] = useState(false);
   const [matchedNotesOpen, setMatchedNotesOpen] = useState(false);
   const [correctionsOpen, setCorrectionsOpen] = useState(false);
   const [newCorrFrom, setNewCorrFrom] = useState("");
@@ -832,18 +898,22 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
     setPasteText("");
   };
 
-  const sendToProvider = async (provider, type) => {
+  const sendToProvider = async (providerId, type) => {
     const prompt = buildPrompt(type);
     if (!prompt) return;
-    setSendingTo(provider);
+    setSendingTo(providerId);
     setSendPromptType(null);
     setCopyPromptOpen(false);
     setLlmResponse(null);
+    // Extract base provider and optional model variant (e.g. "gemini-pro" → provider:"gemini", gemini_model:"pro")
+    const geminiMatch = providerId.match(/^gemini-(.+)$/);
+    const provider = geminiMatch ? "gemini" : providerId;
+    const gemini_model = geminiMatch ? geminiMatch[1] : undefined;
     try {
       const res = await fetch("/api/llm/call", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, system: prompt.system, user: prompt.user }),
+        body: JSON.stringify({ provider, system: prompt.system, user: prompt.user, ...(gemini_model && { gemini_model }) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "API call failed");
@@ -916,23 +986,20 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
     const combinedText = instanceBits.map((b, idx) => `[Instance ${idx + 1} from "${b.sourceFile}"]:\n${b.fullText}`).join("\n\n---\n\n");
     setRenamePending({ loading: true, suggested: null });
     try {
-      const res = await fetch("http://localhost:11434/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "qwen3.5:9b",
-          messages: [
-            { role: "system", content: "Name this recurring comedy bit based on these performances of the SAME joke. Use the format: '[3-5 word title] or, [5-8 word title]' — the first title is a punchy shorthand, the second is more descriptive. Include the literal text 'or,' between them. Focus on the core topic or punchline. Reply with ONLY the title text, nothing else. No quotes, no punctuation wrapping. Example: 'DMV Nightmare or, The Witness Protection Line at the DMV'" },
-            { role: "user", content: `${instanceBits.length} performances of the same bit:\n\n${combinedText}` },
-          ],
-          stream: false,
-          think: false,
-          options: { num_predict: 64, num_ctx: 4096 },
-        }),
+      const systemPrompt = "Name this recurring comedy bit based on these performances of the SAME joke. Use the format: '[3-5 word title] or, [5-8 word title]' — the first title is a punchy shorthand, the second is more descriptive. Include the literal text 'or,' between them. Focus on the core topic or punchline. Reply with ONLY the title text, nothing else. No quotes, no punctuation wrapping. Example: 'DMV Nightmare or, The Witness Protection Line at the DMV'";
+      const userContent = `${instanceBits.length} performances of the same bit:\n\n${combinedText}`;
+      const result = await callOllama(systemPrompt, userContent, null, selectedModel || "qwen3.5:9b", null, null, {
+        label: "touchstone-rename",
+        priority: "normal",
+        ollamaOptions: { num_predict: 64, num_ctx: 4096 },
+        rawText: true,
       });
-      if (!res.ok) throw new Error(`Ollama error ${res.status}`);
-      const data = await res.json();
-      let title = (data.message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").replace(/^["'\s]+|["'\s]+$/g, "").trim();
+      // callOllama returns parsed JSON; for a plain-text response, it may be a string or throw.
+      // Extract the title from whatever we get back.
+      let title = (typeof result === "string" ? result : (result?.message?.content || JSON.stringify(result) || ""))
+        .replace(/<think>[\s\S]*?<\/think>/g, "")
+        .replace(/^["'\s]+|["'\s]+$/g, "")
+        .trim();
       setRenamePending({ loading: false, suggested: title || "" });
     } catch (err) {
       console.error("[Touchstone Rename] Error:", err);
@@ -1007,15 +1074,9 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           {renamePending?.loading && <span style={{ fontSize: 11, color: "#555" }}>generating...</span>}
         </div>
 
-        {/* Action buttons — separated from title */}
-        {/* TODO: Better organization for action buttons — group by category (naming, LLM ops, state changes),
-            consider collapsible sections or overflow menu for less-used actions */}
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-          {onGenerateTitle && !renamePending && !editingTitle && (
-            <button onClick={handleAutoRename} style={{ background: "#c4b5fd11", border: "1px solid #c4b5fd33", color: "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
-              {touchstone.manualName ? "AI Rename" : "Rename"}
-            </button>
-          )}
+        {/* Action buttons — grouped by category */}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
+          {/* — State changes — */}
           {onConfirmTouchstone && (
             <button onClick={() => onConfirmTouchstone(touchstone.id)}
               style={{ background: "#51cf6611", border: "1px solid #51cf6633", color: "#51cf66", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
@@ -1026,6 +1087,43 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
             <button onClick={() => onRestoreTouchstone(touchstone.id)}
               style={{ background: "#4ecdc411", border: "1px solid #4ecdc433", color: "#4ecdc4", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
               Restore
+            </button>
+          )}
+          {onRemoveTouchstone && (
+            <button onClick={() => onRemoveTouchstone(touchstone.id)}
+              style={{ background: "#ff6b6b11", border: "1px solid #ff6b6b33", color: "#ff6b6b", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              Reject
+            </button>
+          )}
+
+          <span style={{ width: 1, height: 16, background: "#333", margin: "0 2px" }} />
+
+          {/* — Naming & organization — */}
+          {onGenerateTitle && !renamePending && !editingTitle && (
+            <button onClick={handleAutoRename} style={{ background: "#c4b5fd11", border: "1px solid #c4b5fd33", color: "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              {touchstone.manualName ? "AI Rename" : "Rename"}
+            </button>
+          )}
+          {onMergeTouchstone && mergeTargets && mergeTargets.length > 0 && (
+            <button onClick={() => { setMergeOpen(!mergeOpen); setMergeSearch(""); setMergeResult(null); }}
+              style={{ background: mergeOpen ? "#c4b5fd22" : "none", border: "1px solid #ffa94d44", color: "#ffa94d", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              {mergeOpen ? "Cancel merge" : "Merge into..."}
+            </button>
+          )}
+          {onRelateTouchstone && (
+            <button onClick={() => { setRelateOpen(!relateOpen); setRelateSearch(""); }}
+              style={{ background: relateOpen ? "#e599f722" : "none", border: "1px solid #e599f744", color: "#e599f7", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+              {relateOpen ? "Cancel relate" : "Relate..."}
+            </button>
+          )}
+
+          <span style={{ width: 1, height: 16, background: "#333", margin: "0 2px" }} />
+
+          {/* — LLM ops — */}
+          {onPruneTouchstone && touchstone.bitIds.length > 2 && (
+            <button onClick={() => onPruneTouchstone(touchstone.id)} disabled={processing}
+              style={{ background: processing ? "none" : "#ff6b6b11", border: "1px solid #ff6b6b33", color: processing ? "#555" : "#ff6b6b", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: processing ? "default" : "pointer", fontWeight: 600 }}>
+              Prune
             </button>
           )}
           {onCommuneTouchstone && (
@@ -1041,24 +1139,10 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
               {touchstone.manualIdealText ? "Synthesize (locked)" : touchstone.idealText ? "Re-synthesize" : "Synthesize"}
             </button>
           )}
-          {onMergeTouchstone && mergeTargets && mergeTargets.length > 0 && (
-            <button onClick={() => { setMergeOpen(!mergeOpen); setMergeSearch(""); setMergeResult(null); }}
-              style={{ background: mergeOpen ? "#c4b5fd22" : "none", border: "1px solid #ffa94d44", color: "#ffa94d", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
-              {mergeOpen ? "Cancel merge" : "Merge into..."}
-            </button>
-          )}
-          {onRelateTouchstone && (
-            <button onClick={() => { setRelateOpen(!relateOpen); setRelateSearch(""); }}
-              style={{ background: relateOpen ? "#e599f722" : "none", border: "1px solid #e599f744", color: "#e599f7", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
-              {relateOpen ? "Cancel relate" : "Relate..."}
-            </button>
-          )}
-          {onRemoveTouchstone && (
-            <button onClick={() => onRemoveTouchstone(touchstone.id)}
-              style={{ background: "#ff6b6b11", border: "1px solid #ff6b6b33", color: "#ff6b6b", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
-              Reject
-            </button>
-          )}
+
+          <span style={{ width: 1, height: 16, background: "#333", margin: "0 2px" }} />
+
+          {/* — Clipboard & external — */}
           <div style={{ position: "relative" }}>
             <button onClick={() => { setCopyPromptOpen(!copyPromptOpen); setSendPromptType(null); setPasteResponseType(null); }}
               style={{ background: copyFeedback ? "#51cf6611" : "#c4b5fd11", border: `1px solid ${copyFeedback ? "#51cf6633" : "#c4b5fd33"}`, color: copyFeedback ? "#51cf66" : "#c4b5fd", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
@@ -1125,7 +1209,8 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
               </div>
             )}
           </div>
-          {/* Send to... */}
+
+          {/* Send to... with model selection */}
           <div style={{ position: "relative" }}>
             <button onClick={() => { setSendPromptType(sendPromptType ? null : "pick"); setCopyPromptOpen(false); setPasteResponseType(null); }}
               disabled={!!sendingTo}
@@ -1145,19 +1230,34 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
               </div>
             )}
             {sendPromptType && sendPromptType !== "pick" && (
-              <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "#1a1a2e", border: "1px solid #333", borderRadius: 6, padding: 4, zIndex: 100, minWidth: 180 }}>
+              <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: "#1a1a2e", border: "1px solid #333", borderRadius: 6, padding: 4, zIndex: 100, minWidth: 200 }}>
                 <div style={{ fontSize: 10, color: "#555", padding: "4px 10px", borderBottom: "1px solid #252538", marginBottom: 4 }}>
                   Send "{sendPromptType}" to:
                 </div>
                 {[
-                  { id: "gemini", label: "Gemini Pro", color: "#4285f4" },
+                  { id: "gemini", label: "Gemini", color: "#4285f4", variants: [
+                    { id: "gemini-pro", label: "Pro", suffix: " Pro" },
+                    { id: "gemini-thinking", label: "Thinking", suffix: " Thinking" },
+                    { id: "gemini-flash", label: "Flash", suffix: " Flash" },
+                  ]},
                   { id: "claude", label: "Claude Sonnet", color: "#c4946a" },
                   { id: "ollama-high", label: "Ollama (high-end)", color: "#51cf66" },
-                ].map(({ id, label, color }) => (
-                  <button key={id} onClick={() => sendToProvider(id, sendPromptType)}
-                    style={{ display: "block", width: "100%", background: "none", border: "none", color, padding: "6px 10px", fontSize: 11, cursor: "pointer", textAlign: "left", borderRadius: 4, fontWeight: 600 }}
-                    onMouseEnter={(e) => e.target.style.background = color + "11"} onMouseLeave={(e) => e.target.style.background = "none"}>
-                    {label}
+                ].map((provider) => provider.variants ? (
+                  <div key={provider.id}>
+                    <div style={{ fontSize: 10, color: provider.color, padding: "5px 10px", fontWeight: 600 }}>{provider.label}</div>
+                    {provider.variants.map((v) => (
+                      <button key={v.id} onClick={() => sendToProvider(v.id, sendPromptType)}
+                        style={{ display: "block", width: "100%", background: "none", border: "none", color: provider.color, padding: "5px 10px 5px 20px", fontSize: 11, cursor: "pointer", textAlign: "left", borderRadius: 4 }}
+                        onMouseEnter={(e) => e.target.style.background = provider.color + "11"} onMouseLeave={(e) => e.target.style.background = "none"}>
+                        {v.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <button key={provider.id} onClick={() => sendToProvider(provider.id, sendPromptType)}
+                    style={{ display: "block", width: "100%", background: "none", border: "none", color: provider.color, padding: "6px 10px", fontSize: 11, cursor: "pointer", textAlign: "left", borderRadius: 4, fontWeight: 600 }}
+                    onMouseEnter={(e) => e.target.style.background = provider.color + "11"} onMouseLeave={(e) => e.target.style.background = "none"}>
+                    {provider.label}
                   </button>
                 ))}
                 <button onClick={() => setSendPromptType("pick")}
@@ -1656,11 +1756,17 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
                 </button>
               </div>
             )}
-            {/* Show rejected reasons so user can un-reject */}
+            {/* Show rejected reasons so user can un-reject — collapsed by default */}
             {rejectedReasons.length > 0 && (
               <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>Rejected reasons (too broad/loose):</div>
-                {rejectedReasons.map((reason, idx) => (
+                <div
+                  onClick={() => setRejectedReasonsOpen(!rejectedReasonsOpen)}
+                  style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 1, marginBottom: 2, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+                >
+                  <span>{rejectedReasonsOpen ? "▾" : "▸"}</span>
+                  Rejected reasons ({rejectedReasons.length})
+                </div>
+                {rejectedReasonsOpen && rejectedReasons.map((reason, idx) => (
                   <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "2px 0" }}>
                     <div style={{ flex: 1, fontSize: 10, color: "#555", fontStyle: "italic", lineHeight: 1.4, textDecoration: "line-through" }}>{reason}</div>
                     <button
@@ -1791,15 +1897,20 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           Instances ({touchstone.instances.length})
         </div>
 
-        {touchstone.instances.map((instance) => {
+        {[...touchstone.instances].sort((a, b) => {
+          const aCore = (touchstone.coreBitIds || []).includes(a.bitId) ? 1 : 0;
+          const bCore = (touchstone.coreBitIds || []).includes(b.bitId) ? 1 : 0;
+          return bCore - aCore;
+        }).map((instance) => {
           const bit = bits.find((b) => b.id === instance.bitId);
           if (!bit) return null;
           const isExpanded = expandedInstances.has(instance.bitId);
+          const isCore = (touchstone.coreBitIds || []).includes(instance.bitId);
 
           const relColor = { same_bit: "#51cf66", evolved: "#ffa94d", related: "#4ecdc4", callback: "#cc5de8", "tag-on": "#74c0fc" }[instance.relationship] || "#888";
 
           return (
-            <div key={instance.bitId} className="card" style={{ marginBottom: 8, cursor: "default" }}>
+            <div key={instance.bitId} className="card" style={{ marginBottom: 8, cursor: "default", borderLeft: isCore ? "3px solid #ffd43b" : "3px solid transparent" }}>
               {/* Top row: action buttons */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                 <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -1855,10 +1966,10 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
                       </select>
                     );
                   })()}
-                  {instance.confidence > 0 && <span style={{ fontSize: 10, color: "#666" }}>{Math.round(instance.confidence * 100)}%</span>}
+                  {(instance.matchPercentage || instance.confidence) > 0 && <span style={{ fontSize: 10, color: "#666" }}>{Math.round(instance.matchPercentage || (instance.confidence * 100))}%</span>}
                   {onRemoveInstance && touchstone.instances.length > 1 && (
                     <button
-                      onClick={() => { if (window.confirm(`Remove "${instance.title}" from this touchstone?`)) onRemoveInstance(touchstone.id, instance.bitId); }}
+                      onClick={() => { if (window.confirm(`Remove "${bit.title}" from this touchstone?`)) onRemoveInstance(touchstone.id, instance.bitId); }}
                       style={{ background: "#ff6b6b11", border: "1px solid #ff6b6b33", color: "#ff6b6b", borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}
                     >
                       &times;
@@ -1868,10 +1979,19 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
               </div>
               {/* Content */}
               <div>
-                <div style={{ fontWeight: 600, color: "#ddd", fontSize: 13, marginBottom: 4 }}>
-                  #{instance.instanceNumber} — {applyCorrections(instance.title)}
+                <div style={{ fontWeight: 600, color: "#ddd", fontSize: 13, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span>#{instance.instanceNumber} — {applyCorrections(bit.title)}</span>
+                  {onToggleCoreBit && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onToggleCoreBit(touchstone.id, instance.bitId); }}
+                      title={isCore ? "Remove from core bits" : "Mark as core bit (anchor for prune/commune)"}
+                      style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: isCore ? "#ffd43b22" : "none", color: isCore ? "#ffd43b" : "#555", border: `1px solid ${isCore ? "#ffd43b44" : "#333"}`, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer" }}
+                    >
+                      Core
+                    </button>
+                  )}
                 </div>
-                <div style={{ fontSize: 11, marginBottom: 4 }}><StyledFilename sourceFile={instance.sourceFile} /></div>
+                <div style={{ fontSize: 11, marginBottom: 4 }}><StyledFilename sourceFile={bit.sourceFile} /></div>
                 {bit.summary && <div style={{ fontSize: 11, color: "#777", lineHeight: 1.4, marginBottom: 4 }}>{applyCorrections(bit.summary)}</div>}
               </div>
 

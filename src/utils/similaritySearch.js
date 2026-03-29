@@ -127,15 +127,15 @@ export function findSimilarBits(queryBit, allBits, threshold = 0.5) {
  * Calculate overall similarity score between two bits
  */
 function calculateSimilarity(bit1, bit2) {
-  // Weights tuned so fullText dominates — two versions of the same joke
-  // with different LLM-generated titles/tags should still score high
+  // Weights heavily favor fullText — tags/keywords can be stale after
+  // split/join/boundary ops, so they get minimal weight
   const titleSim = stringSimilarity(bit1.title, bit2.title) * 0.1;
   const summarySim = stringSimilarity(bit1.summary, bit2.summary) * 0.15;
-  const keywordSim = calculateKeywordSimilarity(bit1.keywords, bit2.keywords) * 0.2;
-  const tagSim = calculateTagSimilarity(bit1.tags, bit2.tags) * 0.1;
-  // fullText word overlap catches rewrites with shared vocabulary — strongest signal
+  const keywordSim = calculateKeywordSimilarity(bit1.keywords, bit2.keywords) * 0.05;
+  const tagSim = calculateTagSimilarity(bit1.tags, bit2.tags) * 0.05;
+  // fullText word overlap is ground truth — strongest signal
   const fullTextSim = (bit1.fullText && bit2.fullText)
-    ? wordOverlapScore(toWordBag(bit1.fullText), toWordBag(bit2.fullText)) * 0.45
+    ? wordOverlapScore(toWordBag(bit1.fullText), toWordBag(bit2.fullText)) * 0.65
     : 0;
 
   return titleSim + summarySim + keywordSim + tagSim + fullTextSim;

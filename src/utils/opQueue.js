@@ -5,9 +5,11 @@
 export class OpQueue {
   #queue = [];
   #running = false;
+  #currentController = null;
 
   /**
    * Enqueue an async function to run serially.
+   * The callback receives an AbortSignal: fn(signal).
    * Returns a promise that resolves with the function's return value.
    */
   enqueue(fn) {
@@ -22,11 +24,14 @@ export class OpQueue {
     this.#running = true;
     while (this.#queue.length > 0) {
       const { fn, resolve, reject } = this.#queue.shift();
+      const controller = new AbortController();
+      this.#currentController = controller;
       try {
-        resolve(await fn());
+        resolve(await fn(controller.signal));
       } catch (e) {
         reject(e);
       }
+      this.#currentController = null;
     }
     this.#running = false;
   }
@@ -36,9 +41,13 @@ export class OpQueue {
     return this.#queue.length + (this.#running ? 1 : 0);
   }
 
-  /** Clear all pending (not yet started) operations */
+  /** Clear all pending (not yet started) operations and abort the currently running task */
   clear() {
-    const cleared = this.#queue.length;
+    const cleared = this.#queue.length + (this.#currentController ? 1 : 0);
+    if (this.#currentController) {
+      this.#currentController.abort();
+      this.#currentController = null;
+    }
     for (const { reject } of this.#queue) {
       reject(new Error("Queue cleared"));
     }

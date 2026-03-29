@@ -163,14 +163,30 @@ export function extractPartialBitFields(jsonText) {
  */
 export function extractCompleteJsonObjects(text) {
   if (!text) return [];
+  return extractCompleteJsonObjectsFrom(text, 0).objects;
+}
+
+/**
+ * Extract complete JSON objects from text starting at a given offset.
+ * Returns { objects: Array, endPos: number } where endPos is the character
+ * position just past the last complete object found (use as cursor for next call).
+ * If no objects are found, endPos equals startIndex so the cursor doesn't advance.
+ *
+ * @param {string} text - Full accumulated text
+ * @param {number} startIndex - Character index to start scanning from
+ * @returns {{ objects: Array, endPos: number }}
+ */
+export function extractCompleteJsonObjectsFrom(text, startIndex = 0) {
+  if (!text || startIndex >= text.length) return { objects: [], endPos: startIndex };
 
   const objects = [];
   let depth = 0;
   let inString = false;
   let escaped = false;
   let objectStart = -1;
+  let endPos = startIndex;
 
-  for (let i = 0; i < text.length; i++) {
+  for (let i = startIndex; i < text.length; i++) {
     const char = text[i];
 
     if (escaped) {
@@ -205,6 +221,7 @@ export function extractCompleteJsonObjects(text) {
           const bit = normalizeBit(obj);
           if (bit) {
             objects.push(bit);
+            endPos = i + 1;  // Advance past this complete object
           }
         } catch (e) {
           // Skip invalid JSON objects
@@ -214,7 +231,7 @@ export function extractCompleteJsonObjects(text) {
     }
   }
 
-  return objects;
+  return { objects, endPos };
 }
 
 /**

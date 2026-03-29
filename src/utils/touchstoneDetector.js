@@ -94,14 +94,12 @@ export function detectTouchstones(
   const bitById = new Map(bits.map((b) => [b.id, b]));
 
   // ── Filter and score edges ─────────────────────────────────────
-  // Only cross-transcript, sufficiently strong edges form clusters
+  // Strong edges form clusters — both cross-transcript and same-transcript
+  // (same-transcript handles split/combined jokes)
   const strongEdges = [];
   for (const m of matches) {
     if (!m.relationship) continue;
     if (!bitById.has(m.sourceId) || !bitById.has(m.targetId)) continue;
-    const srcBit = bitById.get(m.sourceId);
-    const tgtBit = bitById.get(m.targetId);
-    if (srcBit.sourceFile === tgtBit.sourceFile) continue; // cross-transcript only
 
     const score = edgeScore(m);
     if (score >= MIN_EDGE_SCORE) {
@@ -120,12 +118,12 @@ export function detectTouchstones(
   const uf = new UnionFind(bits.map((b) => b.id));
 
   // Track which transcripts are in each cluster root
-  // clusterTranscripts: rootId -> Set<sourceFile>
+  // clusterTranscripts: rootId -> [sourceFile, ...] (array, not set — allows counting duplicates)
   // clusterSize: rootId -> number
   const clusterTranscripts = new Map();
   const clusterSize = new Map();
   for (const b of bits) {
-    clusterTranscripts.set(b.id, new Set([b.sourceFile]));
+    clusterTranscripts.set(b.id, [b.sourceFile]);
     clusterSize.set(b.id, 1);
   }
 
@@ -147,14 +145,19 @@ export function detectTouchstones(
     const srcBit = bitById.get(edge.sourceId);
     const tgtBit = bitById.get(edge.targetId);
 
-    // Would merging create duplicate transcripts in the cluster?
+    // Allow same-transcript bits (split/combined jokes) but cap at MAX_PER_TRANSCRIPT
+    const MAX_PER_TRANSCRIPT = 3;
     const srcFiles = clusterTranscripts.get(srcRoot);
     const tgtFiles = clusterTranscripts.get(tgtRoot);
-    let hasOverlap = false;
-    for (const f of tgtFiles) {
-      if (srcFiles.has(f)) { hasOverlap = true; break; }
+    let wouldExceedCap = false;
+    // Count per-file bits after merge
+    const mergedFileCounts = new Map();
+    for (const f of srcFiles) mergedFileCounts.set(f, (mergedFileCounts.get(f) || 0) + 1);
+    for (const f of tgtFiles) mergedFileCounts.set(f, (mergedFileCounts.get(f) || 0) + 1);
+    for (const count of mergedFileCounts.values()) {
+      if (count > MAX_PER_TRANSCRIPT) { wouldExceedCap = true; break; }
     }
-    if (hasOverlap) continue; // skip — would put 2 bits from same transcript
+    if (wouldExceedCap) continue;
 
     // Growth threshold: new members need to be at least 80% of the cluster's
     // median edge score. This allows legitimate large touchstones (a bit she
@@ -172,7 +175,7 @@ export function detectTouchstones(
     // Merge
     uf.union(edge.sourceId, edge.targetId);
     const newRoot = uf.find(edge.sourceId);
-    const mergedFiles = new Set([...srcFiles, ...tgtFiles]);
+    const mergedFiles = [...srcFiles, ...tgtFiles];
     clusterTranscripts.set(newRoot, mergedFiles);
     clusterSize.set(newRoot, mergedSize);
     // Merge edge score histories
@@ -185,10 +188,46 @@ export function detectTouchstones(
 
   // ── Build touchstone objects from clusters ──────────────────────
   const clusterIds = uf.clusters();
-  let allTouchstones = clusterIds
+
+  // Post-clustering pruning: remove bits that only connect to one other cluster
+  // member via a single edge (transitive drift). In clusters of 3+, each bit
+  // must have qualifying edges to at least 2 other members.
+  const prunedClusterIds = clusterIds.map((ids) => {
+    if (ids.length <= 2) return ids; // pairs are already validated by edge threshold
+    const idSet = new Set(ids);
+    // Build per-bit neighbor count (how many OTHER cluster members this bit has strong edges to)
+    const neighborCount = new Map(ids.map(id => [id, 0]));
+    for (const edge of strongEdges) {
+      if (idSet.has(edge.sourceId) && idSet.has(edge.targetId)) {
+        neighborCount.set(edge.sourceId, (neighborCount.get(edge.sourceId) || 0) + 1);
+        neighborCount.set(edge.targetId, (neighborCount.get(edge.targetId) || 0) + 1);
+      }
+    }
+    // Keep bits connected to 2+ other cluster members, OR connected to 1 with a same_bit edge
+    const kept = ids.filter(id => {
+      const count = neighborCount.get(id) || 0;
+      if (count >= 2) return true;
+      // Allow single-edge bits only if that edge is same_bit (very high confidence)
+      if (count === 1) {
+        return strongEdges.some(e =>
+          (e.sourceId === id || e.targetId === id) &&
+          idSet.has(e.sourceId) && idSet.has(e.targetId) &&
+          e.relationship === "same_bit"
+        );
+      }
+      return false;
+    });
+    return kept;
+  });
+
+  let allTouchstones = prunedClusterIds
     .map((ids) => {
       const cluster = ids.map((id) => bitById.get(id)).filter(Boolean);
       if (cluster.length < minFrequency) return null;
+      // Require at least 2 unique transcripts — same-transcript-only clusters
+      // are just split bits, not recurring touchstones
+      const uniqueSources = new Set(cluster.map(b => b.sourceFile));
+      if (uniqueSources.size < 2) return null;
       return createTouchstone(cluster, matches);
     })
     .filter(Boolean);
@@ -199,9 +238,95 @@ export function detectTouchstones(
   // Sort: most instances first
   allTouchstones.sort((a, b) => b.frequency - a.frequency);
 
+  // ── Detect orphaned pairs — strong edges between unclustered bits ──
+  // Bits that have solid matching criteria but didn't cluster (e.g. due to
+  // growth threshold or transcript overlap constraints) may still warrant
+  // a possible touchstone.
+  const clusteredBitIds = new Set(allTouchstones.flatMap(t => t.bitIds));
+  const orphanEdges = strongEdges.filter(edge => {
+    if (clusteredBitIds.has(edge.sourceId) || clusteredBitIds.has(edge.targetId)) return false;
+    const srcBit = bitById.get(edge.sourceId);
+    const tgtBit = bitById.get(edge.targetId);
+    return srcBit && tgtBit && edge._score >= MIN_EDGE_SCORE;
+  });
+
+  // Build orphan clusters from these edges using a fresh union-find
+  if (orphanEdges.length > 0) {
+    const orphanBitIds = new Set(orphanEdges.flatMap(e => [e.sourceId, e.targetId]));
+    const orphanUf = new UnionFind([...orphanBitIds]);
+    for (const edge of orphanEdges) {
+      orphanUf.union(edge.sourceId, edge.targetId);
+    }
+    const orphanClusters = orphanUf.clusters();
+    for (const ids of orphanClusters) {
+      const cluster = ids.map(id => bitById.get(id)).filter(Boolean);
+      const pruned = capBitsPerTranscript(cluster, matches);
+      const uniqueSources = new Set(pruned.map(b => b.sourceFile));
+      if (pruned.length >= minFrequency && uniqueSources.size >= 2) {
+        allTouchstones.push(createTouchstone(pruned, matches));
+      }
+    }
+    if (orphanClusters.length > 0) {
+      console.log(`[Touchstones] Found ${orphanClusters.length} orphan pair(s) from unclustered bits`);
+    }
+  }
+
+  // ── Cross-membership: let bits join additional touchstones ────
+  // A bit already in one touchstone can also appear in another if it has
+  // strong edges to that touchstone's members (e.g. a joke that overlaps
+  // two distinct touchstone themes).
+  const CROSS_MEMBERSHIP_THRESHOLD = 70;
+  let crossAdded = 0;
+  for (const ts of allTouchstones) {
+    const tsBitSet = new Set(ts.bitIds);
+    for (const edge of strongEdges) {
+      if (edge._score < CROSS_MEMBERSHIP_THRESHOLD) continue;
+      // One end in this touchstone, other end not
+      let outsideBitId = null;
+      if (tsBitSet.has(edge.sourceId) && !tsBitSet.has(edge.targetId)) outsideBitId = edge.targetId;
+      else if (tsBitSet.has(edge.targetId) && !tsBitSet.has(edge.sourceId)) outsideBitId = edge.sourceId;
+      if (!outsideBitId) continue;
+
+      const outsideBit = bitById.get(outsideBitId);
+      if (!outsideBit) continue;
+
+      // Check per-transcript cap in this touchstone
+      const sameFileBits = ts.bitIds.filter(id => bitById.get(id)?.sourceFile === outsideBit.sourceFile);
+      if (sameFileBits.length >= MAX_BITS_PER_TRANSCRIPT) continue;
+
+      // Must have edges to at least 2 members of this touchstone (or 1 same_bit)
+      let memberEdges = 0;
+      let hasSameBit = false;
+      for (const e2 of strongEdges) {
+        const otherId = e2.sourceId === outsideBitId ? e2.targetId : (e2.targetId === outsideBitId ? e2.sourceId : null);
+        if (otherId && tsBitSet.has(otherId)) {
+          memberEdges++;
+          if (e2.relationship === "same_bit") hasSameBit = true;
+        }
+      }
+      if (memberEdges < 2 && !hasSameBit) continue;
+
+      tsBitSet.add(outsideBitId);
+      ts.bitIds.push(outsideBitId);
+      ts.instances.push({
+        bitId: outsideBitId,
+        sourceFile: outsideBit.sourceFile,
+        title: outsideBit.title,
+        instanceNumber: ts.instances.length + 1,
+        confidence: edge._score / 100,
+        relationship: edge.relationship || "same_bit",
+      });
+      ts.frequency = ts.instances.length;
+      crossAdded++;
+    }
+  }
+  if (crossAdded > 0) console.log(`[Touchstones] Added ${crossAdded} cross-membership bit(s) to existing touchstones`);
+
   // All detected touchstones start as "possible" — user manually confirms or rejects
   const possible = allTouchstones.map(t => ({ ...t, category: "possible" }));
 
+  const prunedCount = clusterIds.reduce((n, ids, i) => n + ids.length - prunedClusterIds[i].length, 0);
+  if (prunedCount > 0) console.log(`[Touchstones] Pruned ${prunedCount} weakly-connected bit(s) from clusters`);
   console.log(
     `[Touchstones] Found ${possible.length} possible from ${clusterIds.length} cluster(s)`
   );
@@ -238,7 +363,7 @@ function mergeOverlappingTouchstones(touchstones, matches, bitById) {
     // Only merge touchstones on very strong same_bit edges —
     // touchstones commonly follow one another in a flow, so being
     // connected by a moderate edge does NOT mean they're the same joke
-    if (score >= 85) {
+    if (score >= 75) {
       tsUf.union(tsA, tsB);
     }
   }
@@ -259,7 +384,7 @@ function mergeOverlappingTouchstones(touchstones, matches, bitById) {
     }
 
     const allBits = [...allBitIds].map(id => bitById.get(id)).filter(Boolean);
-    const pruned = enforceOnePerTranscript(allBits, matches);
+    const pruned = capBitsPerTranscript(allBits, matches);
     if (pruned.length >= 2) {
       result.push(createTouchstone(pruned, matches));
     }
@@ -274,11 +399,11 @@ function mergeOverlappingTouchstones(touchstones, matches, bitById) {
 }
 
 /**
- * Given a set of bits, keep at most one per transcript.
- * For each transcript with multiple bits, keep the one with the strongest
- * match edges to bits in other transcripts.
+ * Soft-cap bits per transcript: allow up to MAX_PER_TRANSCRIPT bits from the
+ * same transcript (split/combined jokes), keeping the strongest-connected ones.
  */
-function enforceOnePerTranscript(bits, matches) {
+const MAX_BITS_PER_TRANSCRIPT = 3;
+function capBitsPerTranscript(bits, matches) {
   const byFile = new Map();
   for (const b of bits) {
     if (!byFile.has(b.sourceFile)) byFile.set(b.sourceFile, []);
@@ -289,27 +414,20 @@ function enforceOnePerTranscript(bits, matches) {
   const result = [];
 
   for (const [, fileBits] of byFile) {
-    if (fileBits.length === 1) {
-      result.push(fileBits[0]);
+    if (fileBits.length <= MAX_BITS_PER_TRANSCRIPT) {
+      result.push(...fileBits);
       continue;
     }
-    // Score each bit by its strongest cross-transcript match edge within this cluster
-    let bestBit = fileBits[0];
-    let bestScore = -1;
-    for (const bit of fileBits) {
+    // Score each bit by its match edges within this cluster, keep top N
+    const scored = fileBits.map(bit => {
       let score = 0;
       for (const m of matches) {
-        if (m.sourceId === bit.id && bitIdSet.has(m.targetId)) {
-          const other = bits.find(b => b.id === m.targetId);
-          if (other && other.sourceFile !== bit.sourceFile) score += edgeScore(m);
-        } else if (m.targetId === bit.id && bitIdSet.has(m.sourceId)) {
-          const other = bits.find(b => b.id === m.sourceId);
-          if (other && other.sourceFile !== bit.sourceFile) score += edgeScore(m);
-        }
+        if (m.sourceId === bit.id && bitIdSet.has(m.targetId)) score += edgeScore(m);
+        else if (m.targetId === bit.id && bitIdSet.has(m.sourceId)) score += edgeScore(m);
       }
-      if (score > bestScore) { bestScore = score; bestBit = bit; }
-    }
-    result.push(bestBit);
+      return { bit, score };
+    }).sort((a, b) => b.score - a.score);
+    result.push(...scored.slice(0, MAX_BITS_PER_TRANSCRIPT).map(s => s.bit));
   }
 
   return result;
@@ -602,4 +720,331 @@ export function getTouchstoneInstances(touchstoneId, bits) {
  */
 export function getBitTouchstones(bitId, touchstones) {
   return touchstones.filter((t) => t.bitIds.includes(bitId));
+}
+
+/**
+ * Prune bits from a touchstone using text similarity as ground truth.
+ * No LLM calls — ignores claimed match scores entirely and checks whether
+ * the actual text of each bit corroborates membership.
+ *
+ * Strategy:
+ *   1. Identify the "anchor" text — the core bits' fullText, or the 2 most-connected bits
+ *   2. For every other bit, compute word overlap against ALL anchor texts
+ *   3. Prune bits whose best text similarity to any anchor is below threshold
+ *   4. Graph connectivity is a secondary signal (zero-edge bits always pruned)
+ *
+ * This catches the main failure mode: LLM gives inflated same_bit scores
+ * to bits that are merely on the same topic but not the same joke.
+ *
+ * @param {object} touchstone - The touchstone to prune
+ * @param {array} matches - All match edges
+ * @param {array} bits - All bits (for text lookup)
+ * @returns {{ pruned: object|null, removed: string[], details: object[] }}
+ */
+export function pruneWeakBits(touchstone, matches, bits) {
+  const bitIds = new Set(touchstone.bitIds);
+  if (bitIds.size <= 2) return { pruned: touchstone, removed: [], details: [] };
+
+  const bitById = new Map(bits.map(b => [b.id, b]));
+  const coreBitIdSet = new Set(touchstone.coreBitIds || []);
+
+  // ── Identify anchor bits (ground truth for what this touchstone IS) ──
+  // Use core bits if available; otherwise pick the 2 bits with strongest mutual edges
+  let anchorIds;
+  if (coreBitIdSet.size >= 2) {
+    anchorIds = [...coreBitIdSet];
+  } else {
+    // Find the pair with the strongest edge within this touchstone
+    let bestPair = null, bestScore = 0;
+    for (const m of matches) {
+      if (!bitIds.has(m.sourceId) || !bitIds.has(m.targetId)) continue;
+      const score = edgeScore(m);
+      if (score > bestScore) { bestScore = score; bestPair = [m.sourceId, m.targetId]; }
+    }
+    anchorIds = bestPair || [...bitIds].slice(0, 2);
+  }
+  const anchorSet = new Set(anchorIds);
+
+  // Pre-compute anchor word bags (words 4+ chars, lowercased)
+  const anchorWordBags = anchorIds
+    .map(id => bitById.get(id))
+    .filter(b => b?.fullText)
+    .map(b => textToWordBag(b.fullText));
+
+  // If the touchstone has an idealText, use it as the primary anchor —
+  // it's the distilled essence of the joke and the best signal for membership
+  if (touchstone.idealText) {
+    anchorWordBags.unshift(textToWordBag(touchstone.idealText));
+  }
+
+  // Extract key terms from userReasons ("why matched") — these are high-signal
+  // words/phrases the user explicitly identified as defining this touchstone
+  const reasonKeywords = new Set();
+  for (const reason of (touchstone.userReasons || [])) {
+    for (const word of textToWordBag(reason)) {
+      reasonKeywords.add(word);
+    }
+  }
+
+  if (anchorWordBags.length === 0) return { pruned: touchstone, removed: [], details: [] };
+
+  // ── Also compute pairwise text similarity between ALL pairs ──
+  // This gives us median similarity to calibrate the threshold
+  const allBitsWithText = [...bitIds].map(id => ({ id, bag: textToWordBag(bitById.get(id)?.fullText || "") })).filter(b => b.bag.size > 0);
+  const pairSims = [];
+  for (let i = 0; i < allBitsWithText.length; i++) {
+    for (let j = i + 1; j < allBitsWithText.length; j++) {
+      pairSims.push(wordBagOverlap(allBitsWithText[i].bag, allBitsWithText[j].bag));
+    }
+  }
+  pairSims.sort((a, b) => a - b);
+  const medianSim = pairSims.length > 0 ? pairSims[Math.floor(pairSims.length / 2)] : 0;
+
+  // Threshold: at least 60% of median pairwise similarity, with a floor of 0.08
+  // This is adaptive — a touchstone about a very specific joke will have high median sim
+  // and thus a high threshold; a broad cluster will have lower threshold
+  const SIM_FLOOR = 0.08;
+  const threshold = Math.max(SIM_FLOOR, medianSim * 0.6);
+
+  // ── Build graph connectivity as secondary signal ──
+  const neighborCount = new Map();
+  for (const id of bitIds) neighborCount.set(id, 0);
+  for (const m of matches) {
+    if (!bitIds.has(m.sourceId) || !bitIds.has(m.targetId)) continue;
+    if (edgeScore(m) < MIN_EDGE_SCORE) continue;
+    neighborCount.set(m.sourceId, (neighborCount.get(m.sourceId) || 0) + 1);
+    neighborCount.set(m.targetId, (neighborCount.get(m.targetId) || 0) + 1);
+  }
+
+  // ── Evaluate each bit ──
+  const removed = [];
+  const details = [];
+  for (const id of bitIds) {
+    // Never prune sainted/blessed instances
+    const instance = (touchstone.instances || []).find(i => i.bitId === id);
+    if (instance?.communionStatus === "sainted" || instance?.communionStatus === "blessed") continue;
+    // Never prune anchors
+    if (anchorSet.has(id)) continue;
+
+    const bit = bitById.get(id);
+    const bag = bit?.fullText ? textToWordBag(bit.fullText) : new Set();
+    const neighbors = neighborCount.get(id) || 0;
+
+    // Compute best text similarity to any anchor (including idealText if present)
+    let bestAnchorSim = 0;
+    for (const anchorBag of anchorWordBags) {
+      const sim = wordBagOverlap(bag, anchorBag);
+      if (sim > bestAnchorSim) bestAnchorSim = sim;
+    }
+
+    // Check how many user-defined reason keywords appear in this bit's text
+    let reasonHits = 0;
+    if (reasonKeywords.size > 0) {
+      for (const kw of reasonKeywords) {
+        if (bag.has(kw)) reasonHits++;
+      }
+    }
+    const reasonScore = reasonKeywords.size > 0 ? reasonHits / reasonKeywords.size : 0;
+
+    // Also compute avg similarity to ALL other touchstone members
+    let totalSim = 0, simCount = 0;
+    for (const other of allBitsWithText) {
+      if (other.id === id) continue;
+      totalSim += wordBagOverlap(bag, other.bag);
+      simCount++;
+    }
+    const avgSim = simCount > 0 ? totalSim / simCount : 0;
+
+    // A bit is saved from pruning if it matches enough user-defined reason keywords
+    // (these are high-confidence signals the user explicitly provided)
+    const savedByReasons = reasonScore >= 0.4;
+
+    const shouldPrune = !savedByReasons && (
+      // No text at all
+      bag.size === 0 ||
+      // Zero graph edges AND below text threshold
+      (neighbors === 0 && bestAnchorSim < threshold * 1.5) ||
+      // Below text similarity threshold to anchors AND below average
+      (bestAnchorSim < threshold && avgSim < threshold)
+    );
+
+    if (shouldPrune) {
+      removed.push(id);
+      details.push({ id, title: bit?.title, anchorSim: bestAnchorSim, avgSim, reasonScore, neighbors, threshold });
+    }
+  }
+
+  if (removed.length === 0) return { pruned: touchstone, removed: [], details: [] };
+
+  const removedSet = new Set(removed);
+  const keptBitIds = touchstone.bitIds.filter(id => !removedSet.has(id));
+  const keptInstances = (touchstone.instances || []).filter(i => !removedSet.has(i.bitId));
+
+  if (keptBitIds.length < 2 && !touchstone.manual) {
+    return { pruned: null, removed, details };
+  }
+
+  return {
+    pruned: {
+      ...touchstone,
+      bitIds: keptBitIds,
+      coreBitIds: (touchstone.coreBitIds || []).filter(id => !removedSet.has(id)),
+      instances: keptInstances,
+      frequency: keptBitIds.length,
+      sourceCount: new Set(keptInstances.map(i => i.sourceFile)).size,
+      removedBitIds: [...new Set([...(touchstone.removedBitIds || []), ...removed])],
+    },
+    removed,
+    details,
+  };
+}
+
+/**
+ * Recalculate match percentages using text similarity as a ceiling.
+ * Instant — no LLM calls. For each match edge:
+ *   1. Compute word overlap between the two bits' fullText
+ *   2. Map that overlap to a percentage ceiling (0.30 overlap → 90% ceiling, etc.)
+ *   3. If the stored matchPercentage exceeds the ceiling, cap it
+ *   4. Downgrade relationship if capped score drops below relationship threshold
+ *   5. Remove matches that drop below minimum viable score
+ *
+ * @param {array} matches - All match edges
+ * @param {array} bits - All bits (for text lookup)
+ * @returns {{ updated: array, stats: { capped: number, downgraded: number, removed: number, unchanged: number } }}
+ */
+/**
+ * Rebuild a touchstone's matchInfo from current match data.
+ * Call this after recalcMatchScores to update the stale snapshot.
+ */
+export function rebuildMatchInfo(touchstone, matches) {
+  const bitIdSet = new Set(touchstone.bitIds);
+  const relevantMatches = matches.filter(m =>
+    bitIdSet.has(m.sourceId) && bitIdSet.has(m.targetId)
+  );
+
+  const updatedInstances = (touchstone.instances || []).map(inst => {
+    const instMatches = relevantMatches.filter(m =>
+      m.sourceId === inst.bitId || m.targetId === inst.bitId
+    );
+    const bestMatch = instMatches.reduce((best, m) => {
+      const pct = m.matchPercentage || (m.confidence || 0) * 100;
+      return pct > (best.matchPercentage || 0) ? { ...best, matchPercentage: pct, relationship: m.relationship } : best;
+    }, { matchPercentage: 0, relationship: inst.relationship });
+
+    const pct = bestMatch.matchPercentage || inst.matchPercentage || 0;
+    return {
+      ...inst,
+      relationship: bestMatch.relationship || inst.relationship,
+      matchPercentage: pct,
+      confidence: pct / 100,
+    };
+  });
+
+  return {
+    ...touchstone,
+    instances: updatedInstances,
+    matchInfo: {
+      ...touchstone.matchInfo,
+      totalMatches: relevantMatches.length,
+      sameBitCount: relevantMatches.filter(m => m.relationship === "same_bit").length,
+      evolvedCount: relevantMatches.filter(m => m.relationship === "evolved").length,
+      relatedCount: relevantMatches.filter(m => m.relationship === "related").length,
+      callbackCount: relevantMatches.filter(m => m.relationship === "callback").length,
+      avgConfidence: relevantMatches.length > 0
+        ? relevantMatches.reduce((s, m) => s + (m.confidence || 0), 0) / relevantMatches.length
+        : 0,
+      avgMatchPercentage: relevantMatches.length > 0
+        ? Math.round(relevantMatches.reduce((s, m) => s + (m.matchPercentage || (m.confidence || 0) * 100), 0) / relevantMatches.length)
+        : 0,
+      reasons: relevantMatches.filter(m => m.reason).map(m => m.reason),
+    },
+  };
+}
+
+export function recalcMatchScores(matches, bits) {
+  const bitById = new Map(bits.map(b => [b.id, b]));
+  const stats = { capped: 0, downgraded: 0, removed: 0, unchanged: 0 };
+  const updated = [];
+
+  for (const m of matches) {
+    const src = bitById.get(m.sourceId);
+    const tgt = bitById.get(m.targetId);
+
+    if (!src?.fullText || !tgt?.fullText) {
+      updated.push(m);
+      stats.unchanged++;
+      continue;
+    }
+
+    const srcBag = textToWordBag(src.fullText);
+    const tgtBag = textToWordBag(tgt.fullText);
+    const overlap = wordBagOverlap(srcBag, tgtBag);
+
+    // Map text overlap to a percentage ceiling.
+    // These thresholds are calibrated for comedy bits:
+    //   - Same joke verbatim: ~0.40+ overlap (comedy bits reuse specific punchline words)
+    //   - Evolved joke: ~0.15-0.40 overlap (shared premise words, different execution)
+    //   - Merely same topic: ~0.05-0.15 overlap (some shared vocabulary)
+    //   - Unrelated: <0.05 overlap
+    let ceiling;
+    if (overlap >= 0.35) ceiling = 100;
+    else if (overlap >= 0.25) ceiling = 90;
+    else if (overlap >= 0.15) ceiling = 80;
+    else if (overlap >= 0.10) ceiling = 70;
+    else if (overlap >= 0.06) ceiling = 55;
+    else ceiling = 35; // below this, even "evolved" is suspect
+
+    const storedPct = m.matchPercentage || (m.confidence || 0) * 100;
+    const newPct = Math.min(storedPct, ceiling);
+
+    if (newPct < 50) {
+      // Below minimum viable — remove
+      stats.removed++;
+      continue;
+    }
+
+    // Determine if relationship needs downgrade
+    let newRel = m.relationship;
+    if (newPct < 70 && m.relationship === "same_bit") {
+      newRel = "evolved";
+      stats.downgraded++;
+    } else if (newPct < 70 && m.relationship === "evolved") {
+      // evolved below 70 is suspect but keep it for now
+    }
+
+    if (newPct === storedPct && newRel === m.relationship) {
+      updated.push(m);
+      stats.unchanged++;
+    } else {
+      updated.push({
+        ...m,
+        matchPercentage: newPct,
+        confidence: newPct / 100,
+        relationship: newRel,
+        _priorMatchPercentage: storedPct,
+        _priorRelationship: m.relationship,
+        _textOverlap: Math.round(overlap * 100),
+      });
+      stats.capped++;
+    }
+  }
+
+  return { updated, stats };
+}
+
+/** Convert text to a Set of lowercased words (4+ chars), stripping common stop words */
+function textToWordBag(text) {
+  if (!text) return new Set();
+  const STOP = new Set(["that", "this", "with", "have", "from", "they", "been", "were", "will", "would", "could", "should", "their", "there", "about", "which", "when", "what", "just", "like", "know", "going", "really", "right", "think", "because", "people", "thing", "things"]);
+  const words = text.toLowerCase().split(/\W+/).filter(w => w.length >= 4 && !STOP.has(w));
+  return new Set(words);
+}
+
+/** Compute Jaccard-like overlap between two word bags */
+function wordBagOverlap(bag1, bag2) {
+  if (bag1.size === 0 || bag2.size === 0) return 0;
+  let overlap = 0;
+  const [smaller, larger] = bag1.size <= bag2.size ? [bag1, bag2] : [bag2, bag1];
+  for (const w of smaller) { if (larger.has(w)) overlap++; }
+  return overlap / Math.max(bag1.size, bag2.size);
 }

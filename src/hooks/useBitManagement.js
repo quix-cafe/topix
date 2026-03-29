@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { callOllama, callOllamaStream, uid } from "../utils/ollama";
-import { SYSTEM_PARSE_V2 } from "../utils/prompts";
+import { SYSTEM_PARSE_V3 } from "../utils/prompts";
 import { saveVaultState } from "../utils/database";
 
 export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps, embeddingStore) {
@@ -38,7 +38,7 @@ export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps, embeddin
     dispatch({ type: 'MERGE', payload: { topics: updatedTopics } });
 
     try {
-      const result = await callOllama(SYSTEM_PARSE_V2, `Parse this comedy transcript excerpt:\n\n${fullText}`, () => {}, s.selectedModel, s.debugMode ? addDebugEntry : null);
+      const result = await callOllama(SYSTEM_PARSE_V3, `Parse this comedy transcript excerpt:\n\n${fullText}`, () => {}, s.selectedModel, s.debugMode ? addDebugEntry : null);
       const parsed = Array.isArray(result) ? result[0] : result;
       if (parsed) {
         const final = { ...newBit, title: parsed.title || newBit.title, summary: parsed.summary || "", tags: parsed.tags || [], keywords: parsed.keywords || [] };
@@ -90,7 +90,7 @@ export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps, embeddin
 
       await new Promise((resolve) => {
         callOllamaStream(
-          SYSTEM_PARSE_V2,
+          SYSTEM_PARSE_V3,
           `Parse this comedy transcript excerpt:\n\n${currentGapText}`,
           {
             onChunk: (fullAccumulatedText) => {

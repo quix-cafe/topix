@@ -121,12 +121,13 @@ async function ollamaHealthCheck() {
 }
 
 async function restartOllama() {
-  console.log("[Ollama] Restarting via systemctl (user-level, then system-level)...");
+  console.log("[Ollama] Restarting via systemctl (system-level, then user-level)...");
 
-  // Try user-level first (no sudo needed), fall back to systemctl with pkexec
+  // Try system-level first (default Linux install), then user-level
+  // Never spawn ollama as a child process — it dies with Node and conflicts with systemd
   const strategies = [
+    { cmd: "systemctl restart ollama", label: "system-level systemctl" },
     { cmd: "systemctl --user restart ollama", label: "user-level systemctl" },
-    { cmd: "pkill -f 'ollama serve' && sleep 1 && ollama serve &", label: "pkill + relaunch" },
   ];
 
   for (const { cmd, label } of strategies) {
@@ -153,8 +154,8 @@ async function restartOllama() {
   }
 
   console.log("[Ollama] All restart strategies failed");
-  return { success: false, message: "All restart strategies failed (tried user systemctl, pkill + relaunch)" };
-  
+  return { success: false, message: "All restart strategies failed (tried system and user systemctl)" };
+
 }
 
 // --- Server ---
@@ -707,11 +708,68 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // POST /api/passthru/restart — kill and restart server.py
+    if (req.url === "/api/passthru/restart" && req.method === "POST") {
+      try {
+        // Kill existing server.py if running
+        let killed = false;
+        try {
+          const healthRes = await fetch("http://localhost:8899/health", { signal: AbortSignal.timeout(2000) });
+          if (healthRes.ok) {
+            // Send shutdown — server.py listens on 8899
+            try {
+              await fetch("http://localhost:8899/shutdown", { method: "POST", signal: AbortSignal.timeout(3000) });
+            } catch {}
+            // Give it a moment to die
+            await new Promise(r => setTimeout(r, 1500));
+            killed = true;
+          }
+        } catch {}
+
+        // If shutdown endpoint didn't work, try pkill
+        if (!killed) {
+          try {
+            await new Promise((resolve, reject) => {
+              exec("pkill -f 'python.*server\\.py'", (err) => resolve());
+            });
+            await new Promise(r => setTimeout(r, 1000));
+          } catch {}
+        }
+
+        // Launch fresh
+        const serverPy = path.join(import.meta.dirname, "server.py");
+        const logPath = path.join(import.meta.dirname, "passthru.log");
+        const logFd = openSync(logPath, "a");
+        const proc = spawn("python", ["-u", serverPy], {
+          cwd: import.meta.dirname,
+          stdio: ["ignore", logFd, logFd],
+          detached: true,
+        });
+        proc.unref();
+        console.log(`[Passthru] Restarted server.py (pid=${proc.pid})`);
+
+        // Wait for it to come up
+        let up = false;
+        for (let i = 0; i < 15; i++) {
+          await new Promise(r => setTimeout(r, 1000));
+          try {
+            const h = await fetch("http://localhost:8899/health", { signal: AbortSignal.timeout(2000) });
+            if (h.ok) { up = true; break; }
+          } catch {}
+        }
+
+        json(res, 200, { status: up ? "restarted" : "started_but_not_healthy", pid: proc.pid });
+      } catch (e) {
+        json(res, 500, { error: e.message });
+      }
+      return;
+    }
+
     // POST /api/llm/call — proxy a prompt to Gemini, Claude, or Ollama high-end
     // Claude and Gemini route through the passthru server (web UI automation)
     if (req.url === "/api/llm/call" && req.method === "POST") {
       const body = await parseBody(req);
-      const { provider, system, user } = body;
+      const { provider, system, user, gemini_model } = body;
       const config = await loadConfig();
 
       try {
@@ -756,7 +814,7 @@ const server = http.createServer(async (req, res) => {
           const apiRes = await fetch("http://localhost:8899/ask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ provider, prompt }),
+            body: JSON.stringify({ provider, prompt, ...(gemini_model && { gemini_model }) }),
           });
           if (!apiRes.ok) {
             const err = await apiRes.text();

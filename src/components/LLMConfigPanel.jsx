@@ -121,7 +121,7 @@ export default function LLMConfigPanel() {
           A larger model than your default for high-quality prompts (e.g. 70b+ parameter models)
         </div>
       </div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <button
           onClick={save}
           style={{
@@ -131,7 +131,32 @@ export default function LLMConfigPanel() {
         >
           Save
         </button>
-        {status && <span style={{ fontSize: 12, color: status.startsWith("Error") ? "#ff6b6b" : "#51cf66" }}>{status}</span>}
+        <button
+          onClick={async () => {
+            setStatus("Restarting passthru server...");
+            try {
+              const res = await fetch("/api/passthru/restart", { method: "POST" });
+              const data = await res.json();
+              if (data.status === "restarted") {
+                setStatus("Passthru server restarted");
+              } else if (data.status === "started_but_not_healthy") {
+                setStatus("Passthru started but not yet healthy — check logs");
+              } else {
+                setStatus(`Passthru: ${data.error || "unknown error"}`);
+              }
+              setTimeout(() => setStatus(""), 4000);
+            } catch (e) {
+              setStatus(`Restart failed: ${e.message}`);
+            }
+          }}
+          style={{
+            padding: "8px 18px", background: "#ffa94d12", border: "1px solid #ffa94d44",
+            color: "#ffa94d", borderRadius: 6, fontWeight: 700, fontSize: 12, cursor: "pointer",
+          }}
+        >
+          Restart Passthru Server
+        </button>
+        {status && <span style={{ fontSize: 12, color: status.startsWith("Error") || status.startsWith("Restart failed") ? "#ff6b6b" : "#51cf66" }}>{status}</span>}
       </div>
     </div>
   );

@@ -370,7 +370,7 @@ export async function saveVaultState(vaultData) {
 
   const flatTouchstones = flattenTouchstones(vaultData.touchstones || {});
 
-  // Gather all store references and data pairs
+  // Clear-and-rewrite: faster than getAllKeys + diff since we're replacing everything
   const pairs = [
     [tx.objectStore(STORES.transcripts), vaultData.transcripts || []],
     [tx.objectStore(STORES.topics), vaultData.topics || []],
@@ -378,23 +378,9 @@ export async function saveVaultState(vaultData) {
     [tx.objectStore(STORES.touchstones), flatTouchstones],
   ];
 
-  // Fetch all existing keys in parallel (single await keeps transaction alive)
-  const allKeys = await Promise.all(
-    pairs.map(([store]) => new Promise((resolve, reject) => {
-      const req = store.getAllKeys();
-      req.onerror = () => reject(req.error);
-      req.onsuccess = () => resolve(req.result || []);
-    }))
-  );
-
-  // Now do all deletes and puts synchronously (no awaits = transaction stays active)
   const ts = Date.now();
-  for (let i = 0; i < pairs.length; i++) {
-    const [store, records] = pairs[i];
-    const newIds = new Set(records.map((r) => r.id));
-    for (const key of allKeys[i]) {
-      if (!newIds.has(key)) store.delete(key);
-    }
+  for (const [store, records] of pairs) {
+    store.clear();
     for (const record of records) {
       store.put({ ...record, timestamp: ts });
     }

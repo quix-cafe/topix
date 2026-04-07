@@ -1,6 +1,6 @@
 /**
  * Search touchstones across multiple fields, ranked by relevance.
- * Searches: name, idealText, summary (ideal text notes), matchInfo.reasons (why matched), tags
+ * Searches: keyword, name, idealText, summary (ideal text notes), matchInfo.reasons (why matched), tags
  *
  * Returns touchstones sorted by best match score (highest first).
  */
@@ -13,7 +13,13 @@ export function searchTouchstones(touchstones, query) {
   for (const ts of touchstones) {
     let score = 0;
 
-    // Name match (highest weight)
+    // Keyword match (highest weight — exact or prefix)
+    const keyword = (ts.keyword || "").toLowerCase();
+    if (keyword && keyword === q) score += 120;
+    else if (keyword && keyword.startsWith(q)) score += 80;
+    else if (keyword && keyword.includes(q)) score += 50;
+
+    // Name match (high weight)
     const name = (ts.name || "").toLowerCase();
     if (name === q) score += 100;
     else if (name.startsWith(q)) score += 60;

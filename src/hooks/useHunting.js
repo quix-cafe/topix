@@ -5,6 +5,7 @@ import { SYSTEM_HUNT_BATCH } from "../utils/prompts";
 import { findSimilarBits } from "../utils/similaritySearch";
 import { embedText } from "../utils/embeddings";
 import { runHuntBatches } from "../utils/huntRunner";
+import { recalcMatchScores } from "../utils/touchstoneDetector";
 
 export function useHunting(ctx) {
   const { dispatch, stateRef, addDebugEntry, embeddingStore, huntControllerRef } = ctx;
@@ -65,23 +66,74 @@ export function useHunting(ctx) {
   }, []);
 
   /**
+   * Restricted absorption: only into confirmed touchstones during mass-hunt.
+   * Possible touchstones are left for post-hunt detection to handle properly.
+   */
+  const absorbIntoConfirmed = useCallback((bit, strongMatchTargets) => {
+    if (strongMatchTargets.length === 0) return;
+    const ts = stateRef.current.touchstones || {};
+    const confirmed = ts.confirmed || [];
+    for (const { targetId, mp, rel } of strongMatchTargets) {
+      for (const touchstone of confirmed) {
+        if (!touchstone.bitIds.includes(targetId)) continue;
+        if (touchstone.bitIds.includes(bit.id)) continue;
+        const removedSet = new Set(touchstone.removedBitIds || []);
+        if (removedSet.has(bit.id)) continue;
+        const coreSet = new Set(touchstone.coreBitIds || []);
+        const saintedIds = new Set((touchstone.instances || []).filter(i => i.communionStatus === 'sainted').map(i => i.bitId));
+        const blessedIds = new Set((touchstone.instances || []).filter(i => i.communionStatus === 'blessed').map(i => i.bitId));
+        if (!coreSet.has(targetId) && !saintedIds.has(targetId) && !blessedIds.has(targetId)) continue;
+
+        const newInstance = {
+          bitId: bit.id, sourceFile: bit.sourceFile, title: bit.title,
+          instanceNumber: touchstone.instances.length + 1,
+          confidence: mp / 100, relationship: rel,
+        };
+        update('touchstones', (prev) => {
+          const list = prev.confirmed || [];
+          const existing = list.find(t => t.id === touchstone.id);
+          if (!existing || existing.bitIds.includes(bit.id)) return prev;
+          return {
+            ...prev,
+            confirmed: list.map(t => t.id !== touchstone.id ? t : {
+              ...t,
+              bitIds: [...t.bitIds, bit.id],
+              instances: [...t.instances, newInstance],
+              frequency: t.instances.length + 1,
+            }),
+          };
+        });
+        console.log(`[Absorb] "${bit.title}" into confirmed "${touchstone.name}" (${mp}% ${rel})`);
+      }
+    }
+  }, []);
+
+  /**
    * Process hunt batch matches: save matches and immediately absorb into touchstones.
    * Shared by huntTouchstones and huntTranscript.
    */
   const handleBatchMatches = useCallback((batchMatches, bitsById) => {
-    update('matches', (prev) => [...prev, ...batchMatches]);
+    // Validate LLM scores against actual text overlap before storing
+    const bits = [...bitsById.values()];
+    const { updated: validated, stats } = recalcMatchScores(batchMatches, bits);
+    if (stats.capped > 0 || stats.removed > 0) {
+      console.log(`[Hunt] Score validation: ${stats.capped} capped, ${stats.removed} removed, ${stats.unchanged} unchanged`);
+    }
 
-    // Immediate touchstone absorption for strong matches
-    for (const m of batchMatches) {
-      if (m.matchPercentage < 85) continue;
+    update('matches', (prev) => [...prev, ...validated]);
+
+    // During mass-hunt, skip immediate absorption — let post-hunt detection
+    // build proper clusters instead of greedily inflating existing touchstones.
+    // Only absorb into CONFIRMED touchstones (user-validated, won't run away).
+    for (const m of validated) {
+      if (m.matchPercentage < 90) continue;
       const rel = m.relationship;
-      if (rel !== 'same_bit' && rel !== 'evolved') continue;
+      if (rel !== 'same_bit') continue;
 
-      // Try absorbing source into touchstones containing target, and vice versa
       const srcBit = bitsById.get(m.sourceId);
       const tgtBit = bitsById.get(m.targetId);
-      if (srcBit) absorbIntoTouchstones(srcBit, [{ targetId: m.targetId, mp: m.matchPercentage, rel }]);
-      if (tgtBit) absorbIntoTouchstones(tgtBit, [{ targetId: m.sourceId, mp: m.matchPercentage, rel }]);
+      if (srcBit) absorbIntoConfirmed(srcBit, [{ targetId: m.targetId, mp: m.matchPercentage, rel }]);
+      if (tgtBit) absorbIntoConfirmed(tgtBit, [{ targetId: m.sourceId, mp: m.matchPercentage, rel }]);
     }
   }, [absorbIntoTouchstones]);
 
@@ -304,8 +356,7 @@ export function useHunting(ctx) {
         const result = await callOllama(SYSTEM_HUNT_BATCH, userMsg, () => {}, selectedModel, debugMode ? addDebugEntry : null, signal);
         const hits = Array.isArray(result) ? result : [result];
 
-        let matchCount = 0;
-        const strongMatchTargets = [];
+        const rawMatches = [];
         for (const hit of hits) {
           if (!hit || typeof hit.match_percentage !== 'number' || typeof hit.candidate !== 'number') continue;
           const candIdx = hit.candidate - 1;
@@ -314,7 +365,7 @@ export function useHunting(ctx) {
           const rel = hit.relationship || 'none';
           if (mp < 75 || (rel !== 'same_bit' && rel !== 'evolved')) continue;
 
-          update('matches', (prev) => [...prev, {
+          rawMatches.push({
             id: uid(),
             sourceId: newBit.id,
             targetId: candidates[candIdx].id,
@@ -323,16 +374,27 @@ export function useHunting(ctx) {
             relationship: rel,
             reason: hit.reason || '',
             timestamp: Date.now(),
-          }]);
-          matchCount++;
-          if (mp >= 85) strongMatchTargets.push({ targetId: candidates[candIdx].id, mp, rel });
-          console.log(`[MatchLive] "${newBit.title}" vs "${candidates[candIdx].title}": ${mp}% (${rel})`);
+          });
         }
 
-        // Immediate touchstone absorption
+        // Validate LLM scores against actual text overlap before storing
+        const allBits = [newBit, ...candidates];
+        const { updated: validated, stats } = recalcMatchScores(rawMatches, allBits);
+        if (stats.capped > 0 || stats.removed > 0) {
+          console.log(`[MatchLive] Score validation: ${stats.capped} capped, ${stats.removed} removed, ${stats.unchanged} unchanged`);
+        }
+
+        const strongMatchTargets = [];
+        for (const m of validated) {
+          update('matches', (prev) => [...prev, m]);
+          if (m.matchPercentage >= 85) strongMatchTargets.push({ targetId: m.targetId, mp: m.matchPercentage, rel: m.relationship });
+          console.log(`[MatchLive] "${newBit.title}" vs "${candidates.find(c => c.id === m.targetId)?.title}": ${m.matchPercentage}% (${m.relationship})${m._priorMatchPercentage ? ` [LLM: ${m._priorMatchPercentage}%]` : ''}`);
+        }
+
+        // Immediate touchstone absorption (using validated scores)
         absorbIntoTouchstones(newBit, strongMatchTargets);
 
-        set('status', `Matched "${newBit.title}" — ${matchCount} match(es) from ${candidates.length} candidates`);
+        set('status', `Matched "${newBit.title}" — ${validated.length} match(es) from ${candidates.length} candidates`);
       } catch (err) {
         if (err.name === "AbortError") return;
         console.error(`[MatchLive] Batch error for "${newBit.title}":`, err.message);

@@ -1,6 +1,40 @@
 import { callOllama } from "./ollama";
 
-const NAMING_SYSTEM_PROMPT = "Name this recurring comedy bit based on these performances of the SAME joke. Use the format: '[3-5 word title] or, [5-8 word title]' — the first title is a punchy shorthand, the second is more descriptive. Include the literal text 'or,' between them. Focus on the core topic or punchline. Reply with ONLY the title text, nothing else. No quotes, no punctuation wrapping. Example: 'DMV Nightmare or, The Witness Protection Line at the DMV'";
+/**
+ * Parse a touchstone name in "keyword - long title" format.
+ * Falls back to extracting a keyword from the "short or, long" legacy format.
+ * Returns { keyword, title } where title is the full name and keyword is the tag.
+ */
+export function parseKeywordTitle(name) {
+  if (!name) return { keyword: "", title: "" };
+
+  // New format: "keyword - long title"
+  const dashIdx = name.indexOf(" - ");
+  if (dashIdx > 0) {
+    const keyword = name.slice(0, dashIdx).trim();
+    const title = name.slice(dashIdx + 3).trim();
+    // Only accept if keyword looks like a keyword (no spaces, reasonable length)
+    if (keyword && title && !keyword.includes(" ") && keyword.length <= 30) {
+      return { keyword, title };
+    }
+  }
+
+  // Legacy format: "short title or, long title"
+  const orIdx = name.indexOf(" or, ");
+  if (orIdx > 0) {
+    const shortPart = name.slice(0, orIdx).trim();
+    const longPart = name.slice(orIdx + 5).trim();
+    // Derive keyword from first word of short part
+    const firstWord = shortPart.split(/\s+/)[0].replace(/[^a-zA-Z0-9-]/g, "");
+    return { keyword: firstWord || "", title: name };
+  }
+
+  // No parseable format — derive keyword from first word
+  const firstWord = name.split(/\s+/)[0].replace(/[^a-zA-Z0-9-]/g, "");
+  return { keyword: firstWord || "", title: name };
+}
+
+const NAMING_SYSTEM_PROMPT = "Name this recurring comedy bit based on these performances of the SAME joke. Provide a descriptive 5-8 word title that captures the core topic or punchline. Reply with ONLY the title text, nothing else. No quotes, no punctuation wrapping. Example: 'The Witness Protection Line at the DMV'";
 
 /**
  * Auto-name touchstones that need names via the centralized LLM queue.

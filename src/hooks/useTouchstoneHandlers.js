@@ -4,6 +4,7 @@ import { SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
 import { saveVaultState } from "../utils/database";
 import { autoRelateTouchstones } from "../utils/flowRelations";
 
+
 export function useTouchstoneHandlers(ctx) {
   const { dispatch, stateRef, addDebugEntry, touchstoneNameCache } = ctx;
   const set = (field, value) => dispatch({ type: 'SET', field, value });
@@ -49,8 +50,11 @@ export function useTouchstoneHandlers(ctx) {
     update('touchstones', (prev) => {
       const stripRelation = (list) => list.map((t) => {
         const related = t.relatedTouchstoneIds || [];
-        if (!related.includes(touchstoneId)) return t;
-        return { ...t, relatedTouchstoneIds: related.filter((id) => id !== touchstoneId) };
+        const manual = t.manualFlowLinks || [];
+        const relChanged = related.includes(touchstoneId);
+        const manualChanged = manual.includes(touchstoneId);
+        if (!relChanged && !manualChanged) return t;
+        return { ...t, relatedTouchstoneIds: related.filter((id) => id !== touchstoneId), manualFlowLinks: manual.filter((id) => id !== touchstoneId) };
       });
       return { confirmed: stripRelation(prev.confirmed || []), possible: stripRelation(prev.possible || []), rejected: prev.rejected || [], _unlinkedPairs: prev._unlinkedPairs || [] };
     });
@@ -316,6 +320,7 @@ export function useTouchstoneHandlers(ctx) {
           touchstoneNameCache.current.set(key, edits.name);
         }
         if (edits.manualName !== undefined) updated.manualName = edits.manualName;
+        if (edits.keyword !== undefined) updated.keyword = edits.keyword;
         return updated;
       });
       return { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };
@@ -391,12 +396,14 @@ export function useTouchstoneHandlers(ctx) {
         if (t.id === sourceId) {
           const existing = t.relatedTouchstoneIds || [];
           if (existing.includes(targetId)) return t;
-          return { ...t, relatedTouchstoneIds: [...existing, targetId] };
+          const manualExisting = t.manualFlowLinks || [];
+          return { ...t, relatedTouchstoneIds: [...existing, targetId], manualFlowLinks: manualExisting.includes(targetId) ? manualExisting : [...manualExisting, targetId] };
         }
         if (t.id === targetId) {
           const existing = t.relatedTouchstoneIds || [];
           if (existing.includes(sourceId)) return t;
-          return { ...t, relatedTouchstoneIds: [...existing, sourceId] };
+          const manualExisting = t.manualFlowLinks || [];
+          return { ...t, relatedTouchstoneIds: [...existing, sourceId], manualFlowLinks: manualExisting.includes(sourceId) ? manualExisting : [...manualExisting, sourceId] };
         }
         return t;
       });
@@ -411,8 +418,8 @@ export function useTouchstoneHandlers(ctx) {
   const onUnrelateTouchstone = useCallback((sourceId, targetId) => {
     update('touchstones', (prev) => {
       const unlink = (list) => list.map((t) => {
-        if (t.id === sourceId) return { ...t, relatedTouchstoneIds: (t.relatedTouchstoneIds || []).filter((id) => id !== targetId) };
-        if (t.id === targetId) return { ...t, relatedTouchstoneIds: (t.relatedTouchstoneIds || []).filter((id) => id !== sourceId) };
+        if (t.id === sourceId) return { ...t, relatedTouchstoneIds: (t.relatedTouchstoneIds || []).filter((id) => id !== targetId), manualFlowLinks: (t.manualFlowLinks || []).filter((id) => id !== targetId) };
+        if (t.id === targetId) return { ...t, relatedTouchstoneIds: (t.relatedTouchstoneIds || []).filter((id) => id !== sourceId), manualFlowLinks: (t.manualFlowLinks || []).filter((id) => id !== sourceId) };
         return t;
       });
       // Track as manually unlinked so auto-relate won't re-link
@@ -487,7 +494,11 @@ export function useTouchstoneHandlers(ctx) {
       const rejSet = new Set(rejectedIds);
       const stripRelation = (list) => list.map((t) => {
         const related = (t.relatedTouchstoneIds || []).filter((id) => !rejSet.has(id));
-        return related.length !== (t.relatedTouchstoneIds || []).length ? { ...t, relatedTouchstoneIds: related } : t;
+        const manual = (t.manualFlowLinks || []).filter((id) => !rejSet.has(id));
+        const relChanged = related.length !== (t.relatedTouchstoneIds || []).length;
+        const manualChanged = manual.length !== (t.manualFlowLinks || []).length;
+        if (!relChanged && !manualChanged) return t;
+        return { ...t, relatedTouchstoneIds: related, manualFlowLinks: manual };
       });
 
       return {

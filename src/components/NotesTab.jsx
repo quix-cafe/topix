@@ -3,6 +3,7 @@ import { useHashParam } from "../hooks/useHashParam";
 import { embedText, cosineSimilarity } from "../utils/embeddings";
 import { searchTouchstones } from "../utils/touchstoneSearch";
 
+
 const CATEGORY_COLORS = {
   set: { bg: "#1e3a2f", color: "#6ee7b7", border: "#059669" },
   setlist: { bg: "#1e3a2f", color: "#6ee7b7", border: "#059669" }, // legacy alias
@@ -1000,6 +1001,11 @@ export default function NotesTab({
                             <span style={{ color: ts._cat === "confirmed" ? "#6ee7b7" : "#fbbf24", fontSize: 10, flexShrink: 0 }}>
                               {ts._cat === "confirmed" ? "\u2713" : "?"}
                             </span>
+                            {ts.keyword && (
+                              <span style={{ fontSize: 8, fontWeight: 700, color: "#4ecdc4", background: "#4ecdc418", padding: "0 3px", borderRadius: 2, textTransform: "uppercase", flexShrink: 0 }}>
+                                {ts.keyword}
+                              </span>
+                            )}
                             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ts.name}</span>
                           </div>
                         ))}

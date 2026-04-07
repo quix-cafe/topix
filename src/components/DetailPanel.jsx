@@ -6,6 +6,7 @@ import { getBitTouchstones } from "../utils/touchstoneDetector";
 import { searchTouchstones } from "../utils/touchstoneSearch";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
+
 export function DetailPanel({
   selectedTopic,
   selectedTranscript,
@@ -332,7 +333,12 @@ export function DetailPanel({
                   style={{ flex: 1, cursor: "pointer" }}
                   onClick={() => onGoToTouchstone ? onGoToTouchstone(ts.id) : setActiveTab("touchstones")}
                 >
-                  <div style={{ fontWeight: 600, color: "#51cf66", fontSize: 12 }}>
+                  <div style={{ fontWeight: 600, color: "#51cf66", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                    {(ts.keyword) && (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: "#4ecdc4", background: "#4ecdc418", padding: "1px 4px", borderRadius: 2, border: "1px solid #4ecdc433", textTransform: "uppercase" }}>
+                        {ts.keyword}
+                      </span>
+                    )}
                     {ts.name}
                   </div>
                   <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
@@ -432,7 +438,14 @@ export function DetailPanel({
                         onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                       >
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, color: "#ddd", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ts.name}</div>
+                          <div style={{ fontWeight: 600, color: "#ddd", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
+                            {(ts.keyword) && (
+                              <span style={{ fontSize: 9, fontWeight: 700, color: "#4ecdc4", background: "#4ecdc418", padding: "1px 4px", borderRadius: 2, border: "1px solid #4ecdc433", textTransform: "uppercase", flexShrink: 0 }}>
+                                {ts.keyword}
+                              </span>
+                            )}
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{ts.name}</span>
+                          </div>
                           <div style={{ fontSize: 10, color: ts.category === "confirmed" ? "#51cf66" : "#ffa94d" }}>
                             {ts.category} · {ts.frequency} instances
                           </div>

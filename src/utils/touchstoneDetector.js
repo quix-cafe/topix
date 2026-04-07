@@ -131,6 +131,7 @@ export function detectTouchstones(
   const clusterEdgeScores = new Map(); // rootId -> [scores]
 
   let usedEdges = 0;
+  const usedEdgeKeys = new Set(); // track which specific edges were used in clustering
   for (const edge of strongEdges) {
     const srcRoot = uf.find(edge.sourceId);
     const tgtRoot = uf.find(edge.targetId);
@@ -159,16 +160,16 @@ export function detectTouchstones(
     }
     if (wouldExceedCap) continue;
 
-    // Growth threshold: new members need to be at least 80% of the cluster's
-    // median edge score. This allows legitimate large touchstones (a bit she
-    // does at every show) while still blocking weak associations.
+    // Growth threshold: larger clusters (5+) require new members to meet 60%
+    // of the cluster's median edge score. Allows legitimate growth while
+    // still blocking weak associations.
     const mergedSize = (clusterSize.get(srcRoot) || 1) + (clusterSize.get(tgtRoot) || 1);
     const existingScores = clusterEdgeScores.get(srcRoot) || clusterEdgeScores.get(tgtRoot) || [];
     let growthThreshold = MIN_EDGE_SCORE;
-    if (existingScores.length > 0 && mergedSize > 3) {
+    if (existingScores.length > 0 && mergedSize > 4) {
       const sorted = [...existingScores].sort((a, b) => a - b);
       const medianScore = sorted[Math.floor(sorted.length / 2)];
-      growthThreshold = Math.max(MIN_EDGE_SCORE, medianScore * 0.8);
+      growthThreshold = Math.max(MIN_EDGE_SCORE, medianScore * 0.6);
     }
     if (edge._score < growthThreshold) continue;
 
@@ -181,6 +182,7 @@ export function detectTouchstones(
     // Merge edge score histories
     const mergedScores = [...(clusterEdgeScores.get(srcRoot) || []), ...(clusterEdgeScores.get(tgtRoot) || []), edge._score];
     clusterEdgeScores.set(newRoot, mergedScores);
+    usedEdgeKeys.add(`${edge.sourceId}:${edge.targetId}`);
     usedEdges++;
   }
 
@@ -189,9 +191,8 @@ export function detectTouchstones(
   // ── Build touchstone objects from clusters ──────────────────────
   const clusterIds = uf.clusters();
 
-  // Post-clustering pruning: remove bits that only connect to one other cluster
-  // member via a single edge (transitive drift). In clusters of 3+, each bit
-  // must have qualifying edges to at least 2 other members.
+  // Post-clustering pruning: remove bits with no edges to other cluster members.
+  // In clusters of 3+, each bit must have at least 1 qualifying edge.
   const prunedClusterIds = clusterIds.map((ids) => {
     if (ids.length <= 2) return ids; // pairs are already validated by edge threshold
     const idSet = new Set(ids);
@@ -203,19 +204,10 @@ export function detectTouchstones(
         neighborCount.set(edge.targetId, (neighborCount.get(edge.targetId) || 0) + 1);
       }
     }
-    // Keep bits connected to 2+ other cluster members, OR connected to 1 with a same_bit edge
+    // Keep bits connected to 1+ other cluster members (edge already passed MIN_EDGE_SCORE)
     const kept = ids.filter(id => {
       const count = neighborCount.get(id) || 0;
-      if (count >= 2) return true;
-      // Allow single-edge bits only if that edge is same_bit (very high confidence)
-      if (count === 1) {
-        return strongEdges.some(e =>
-          (e.sourceId === id || e.targetId === id) &&
-          idSet.has(e.sourceId) && idSet.has(e.targetId) &&
-          e.relationship === "same_bit"
-        );
-      }
-      return false;
+      return count >= 1;
     });
     return kept;
   });
@@ -238,13 +230,14 @@ export function detectTouchstones(
   // Sort: most instances first
   allTouchstones.sort((a, b) => b.frequency - a.frequency);
 
-  // ── Detect orphaned pairs — strong edges between unclustered bits ──
+  // ── Detect orphaned pairs — strong edges not already used in clustering ──
   // Bits that have solid matching criteria but didn't cluster (e.g. due to
   // growth threshold or transcript overlap constraints) may still warrant
-  // a possible touchstone.
-  const clusteredBitIds = new Set(allTouchstones.flatMap(t => t.bitIds));
+  // a possible touchstone. Since bits can be in multiple touchstones, we
+  // check whether the specific edge was used, not whether the bits are clustered.
   const orphanEdges = strongEdges.filter(edge => {
-    if (clusteredBitIds.has(edge.sourceId) || clusteredBitIds.has(edge.targetId)) return false;
+    const edgeKey = `${edge.sourceId}:${edge.targetId}`;
+    if (usedEdgeKeys.has(edgeKey)) return false;
     const srcBit = bitById.get(edge.sourceId);
     const tgtBit = bitById.get(edge.targetId);
     return srcBit && tgtBit && edge._score >= MIN_EDGE_SCORE;
@@ -275,7 +268,7 @@ export function detectTouchstones(
   // A bit already in one touchstone can also appear in another if it has
   // strong edges to that touchstone's members (e.g. a joke that overlaps
   // two distinct touchstone themes).
-  const CROSS_MEMBERSHIP_THRESHOLD = 70;
+  const CROSS_MEMBERSHIP_THRESHOLD = 65;
   let crossAdded = 0;
   for (const ts of allTouchstones) {
     const tsBitSet = new Set(ts.bitIds);
@@ -294,17 +287,17 @@ export function detectTouchstones(
       const sameFileBits = ts.bitIds.filter(id => bitById.get(id)?.sourceFile === outsideBit.sourceFile);
       if (sameFileBits.length >= MAX_BITS_PER_TRANSCRIPT) continue;
 
-      // Must have edges to at least 2 members of this touchstone (or 1 same_bit)
-      let memberEdges = 0;
-      let hasSameBit = false;
+      // Must have at least 1 qualifying edge to a member of this touchstone
+      let hasQualifyingEdge = false;
       for (const e2 of strongEdges) {
+        if (e2._score < CROSS_MEMBERSHIP_THRESHOLD) continue;
         const otherId = e2.sourceId === outsideBitId ? e2.targetId : (e2.targetId === outsideBitId ? e2.sourceId : null);
         if (otherId && tsBitSet.has(otherId)) {
-          memberEdges++;
-          if (e2.relationship === "same_bit") hasSameBit = true;
+          hasQualifyingEdge = true;
+          break;
         }
       }
-      if (memberEdges < 2 && !hasSameBit) continue;
+      if (!hasQualifyingEdge) continue;
 
       tsBitSet.add(outsideBitId);
       ts.bitIds.push(outsideBitId);

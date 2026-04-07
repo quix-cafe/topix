@@ -184,7 +184,23 @@ export function useCommunion(ctx) {
     if (!ts) return;
 
     const userCriteria = ts.userReasons || [];
-    const generatedCriteria = ts.matchInfo?.reasons || [];
+    let generatedCriteria = ts.matchInfo?.reasons || [];
+
+    // If reasons are bloated (raw pairwise match reasons, not consolidated),
+    // deduplicate and cap to prevent sending 100+ criteria to the LLM.
+    if (generatedCriteria.length > 8) {
+      // Deduplicate by lowercase content
+      const seen = new Set();
+      const deduped = [];
+      for (const r of generatedCriteria) {
+        const key = r.toLowerCase().trim();
+        if (!seen.has(key)) { seen.add(key); deduped.push(r); }
+      }
+      // Take most distinct reasons (first N after dedup — earlier reasons tend to be from stronger matches)
+      generatedCriteria = deduped.slice(0, 6);
+      console.log(`[Commune] Capped ${ts.matchInfo.reasons.length} raw reasons → ${generatedCriteria.length} for "${ts.name}". Run "Why Matched" to consolidate.`);
+    }
+
     if (userCriteria.length === 0 && generatedCriteria.length === 0) {
       set('status', `No criteria to commune against for "${ts.name}". Add reasons first.`);
       return;

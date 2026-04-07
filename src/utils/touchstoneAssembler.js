@@ -1,4 +1,24 @@
-import { deduplicateBitOwnership } from "./touchstoneDetector";
+// deduplicateBitOwnership removed — bits can now belong to multiple touchstones
+
+/**
+ * Check if a bit has strong enough evidence to be absorbed into a touchstone.
+ * Qualifies with: 1 same_bit/evolved edge at 90%+, or 2+ edges at 85%+.
+ */
+function hasAbsorptionEvidence(bitId, existingBitSet, matches) {
+  let count85 = 0;
+  for (const m of matches) {
+    const isSource = m.sourceId === bitId && existingBitSet.has(m.targetId);
+    const isTarget = m.targetId === bitId && existingBitSet.has(m.sourceId);
+    if (!isSource && !isTarget) continue;
+    const rel = m.relationship;
+    if (rel !== 'same_bit' && rel !== 'evolved') continue;
+    const mp = m.matchPercentage || (m.confidence || 0) * 100;
+    if (mp >= 90) return true;
+    if (mp >= 85) count85++;
+    if (count85 >= 2) return true;
+  }
+  return false;
+}
 
 /**
  * Pure touchstone merge/dedup logic extracted from the touchstone detection useEffect.
@@ -12,7 +32,7 @@ import { deduplicateBitOwnership } from "./touchstoneDetector";
  * @param {Array} options.matches - current matches array
  * @param {Function} options.findCachedName - (bitIds) => string|null
  *
- * @returns {Object} { confirmed, possible, rejected } — the new merged touchstone state (after dedup)
+ * @returns {Object} { confirmed, possible, rejected } — the new merged touchstone state (bits may appear in multiple touchstones)
  */
 export function assembleAndMergeTouchstones({
   detected,
@@ -64,6 +84,7 @@ export function assembleAndMergeTouchstones({
   };
 
   // Fuzzy overlap check: does a detected cluster substantially overlap with an existing touchstone?
+  // Returns null if the non-overlapping bits outnumber the overlapping ones (distinct cluster).
   const findOverlappingTouchstone = (detectedTs, existingList) => {
     const detectedSet = new Set(detectedTs.bitIds);
     let bestMatch = null, bestOverlap = 0;
@@ -71,6 +92,9 @@ export function assembleAndMergeTouchstones({
       const overlap = existing.bitIds.filter(id => detectedSet.has(id)).length;
       const overlapRatio = overlap / Math.max(1, Math.min(detectedSet.size, existing.bitIds.length));
       if (overlapRatio >= 0.5 && overlap > bestOverlap) {
+        // If the detected cluster has more unique bits than shared bits, it's a distinct cluster
+        const uniqueInDetected = detectedTs.bitIds.filter(id => !existing.bitIds.includes(id)).length;
+        if (uniqueInDetected > overlap) continue; // let it coexist as a separate possible
         bestOverlap = overlap;
         bestMatch = existing;
       }
@@ -185,15 +209,7 @@ export function assembleAndMergeTouchstones({
       const newBitIds = [...absorbed].filter(id => {
         if (existingSet.has(id)) return false;
         if (removedSet.has(id)) return false;
-        const hasStrongEdge = matches.some(m => {
-          const isSource = m.sourceId === id && existingSet.has(m.targetId);
-          const isTarget = m.targetId === id && existingSet.has(m.sourceId);
-          if (!isSource && !isTarget) return false;
-          const rel = m.relationship;
-          const mp = m.matchPercentage || (m.confidence || 0) * 100;
-          return (rel === 'same_bit' || rel === 'evolved') && mp >= 85;
-        });
-        return hasStrongEdge;
+        return hasAbsorptionEvidence(id, existingSet, matches);
       });
       if (newBitIds.length > 0) {
         const newInstances = newBitIds.map(id => {
@@ -256,14 +272,7 @@ export function assembleAndMergeTouchstones({
     const newBitIds = overlapping.bitIds.filter(id => {
       if (existingSet.has(id)) return false;
       if (removedSet.has(id)) return false;
-      return matches.some(m => {
-        const isSource = m.sourceId === id && existingSet.has(m.targetId);
-        const isTarget = m.targetId === id && existingSet.has(m.sourceId);
-        if (!isSource && !isTarget) return false;
-        const rel = m.relationship;
-        const mp = m.matchPercentage || (m.confidence || 0) * 100;
-        return (rel === 'same_bit' || rel === 'evolved') && mp >= 85;
-      });
+      return hasAbsorptionEvidence(id, existingSet, matches);
     });
     if (newBitIds.length === 0) return existing;
 
@@ -292,12 +301,9 @@ export function assembleAndMergeTouchstones({
     };
   });
 
-  const assembled = {
+  return {
     confirmed: updatedConfirmed,
     possible: [...updatedExistingPossible, ...newPossible],
     rejected: prev.rejected || [],
   };
-
-  // Enforce exclusive bit ownership — each bit in at most one touchstone
-  return deduplicateBitOwnership(assembled, matches);
 }

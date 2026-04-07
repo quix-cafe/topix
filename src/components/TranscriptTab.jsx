@@ -4,6 +4,7 @@ import { parseFilenameClient, ratingColor, ratingValue, RATING_FONT } from "../u
 import { SYSTEM_PARSE_V3 } from "../utils/prompts";
 import { extractCompleteJsonObjects } from "../utils/jsonParser";
 
+
 const TOUCHSTONE_PALETTE = [
   "#ff6b6b", "#ffa94d", "#ffd43b", "#51cf66",
   "#4ecdc4", "#74c0fc", "#da77f2", "#f783ac",
@@ -69,8 +70,18 @@ function PageTimeline({ timeline, onViewBitDetail, onSelectBit, topics }) {
                 cursor: "pointer",
                 boxShadow: isHovered ? `0 0 0 1px ${bit.tsId ? tsColor(bit.tsId) : "#4ecdc4"}` : "none",
                 boxSizing: "border-box",
+                overflow: "hidden",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
               }}
-            />
+            >
+              {bit.tsKeyword && pct > 3 && (
+                <span style={{ fontSize: 7, fontWeight: 700, color: "#000", opacity: 0.7, textTransform: "uppercase", letterSpacing: 0.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", padding: "0 2px" }}>
+                  {bit.tsKeyword}
+                </span>
+              )}
+            </div>
           );
         })}
       </div>
@@ -89,6 +100,7 @@ function PageTimeline({ timeline, onViewBitDetail, onSelectBit, topics }) {
         visibility: hoveredBit ? "visible" : "hidden",
       }}>
         <span style={{ color: "#ddd", fontWeight: 600 }}>{hoveredBit?.title || "\u00A0"}</span>
+        {hoveredBit?.tsKeyword && <span style={{ fontSize: 9, fontWeight: 700, color: "#4ecdc4", background: "#4ecdc418", padding: "0 4px", borderRadius: 2, border: "1px solid #4ecdc433", textTransform: "uppercase" }}>{hoveredBit.tsKeyword}</span>}
         {hoveredBit?.tsName && <span style={{ color: "#888" }}>· {hoveredBit.tsName}</span>}
         {hoveredBit?.tags?.length > 0 && <span style={{ color: "#555", fontSize: 9 }}>{hoveredBit.tags.slice(0, 3).join(", ")}</span>}
         <span style={{ color: "#444", fontSize: 9, marginLeft: "auto" }}>{hoveredBit?.wordCount || 0}w</span>
@@ -317,6 +329,7 @@ export function TranscriptTab({
   approvedGaps,
   onApproveGap,
   onGoToPlay,
+  onRemoveOrphans,
   onAbsorbUnmatched,
   sortCol: sortColProp,
   sortDir: sortDirProp,
@@ -451,6 +464,7 @@ export function TranscriptTab({
           wordCount: Math.max(wc, 1),
           tsId,
           tsName: ts?.name || null,
+          tsKeyword: ts?.keyword || null,
           tags: bit.tags || [],
           isConnected: connectedBitIds.has(bit.id),
         };
@@ -706,6 +720,17 @@ export function TranscriptTab({
                 }}
               >
                 Absorb {unmatchedCount} Unmatched
+              </button>
+            )}
+            {onRemoveOrphans && !processing && (
+              <button
+                onClick={onRemoveOrphans}
+                style={{
+                  padding: "6px 14px", background: "#ff6b6b22", color: "#ff6b6b", border: "1px solid #ff6b6b33",
+                  borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                Remove Orphans
               </button>
             )}
           </div>

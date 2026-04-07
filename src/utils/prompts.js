@@ -130,13 +130,17 @@ NOT the same joke:
 
 SHORT OR FRAGMENTARY BITS: If either bit is very short (under ~30 words), incomplete, or lacks a clear punchline, score conservatively. A fragment that only contains a setup or topic with no clear punchline CANNOT be confirmed as the same joke — it could fit many different bits. Default to "none" unless the specific wording is unmistakably from the same routine.
 
-Score:
-- 90-100 "same_bit": identical premise+punchline, possibly reworded
-- 70-89 "evolved": same premise+payoff, meaningfully restructured
+SCORING — be conservative, most pairs are NOT the same joke:
+- 95-100 "same_bit": near-verbatim, shares specific punchline phrases/words
+- 90-94 "same_bit": same setup AND same punchline, clearly reworded
+- 80-89 "evolved": same premise and payoff, delivery/structure meaningfully changed
+- 70-79 "evolved": recognizably the same core joke, substantially reworked
 - 40-69 "related": similar topic, different jokes
-- 0-39 "none": no connection
+- 0-39 "none": no meaningful connection
 
-Respond: {"match_percentage": <int>, "relationship": "<type>", "reason": "<1 sentence>"}
+A high score requires SPECIFIC shared elements — a particular punchline, a named scenario, a specific callback. Two bits about the same subject with different punchlines are "related" at best.
+
+Respond: {"match_percentage": <int>, "relationship": "<type>", "reason": "<1 sentence citing the specific shared element>"}
 JSON only.`;
 
 export const SYSTEM_HUNT_BATCH = `You compare a SOURCE comedy bit against CANDIDATES to find the SAME JOKE across performances by Kai (she/her).
@@ -147,12 +151,20 @@ NOT the same joke:
 - Same broad topic but different setups or different punchlines
 - Similar vocabulary but different comedic points
 - Shared subject matter without shared joke structure
+- Two bits about "dating" or "work" are NOT the same joke unless the specific setup and punchline match
 
 SHORT OR FRAGMENTARY BITS: If the source or a candidate is very short (under ~30 words) or lacks a clear punchline, do NOT match it. A vague fragment could fit many bits — require unmistakable specific wording to confirm.
 
-Score: 90-100 "same_bit" (same premise+punchline) | 70-89 "evolved" (same core, restructured) | <70 do not include.
+SCORING GUIDE — be conservative, most pairs are NOT matches:
+- 95-100 "same_bit": near-verbatim, shares specific punchline phrases/words
+- 90-94 "same_bit": same setup AND same punchline, clearly reworded
+- 80-89 "evolved": same premise and payoff, but delivery/structure meaningfully changed
+- 70-79 "evolved": recognizably the same core joke, substantially reworked
+- <70: do NOT include. If in doubt, leave it out.
 
-Respond: [{"candidate": <number>, "match_percentage": <70-100>, "relationship": "<type>", "reason": "<1 sentence>"}]
+A high score requires SPECIFIC shared elements (a particular punchline, a specific callback, a named scenario), not just shared topic or tone. Two bits about the same subject with different punchlines are <70.
+
+Respond: [{"candidate": <number>, "match_percentage": <70-100>, "relationship": "<type>", "reason": "<1 sentence citing the specific shared punchline or premise>"}]
 Empty array [] if nothing matches. JSON only. Only same_bit or evolved — no "related" matches.`;
 
 export const SYSTEM_MERGE_BITS = `You are a comedy metadata editor. The comedian is a woman named Kai (she/her). You will receive two comedy bits from the SAME transcript that overlap significantly — they cover the same material but were extracted separately.

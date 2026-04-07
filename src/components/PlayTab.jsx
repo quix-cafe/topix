@@ -47,6 +47,7 @@ export function PlayTab({
   onNowPlaying,
   nowPlaying,
   vaultReady,
+  onSyncJournals,
 }) {
   const [state, dispatch] = useReducer(playReducer, {
     files: [],
@@ -142,17 +143,33 @@ export function PlayTab({
       }
     }
 
+    const deletedIds = new Set();
     for (const tr of currentTranscripts) {
       if (tr.playHash) {
         const entry = playByHash.get(tr.playHash);
         if (!entry) {
           // Hash missing from registry entirely
           toDelete.push(tr);
+          deletedIds.add(tr.id);
         } else if (!entry.has_transcript) {
           // Filesystem record exists but transcript is gone (clean delete or just md gone)
           toDelete.push(tr);
+          deletedIds.add(tr.id);
         }
       }
+    }
+
+    // Detect orphaned transcripts: no playHash (or stale hash) AND name doesn't
+    // match any play file. This catches transcripts left behind after trim/rename.
+    const playNames = new Set(playFiles.filter((e) => e.has_transcript).map((e) => e.transcript_filename));
+    const playHashes = new Set(playFiles.map((e) => e.hash));
+    for (const tr of currentTranscripts) {
+      if (deletedIds.has(tr.id)) continue;
+      if (tr.playHash && playHashes.has(tr.playHash)) continue; // still linked
+      if (playNames.has(tr.name)) continue; // name still matches a play file
+      // Orphaned — no play file matches by hash or name
+      toDelete.push(tr);
+      deletedIds.add(tr.id);
     }
 
     const hasChanges = toAdd.length > 0 || toRename.length > 0 || toDelete.length > 0 || toLink.length > 0;
@@ -195,10 +212,13 @@ export function PlayTab({
   const autoSyncRef = useRef(autoSync);
   autoSyncRef.current = autoSync;
   const lastSyncedFilesRef = useRef(null);
+  const onSyncJournalsRef = useRef(onSyncJournals);
+  onSyncJournalsRef.current = onSyncJournals;
   useEffect(() => {
     if (files.length > 0 && vaultReady && files !== lastSyncedFilesRef.current) {
       lastSyncedFilesRef.current = files;
       autoSyncRef.current(files);
+      onSyncJournalsRef.current?.();
     }
   }, [files, vaultReady]);
 
@@ -243,7 +263,8 @@ export function PlayTab({
   // Auto-select file from external navigation (e.g. Transcripts tab)
   useEffect(() => {
     if (!playInitFile || files.length === 0) return;
-    const match = files.find((f) => f.transcript_filename === playInitFile);
+    // playInitFile may be a hash (preferred) or a transcript filename
+    const match = files.find((f) => f.hash === playInitFile || f.transcript_filename === playInitFile);
     if (match) selectFile(match.hash);
     onConsumePlayInit?.();
   }, [playInitFile, files, selectFile, onConsumePlayInit]);
@@ -344,8 +365,9 @@ export function PlayTab({
             for (const h of arrived) next.delete(h);
             return next;
           });
-          // Auto-sync to pick up the new transcript
+          // Auto-sync to pick up the new transcript + journals
           await autoSync(data);
+          onSyncJournalsRef.current?.();
         }
       } catch (err) {
         // Silently retry

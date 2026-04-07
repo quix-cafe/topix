@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { uid } from "../utils/ollama";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
+
 /**
  * MixPanel - Intuitive join/split interface for bits within transcripts.
  * Bits are sorted by their position in the transcript so adjacent bits
@@ -80,7 +81,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
     for (const ts of allTs) {
       for (const id of ts.bitIds || []) {
         if (!map.has(id)) map.set(id, []);
-        map.get(id).push({ name: ts.name, category: ts.category });
+        map.get(id).push({ name: ts.name, keyword: ts.keyword, category: ts.category });
       }
     }
     return map;
@@ -813,7 +814,7 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                           background: ts.category === "confirmed" ? "#51cf6618" : "#ffa94d18",
                           color: ts.category === "confirmed" ? "#51cf66" : "#ffa94d",
                         }}>
-                          {ts.name}
+                          {ts.keyword ? `${ts.keyword} · ` : ""}{ts.name}
                         </span>
                       ))}
                     </div>

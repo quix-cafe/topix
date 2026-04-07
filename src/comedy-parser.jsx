@@ -318,7 +318,7 @@ export default function ComedyParser() {
 
   // ── Hooks ──────────────────────────────────────────────────────
 
-  const { touchstoneNameCache, touchstoneNamingController, runDetection } =
+  const { touchstoneNameCache, touchstoneNamingController, runDetection, reasonRefreshQueue } =
     useTouchstoneDetection({ dispatch, stateRef }, { topics, matches, processing });
 
   const ctx = {
@@ -338,6 +338,47 @@ export default function ComedyParser() {
   const transcriptOps = useTranscriptOps(ctx, loadSavedData);
   const tsHandlers = useTouchstoneHandlers(ctx);
   const noteOps = useNotes(ctx);
+
+  const removeOrphanTranscripts = useCallback(async () => {
+    try {
+      const res = await fetch("http://localhost:3001/api/transcripts");
+      if (!res.ok) return;
+      const playFiles = await res.json();
+      const playNames = new Set(playFiles.filter((e) => e.has_transcript).map((e) => e.transcript_filename));
+      const playHashes = new Set(playFiles.map((e) => e.hash));
+      const s = stateRef.current;
+      const orphans = s.transcripts.filter((tr) => {
+        if (tr.playHash && playHashes.has(tr.playHash)) return false;
+        if (playNames.has(tr.name)) return false;
+        return true;
+      });
+      if (orphans.length === 0) { dispatch({ type: 'SET', field: 'status', value: 'No orphaned transcripts found.' }); return; }
+      if (!window.confirm(`Remove ${orphans.length} orphaned transcript${orphans.length !== 1 ? 's' : ''} not matched to any play file?\n\n${orphans.map((t) => t.name).join('\n')}`)) return;
+      const orphanIds = new Set(orphans.map((t) => t.id));
+      const orphanNames = new Set(orphans.map((t) => t.name));
+      const bitsToRemove = new Set(s.topics.filter((t) => orphanIds.has(t.transcriptId) || orphanNames.has(t.sourceFile)).map((t) => t.id));
+      const updatedTopics = s.topics.filter((t) => !bitsToRemove.has(t.id));
+      const updatedMatches = s.matches.filter((m) => !bitsToRemove.has(m.sourceId) && !bitsToRemove.has(m.targetId));
+      const updatedTranscripts = s.transcripts.filter((t) => !orphanIds.has(t.id));
+      dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches, transcripts: updatedTranscripts } });
+      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: updatedTranscripts, touchstones: s.touchstones });
+      dispatch({ type: 'SET', field: 'status', value: `Removed ${orphans.length} orphaned transcript${orphans.length !== 1 ? 's' : ''} and ${bitsToRemove.size} bits.` });
+    } catch (err) { dispatch({ type: 'SET', field: 'status', value: `Error removing orphans: ${err.message}` }); }
+  }, []);
+
+  // Auto-refresh reasons for touchstones with 25%+ content growth
+  const reasonRefreshRunning = useRef(false);
+  useEffect(() => {
+    if (processing || reasonRefreshRunning.current || reasonRefreshQueue.current.length === 0) return;
+    const queue = reasonRefreshQueue.current.splice(0);
+    reasonRefreshRunning.current = true;
+    (async () => {
+      for (const id of queue) {
+        try { await tsHandlers.onRefreshReasons(id); } catch (e) { console.warn("[AutoRefreshReasons]", e); }
+      }
+      reasonRefreshRunning.current = false;
+    })();
+  }, [touchstones, processing]);
 
   // Promote a note into a bit + confirmed touchstone (sainted)
   const handlePromoteNote = useCallback(async (noteId, touchstoneName) => {
@@ -650,6 +691,7 @@ export default function ComedyParser() {
             abortControllerRef={abortControllerRef}
             onGoToMix={(tr) => { setMixTranscriptInit(tr); setSelectedTranscript(tr); setActiveTab("transcripts"); }}
             onSyncApply={transcriptOps.handleSyncApply}
+            onSyncJournals={noteOps.syncJournals}
             playInitFile={playInitFile}
             onConsumePlayInit={() => setPlayInitFile(null)}
             onNowPlaying={setNowPlaying}
@@ -857,7 +899,8 @@ export default function ComedyParser() {
             onConsumeMixInit={() => { setMixTranscriptInit(null); setMixBitInit(null); setMixGapInit(null); }}
             approvedGaps={approvedGaps}
             onApproveGap={handleApproveGap}
-            onGoToPlay={(tr) => { setPlayInitFile(tr.name); setActiveTab("play"); }}
+            onGoToPlay={(tr) => { setPlayInitFile(tr.playHash || tr.name); setActiveTab("play"); }}
+            onRemoveOrphans={removeOrphanTranscripts}
             sortCol={state.transcriptSortCol}
             sortDir={state.transcriptSortDir}
             onSortChange={(col, dir) => dispatch({ type: 'MERGE', payload: { transcriptSortCol: col, transcriptSortDir: dir } })}

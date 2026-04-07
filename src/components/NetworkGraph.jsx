@@ -20,10 +20,10 @@ export function NetworkGraph({ topics, matches }) {
       tags: t.tags,
     }));
 
-    // Only include links where both endpoints exist in the node set
+    // Only include links where both endpoints exist and confidence >= 80%
     const nodeIds = new Set(nodes.map((n) => n.id));
     const links = matches
-      .filter((m) => nodeIds.has(m.sourceId) && nodeIds.has(m.targetId))
+      .filter((m) => nodeIds.has(m.sourceId) && nodeIds.has(m.targetId) && (m.confidence || 0) >= 0.80)
       .map((m) => ({
         source: m.sourceId,
         target: m.targetId,
@@ -48,25 +48,23 @@ export function NetworkGraph({ topics, matches }) {
       d3.zoom().scaleExtent([0.2, 4]).on("zoom", (e) => g.attr("transform", e.transform))
     );
 
-    // Confidence-based color gradient (mapped to 0.5–1.0 visible range):
-    //   1.0  = neon cyan-blue   (highest)
-    //   0.9  = purple
-    //   0.8  = red
-    //   0.7  = orange
-    //   0.6  = yellow
-    //   0.5  = green            (lowest shown)
+    // Confidence-based color gradient (mapped to 0.80–1.0 visible range):
+    //   1.00 = neon cyan-blue   (highest)
+    //   0.95 = purple
+    //   0.90 = red
+    //   0.85 = orange
+    //   0.80 = yellow           (lowest shown)
     const colorStops = [
-      { t: 0.0, r: 60, g: 210, b: 90  },  // green
-      { t: 0.2, r: 230, g: 220, b: 50 },   // yellow
-      { t: 0.4, r: 255, g: 150, b: 50 },   // orange
-      { t: 0.6, r: 240, g: 60,  b: 70 },   // red
-      { t: 0.8, r: 180, g: 80,  b: 240 },  // purple
-      { t: 1.0, r: 50,  g: 220, b: 255 },  // neon cyan-blue
+      { t: 0.00, r: 230, g: 220, b: 50  },  // 80% — yellow
+      { t: 0.25, r: 255, g: 150, b: 50  },  // 85% — orange
+      { t: 0.50, r: 240, g: 60,  b: 70  },  // 90% — red
+      { t: 0.75, r: 180, g: 80,  b: 240 },  // 95% — purple
+      { t: 1.00, r: 50,  g: 220, b: 255 },  // 100% — neon cyan-blue
     ];
 
     function linkColor(d) {
-      // Map confidence 0.5–1.0 → 0–1 for maximum contrast in the visible range
-      const t = Math.max(0, Math.min(1, (d.confidence - 0.5) * 2));
+      // Map confidence 0.80–1.0 → 0–1 for maximum contrast in the visible range
+      const t = Math.max(0, Math.min(1, (d.confidence - 0.80) * 5));
       // Find surrounding stops
       let lo = colorStops[0], hi = colorStops[colorStops.length - 1];
       for (let i = 0; i < colorStops.length - 1; i++) {
@@ -174,7 +172,8 @@ export function NetworkGraph({ topics, matches }) {
           reason: m.reason || "",
         };
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((r) => r.confidence >= 0.80);
 
     if (filterRel !== "all") {
       rows = rows.filter((r) => r.relationship === filterRel);
@@ -231,6 +230,7 @@ export function NetworkGraph({ topics, matches }) {
   const relCounts = useMemo(() => {
     const counts = {};
     for (const m of matches) {
+      if ((m.confidence || 0) < 0.80) continue;
       const rel = m.relationship || "unknown";
       counts[rel] = (counts[rel] || 0) + 1;
     }

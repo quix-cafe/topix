@@ -3,3 +3,4 @@ dist/
 .topix-config.json
 passthru.log
 .claude/
+.gitnexus

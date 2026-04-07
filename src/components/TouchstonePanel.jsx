@@ -1,10 +1,19 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useHashParam } from "../hooks/useHashParam";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 import { SYSTEM_SYNTHESIZE_TOUCHSTONE, SYSTEM_TOUCHSTONE_COMMUNE, SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
 import { searchTouchstones } from "../utils/touchstoneSearch";
 import { callOllama, onQueueChange, getQueueSnapshot, cancelPendingGenerations } from "../utils/ollama";
 
+
+function KeywordBadge({ keyword }) {
+  if (!keyword) return null;
+  return (
+    <span style={{ fontSize: 10, fontWeight: 700, color: "#4ecdc4", background: "#4ecdc418", padding: "1px 6px", borderRadius: 3, border: "1px solid #4ecdc433", marginRight: 6, letterSpacing: 0.3, textTransform: "uppercase", whiteSpace: "nowrap" }}>
+      {keyword}
+    </span>
+  );
+}
 
 function StyledFilename({ sourceFile, style }) {
   const p = parseFilenameClient(sourceFile || "");
@@ -19,7 +28,7 @@ function StyledFilename({ sourceFile, style }) {
 }
 
 const RELATIONSHIP_OPTIONS = ["same_bit", "evolved", "related", "callback", "tag-on"];
-const EXCLUSIVE_RELATIONSHIPS = new Set(["same_bit", "evolved"]);
+
 
 function LLMQueueStatus() {
   const [queue, setQueue] = useState(getQueueSnapshot);
@@ -57,7 +66,17 @@ export function TouchstonePanel({
   selectedModel,
 }) {
   const [selectedTouchstoneId, setSelectedTouchstoneIdRaw] = useHashParam("tsid", "");
-  const setSelectedTouchstoneId = (id) => { setSelectedTouchstoneIdRaw(id || ""); if (id) window.scrollTo(0, 0); };
+  const savedScrollY = useRef(0);
+  const setSelectedTouchstoneId = (id) => {
+    if (id) {
+      savedScrollY.current = window.scrollY;
+      setSelectedTouchstoneIdRaw(id);
+      window.scrollTo(0, 0);
+    } else {
+      setSelectedTouchstoneIdRaw("");
+      requestAnimationFrame(() => window.scrollTo(0, savedScrollY.current));
+    }
+  };
   const [autoOpenMerge, setAutoOpenMerge] = useState(false);
   const [autoOpenRelate, setAutoOpenRelate] = useState(false);
   const [creatingFrom, setCreatingFrom] = useState(null); // bit to seed new touchstone
@@ -96,7 +115,7 @@ export function TouchstonePanel({
         {transcriptCount >= 2 && onHunt && (
           <HuntButton onHunt={onHunt} huntProgress={huntProgress} processing={processing} />
         )}
-        {(bits || []).length > 0 && <CreateTouchstoneFromBit bits={bits} onCreateTouchstone={onCreateTouchstone} />}
+        {(bits || []).length > 0 && <CreateTouchstoneFromBit bits={bits} onCreateTouchstone={onCreateTouchstone} allTouchstones={allTouchstones} />}
       </div>
     );
   }
@@ -198,7 +217,7 @@ export function TouchstonePanel({
       {/* Hunt / Rectify / Commune — single row */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
         {onHunt && (
-          <button onClick={onHunt} disabled={processing} style={{
+          <button onClick={onHunt} disabled={processing} title="Scan all bits across transcripts for matching jokes and group them into touchstones" style={{
             padding: "6px 14px", background: processing ? "#33333a" : "#4ecdc4", color: processing ? "#888" : "#000",
             border: "none", borderRadius: 6, fontWeight: 700, fontSize: 12, cursor: processing ? "default" : "pointer",
           }}>
@@ -208,7 +227,7 @@ export function TouchstonePanel({
           </button>
         )}
         {onRectifyOverlaps && possible.length > 0 && (
-          <button onClick={onRectifyOverlaps} disabled={processing} style={{
+          <button onClick={onRectifyOverlaps} disabled={processing} title="Resolve overlapping touchstones — merge groups that share bits, keeping the strongest matches" style={{
             padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#ffa94d",
             border: "1px solid #ffa94d40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
           }}>
@@ -225,7 +244,7 @@ export function TouchstonePanel({
           </button>
         )}
         {onMassPrune && (confirmed.length + possible.length + rejected.length) > 0 && (
-          <button onClick={onMassPrune} disabled={processing} style={{
+          <button onClick={onMassPrune} disabled={processing} title="LLM-verify every instance in every touchstone — remove bits that don't actually match the group's joke" style={{
             padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#ff6b6b",
             border: "1px solid #ff6b6b40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
           }}>
@@ -233,7 +252,7 @@ export function TouchstonePanel({
           </button>
         )}
         {onMassTouchstoneCommunion && (confirmed.length + possible.length + rejected.length) > 0 && (
-          <button onClick={onMassTouchstoneCommunion} disabled={processing} style={{
+          <button onClick={onMassTouchstoneCommunion} disabled={processing} title="LLM-score every instance against its touchstone's criteria — classify each as sainted, blessed, purgatory, or damned" style={{
             padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#c4b5fd",
             border: "1px solid #c4b5fd40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
           }}>
@@ -244,7 +263,7 @@ export function TouchstonePanel({
           <button onClick={() => {
             const changed = onAutoRelateAll();
             if (!changed) alert("No new flow relations found (need 3+ adjacent appearances across setlists).");
-          }} disabled={processing} style={{
+          }} disabled={processing} title="Link touchstones that frequently appear adjacent in setlists — finds flow neighbors automatically" style={{
             padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#e599f7",
             border: "1px solid #e599f740", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
           }}>
@@ -255,7 +274,7 @@ export function TouchstonePanel({
           <button onClick={() => {
             const count = onRejectCoreless();
             if (!count) alert("All touchstones have core or sainted bits.");
-          }} disabled={processing} style={{
+          }} disabled={processing} title="Reject all touchstones that have no core or sainted bits — these lack a verified anchor and may be unreliable" style={{
             padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#ff6b6b",
             border: "1px solid #ff6b6b40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
           }}>
@@ -263,7 +282,7 @@ export function TouchstonePanel({
           </button>
         )}
         {onRedetect && (
-          <button onClick={onRedetect} disabled={processing} style={{
+          <button onClick={onRedetect} disabled={processing} title="Re-run touchstone detection from scratch using current matches — rebuilds all possible groupings" style={{
             padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#74c0fc",
             border: "1px solid #74c0fc40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
           }}>
@@ -386,7 +405,7 @@ export function TouchstonePanel({
 }
 
 /** Mini picker to select a bit for new touchstone creation */
-function CreateTouchstoneFromBit({ bits, onSelect, onCreateTouchstone }) {
+function CreateTouchstoneFromBit({ bits, onSelect, onCreateTouchstone, allTouchstones }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -432,8 +451,19 @@ function CreateTouchstoneFromBit({ bits, onSelect, onCreateTouchstone }) {
                 onMouseEnter={(e) => { e.currentTarget.style.background = "#1a1a2a"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
               >
-                <span style={{ fontWeight: 600, color: "#ddd" }}>{bit.title}</span>
-                <StyledFilename sourceFile={bit.sourceFile} style={{ marginLeft: 8 }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 600, color: "#ddd" }}>{bit.title}</span>
+                  <StyledFilename sourceFile={bit.sourceFile} />
+                  {(allTouchstones || []).filter(t => t.bitIds?.includes(bit.id)).map(t => (
+                    <span key={t.id} style={{
+                      fontSize: 9, padding: "1px 5px", borderRadius: 3, fontWeight: 600,
+                      background: t.category === "confirmed" ? "#51cf6618" : t.category === "rejected" ? "#44444418" : "#ffa94d18",
+                      color: t.category === "confirmed" ? "#51cf66" : t.category === "rejected" ? "#666" : "#ffa94d",
+                    }}>
+                      {t.keyword ? `${t.keyword} · ` : ""}{t.name}
+                    </span>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
@@ -531,8 +561,9 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
         {/* Left column: content */}
         <div style={{ flex: 1, minWidth: 0 }}>
           {/* Title */}
-          <div style={{ fontWeight: 700, color: "#eee", fontSize: 14, lineHeight: 1.3, marginBottom: 4 }}>
-            {touchstone.name}
+          <div style={{ fontWeight: 700, color: "#eee", fontSize: 14, lineHeight: 1.3, marginBottom: 4, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2 }}>
+            <KeywordBadge keyword={touchstone.keyword} />
+            <span>{touchstone.name}</span>
             {touchstone.manualName && <span style={{ fontSize: 9, color: "#c4b5fd", marginLeft: 6, fontWeight: 400 }}>edited</span>}
             {!isRejected && !hasCore && !hasSainted && <span title="No core bit — may drift" style={{ fontSize: 9, color: "#ff6b6b", marginLeft: 6, fontWeight: 600 }}>no core</span>}
           </div>
@@ -635,6 +666,7 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
   const [newReason, setNewReason] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [keywordDraft, setKeywordDraft] = useState("");
   const [editingIdealText, setEditingIdealText] = useState(false);
   const [idealTextDraft, setIdealTextDraft] = useState("");
   const [notesDraft, setNotesDraft] = useState("");
@@ -986,7 +1018,7 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
     const combinedText = instanceBits.map((b, idx) => `[Instance ${idx + 1} from "${b.sourceFile}"]:\n${b.fullText}`).join("\n\n---\n\n");
     setRenamePending({ loading: true, suggested: null });
     try {
-      const systemPrompt = "Name this recurring comedy bit based on these performances of the SAME joke. Use the format: '[3-5 word title] or, [5-8 word title]' — the first title is a punchy shorthand, the second is more descriptive. Include the literal text 'or,' between them. Focus on the core topic or punchline. Reply with ONLY the title text, nothing else. No quotes, no punctuation wrapping. Example: 'DMV Nightmare or, The Witness Protection Line at the DMV'";
+      const systemPrompt = "Name this recurring comedy bit based on these performances of the SAME joke. Provide a descriptive 5-8 word title that captures the core topic or punchline. Reply with ONLY the title text, nothing else. No quotes, no punctuation wrapping. Example: 'The Witness Protection Line at the DMV'";
       const userContent = `${instanceBits.length} performances of the same bit:\n\n${combinedText}`;
       const result = await callOllama(systemPrompt, userContent, null, selectedModel || "qwen3.5:9b", null, null, {
         label: "touchstone-rename",
@@ -1017,18 +1049,6 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
     setExpandedInstances((prev) => { const next = new Set(prev); if (next.has(bitId)) next.delete(bitId); else next.add(bitId); return next; });
   };
 
-  // Check if a bit can be in this touchstone with a given relationship
-  const canHaveRelationship = (bitId, rel) => {
-    if (!EXCLUSIVE_RELATIONSHIPS.has(rel)) return true;
-    // Check if this bit already has an exclusive relationship in ANOTHER touchstone
-    for (const t of allTouchstones) {
-      if (t.id === touchstone.id) continue;
-      const inst = t.instances.find((i) => i.bitId === bitId);
-      if (inst && EXCLUSIVE_RELATIONSHIPS.has(inst.relationship)) return false;
-    }
-    return true;
-  };
-
   return (
     <div>
       <button onClick={onBack} style={{ background: "none", border: "none", color: "#ffa94d", fontSize: 14, cursor: "pointer", marginBottom: 16, fontWeight: 600 }}>
@@ -1041,29 +1061,54 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
             <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
               <input
                 type="text"
+                value={keywordDraft}
+                onChange={(e) => setKeywordDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && titleDraft.trim()) {
+                    onUpdateTouchstoneEdits?.(touchstone.id, { name: titleDraft.trim(), keyword: keywordDraft.trim(), manualName: true });
+                    setEditingTitle(false);
+                  } else if (e.key === "Escape") setEditingTitle(false);
+                }}
+                placeholder="keyword"
+                style={{ width: 100, padding: "6px 10px", background: "#0a0a14", border: "1px solid #4ecdc444", borderRadius: 4, color: "#4ecdc4", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}
+              />
+              <span style={{ color: "#555" }}>—</span>
+              <input
+                type="text"
                 value={titleDraft}
                 onChange={(e) => setTitleDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && titleDraft.trim()) {
-                    onUpdateTouchstoneEdits?.(touchstone.id, { name: titleDraft.trim(), manualName: true });
+                    onUpdateTouchstoneEdits?.(touchstone.id, { name: titleDraft.trim(), keyword: keywordDraft.trim(), manualName: true });
                     setEditingTitle(false);
                   } else if (e.key === "Escape") setEditingTitle(false);
                 }}
                 autoFocus
-                style={{ flex: 1, padding: "6px 10px", background: "#0a0a14", border: "1px solid #c4b5fd44", borderRadius: 4, color: "#eee", fontSize: 18, fontFamily: "'Playfair Display', serif", fontWeight: 700 }}
+                placeholder="title"
+                style={{ flex: 1, padding: "6px 10px", background: "#0a0a14", border: "1px solid #c4b5fd44", borderRadius: 4, color: "#eee", fontSize: 13, fontWeight: 600, fontFamily: "inherit" }}
               />
-              <button onClick={() => { if (titleDraft.trim()) { onUpdateTouchstoneEdits?.(touchstone.id, { name: titleDraft.trim(), manualName: true }); setEditingTitle(false); } }}
+              <button onClick={() => {
+                if (titleDraft.trim()) {
+                  onUpdateTouchstoneEdits?.(touchstone.id, { name: titleDraft.trim(), keyword: keywordDraft.trim(), manualName: true });
+                  setEditingTitle(false);
+                }
+              }}
                 style={{ background: "#51cf6622", border: "1px solid #51cf6644", color: "#51cf66", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>Save</button>
               <button onClick={() => setEditingTitle(false)}
                 style={{ background: "none", border: "1px solid #333", color: "#888", borderRadius: 4, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
             </div>
           ) : (
             <h2
-              onClick={() => { setTitleDraft(touchstone.name); setEditingTitle(true); }}
+              onClick={() => {
+                setKeywordDraft(touchstone.keyword);
+                setTitleDraft(touchstone.name);
+                setEditingTitle(true);
+              }}
               title="Click to edit title"
-              style={{ fontFamily: "'Playfair Display', serif", fontSize: 24, fontWeight: 700, color: "#eee", margin: 0, cursor: "pointer" }}
+              style={{ fontSize: 24, fontWeight: 700, color: "#eee", margin: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
             >
-              {touchstone.name}
+              <KeywordBadge keyword={touchstone.keyword} />
+              <span>{touchstone.name}</span>
               {touchstone.manualName && <span style={{ fontSize: 10, color: "#c4b5fd", marginLeft: 8, fontWeight: 400 }}>edited</span>}
             </h2>
           )}
@@ -1352,7 +1397,10 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
                     onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                   >
                     <div>
-                      <span style={{ fontWeight: 600, color: "#ddd" }}>{target.name}</span>
+                      <span style={{ fontWeight: 600, color: "#ddd", display: "flex", alignItems: "center" }}>
+                        <KeywordBadge keyword={target.keyword} />
+                        {target.name}
+                      </span>
                       <span style={{ marginLeft: 8, fontSize: 10, color: target.category === "confirmed" ? "#51cf66" : "#ffa94d" }}>
                         {target.category}
                       </span>
@@ -1399,7 +1447,10 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
                     onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                   >
                     <div>
-                      <span style={{ fontWeight: 600, color: "#ddd" }}>{target.name}</span>
+                      <span style={{ fontWeight: 600, color: "#ddd", display: "flex", alignItems: "center" }}>
+                        <KeywordBadge keyword={target.keyword} />
+                        {target.name}
+                      </span>
                       <span style={{ marginLeft: 8, fontSize: 10, color: target.category === "confirmed" ? "#51cf66" : "#ffa94d" }}>
                         {target.category}
                       </span>
@@ -1810,7 +1861,10 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
                     onMouseEnter={e => { e.currentTarget.style.borderColor = "#e599f7"; }}
                     onMouseLeave={e => { e.currentTarget.style.borderColor = "#1a1a2a"; }}
                   >
-                    <span style={{ fontSize: 12, color: "#ddd", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rt.name}</span>
+                    <span style={{ fontSize: 12, color: "#ddd", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center" }}>
+                      <KeywordBadge keyword={rt.keyword} />
+                      {rt.name}
+                    </span>
                     <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: rt.category === "confirmed" ? "#51cf6618" : "#ffa94d18", color: rt.category === "confirmed" ? "#51cf66" : "#ffa94d" }}>
                       {rt.category}
                     </span>
@@ -1927,12 +1981,7 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
                   <select
                     value={instance.relationship || "matched"}
                     onChange={(e) => {
-                      const newRel = e.target.value;
-                      if (EXCLUSIVE_RELATIONSHIPS.has(newRel) && !canHaveRelationship(instance.bitId, newRel)) {
-                        alert("This bit already has a same-bit/evolved relationship in another touchstone.");
-                        return;
-                      }
-                      onUpdateInstanceRelationship?.(touchstone.id, instance.bitId, newRel);
+                      onUpdateInstanceRelationship?.(touchstone.id, instance.bitId, e.target.value);
                     }}
                     onClick={(e) => e.stopPropagation()}
                     style={{

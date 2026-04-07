@@ -3,6 +3,7 @@ import { useHashParam, useHashParamSet } from "../hooks/useHashParam";
 import { parseFilenameClient, ratingColor, RATING_FONT } from "../utils/filenameUtils";
 
 
+
 export function DatabaseTab({
   topics,
   setSelectedTopic,
@@ -325,7 +326,7 @@ export function DatabaseTab({
                     color: ts.category === "confirmed" ? "#51cf66" : "#ffa94d",
                   }}
                 >
-                  {ts.name} ({ts.instances?.length || 0}x)
+                  {ts.keyword ? `${ts.keyword} · ` : ""}{ts.name} ({ts.instances?.length || 0}x)
                 </span>
               ))}
             </div>

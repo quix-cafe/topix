@@ -13,6 +13,8 @@ export function useTouchstoneDetection(ctx, { topics, matches, processing }) {
   const touchstoneNamingController = useRef(null);
   const namingInFlight = useRef(new Set());
   const lastDetectionKey = useRef("");
+  const reasonRefreshQueue = useRef([]);
+  const lastReasonBitCount = useRef(new Map()); // tsId → bitCount at last reason refresh
 
   const findCachedName = useCallback((bitIds) => {
     const idSet = new Set(bitIds);
@@ -110,6 +112,29 @@ export function useTouchstoneDetection(ctx, { topics, matches, processing }) {
       // ── Auto-naming ──
       const splitJoinCooldown = stateRef.current.lastSplitJoinTime && (Date.now() - stateRef.current.lastSplitJoinTime < 30000);
 
+      // Track touchstones with 25%+ content growth for reason refresh
+      const allCategories = [...(named.confirmed || []), ...(named.possible || []), ...(named.rejected || [])];
+      for (const ts of allCategories) {
+        if (!ts.instances || ts.instances.length < 2) continue;
+        const prevCount = lastReasonBitCount.current.get(ts.id);
+        const curCount = ts.bitIds.length;
+        if (prevCount === undefined) {
+          // First time seeing this touchstone — set baseline but don't queue.
+          // On app launch every touchstone lacks a baseline; queueing them all
+          // caused redundant reason refreshes on every restart.
+          lastReasonBitCount.current.set(ts.id, curCount);
+          continue;
+        }
+        if (curCount > prevCount) {
+          const growth = (curCount - prevCount) / prevCount;
+          if (growth >= 0.25 && !reasonRefreshQueue.current.includes(ts.id)) {
+            reasonRefreshQueue.current.push(ts.id);
+            // Update baseline so we don't re-queue until it grows another 25%
+            lastReasonBitCount.current.set(ts.id, curCount);
+          }
+        }
+      }
+
       const toName = named.possible.filter(ts => {
         if (ts.manualName || splitJoinCooldown) return false;
         const key = keyOf(ts);
@@ -170,5 +195,5 @@ export function useTouchstoneDetection(ctx, { topics, matches, processing }) {
     };
   }, [topics, matches, processing]);
 
-  return { touchstoneNameCache, touchstoneNamingController, namingInFlight, findCachedName, setCachedName, runDetection };
+  return { touchstoneNameCache, touchstoneNamingController, namingInFlight, findCachedName, setCachedName, runDetection, reasonRefreshQueue };
 }

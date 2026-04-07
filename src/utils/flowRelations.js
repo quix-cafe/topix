@@ -10,6 +10,7 @@ const MIN_ADJACENCY = 3;
 
 /**
  * Compute undirected adjacency counts between touchstones.
+ * Only counts pairs that are truly directly adjacent — no unmatched bits between them.
  * Returns Map<"idA:idB", count> where idA < idB (sorted for consistency).
  */
 export function computeTouchstoneAdjacency(topics, touchstones) {
@@ -31,19 +32,22 @@ export function computeTouchstoneAdjacency(topics, touchstones) {
       .filter((t) => t.sourceFile === source)
       .sort((a, b) => (a.textPosition?.startChar ?? 0) - (b.textPosition?.startChar ?? 0));
 
-    // Build touchstone sequence (deduplicate consecutive same-touchstone)
-    const tsSequence = [];
-    bits.forEach((bit) => {
+    // Walk bits in order — only count truly adjacent touchstone pairs
+    // (no unmatched bits between them)
+    let prevTsId = null;
+    for (const bit of bits) {
       const tsId = bitToTouchstone.get(bit.id);
-      if (tsId && (tsSequence.length === 0 || tsSequence[tsSequence.length - 1] !== tsId)) {
-        tsSequence.push(tsId);
+      if (!tsId) {
+        // Unmatched bit breaks adjacency
+        prevTsId = null;
+        continue;
       }
-    });
-
-    // Count adjacent pairs (undirected)
-    for (let i = 0; i < tsSequence.length - 1; i++) {
-      const pairKey = [tsSequence[i], tsSequence[i + 1]].sort().join(":");
-      adjacency.set(pairKey, (adjacency.get(pairKey) || 0) + 1);
+      if (tsId === prevTsId) continue; // same touchstone, skip
+      if (prevTsId) {
+        const pairKey = [prevTsId, tsId].sort().join(":");
+        adjacency.set(pairKey, (adjacency.get(pairKey) || 0) + 1);
+      }
+      prevTsId = tsId;
     }
   });
 
@@ -67,32 +71,31 @@ export function autoRelateTouchstones(touchstones, topics, threshold = MIN_ADJAC
     }
   }
 
-  if (pairsToLink.length === 0) return touchstones;
-
-  // Build a set of links to add per touchstone
-  const linksToAdd = new Map(); // tsId → Set<otherTsId>
+  // Build the set of auto-linked neighbors per touchstone
+  const autoLinks = new Map(); // tsId → Set<otherTsId>
   for (const [idA, idB] of pairsToLink) {
-    if (!linksToAdd.has(idA)) linksToAdd.set(idA, new Set());
-    if (!linksToAdd.has(idB)) linksToAdd.set(idB, new Set());
-    linksToAdd.get(idA).add(idB);
-    linksToAdd.get(idB).add(idA);
+    if (!autoLinks.has(idA)) autoLinks.set(idA, new Set());
+    if (!autoLinks.has(idB)) autoLinks.set(idB, new Set());
+    autoLinks.get(idA).add(idB);
+    autoLinks.get(idB).add(idA);
   }
 
-  // Apply links, skipping already-linked pairs
+  // Rebuild relatedTouchstoneIds from scratch: auto-links + manual links
   let changed = false;
-  const addLinks = (list) => list.map((t) => {
-    const toAdd = linksToAdd.get(t.id);
-    if (!toAdd) return t;
-    const existing = new Set(t.relatedTouchstoneIds || []);
-    const newIds = [...toAdd].filter((id) => !existing.has(id));
-    if (newIds.length === 0) return t;
+  const rebuildLinks = (list) => list.map((t) => {
+    const auto = autoLinks.has(t.id) ? [...autoLinks.get(t.id)] : [];
+    const manual = t.manualFlowLinks || [];
+    const merged = [...new Set([...auto, ...manual])];
+    const prev = t.relatedTouchstoneIds || [];
+    const same = prev.length === merged.length && merged.every((id) => prev.includes(id));
+    if (same) return t;
     changed = true;
-    return { ...t, relatedTouchstoneIds: [...existing, ...newIds] };
+    return { ...t, relatedTouchstoneIds: merged };
   });
 
   const result = {
-    confirmed: addLinks(touchstones.confirmed || []),
-    possible: addLinks(touchstones.possible || []),
+    confirmed: rebuildLinks(touchstones.confirmed || []),
+    possible: rebuildLinks(touchstones.possible || []),
     rejected: touchstones.rejected || [],
     _unlinkedPairs: touchstones._unlinkedPairs || [],
   };

@@ -29,7 +29,9 @@ import { useParsing } from "./hooks/useParsing";
 import { useTranscriptOps } from "./hooks/useTranscriptOps";
 import { useTouchstoneHandlers } from "./hooks/useTouchstoneHandlers";
 import { useNotes } from "./hooks/useNotes";
+import { useSets } from "./hooks/useSets";
 import NotesTab from "./components/NotesTab";
+import SetsTab from "./components/SetsTab";
 import LLMConfigPanel from "./components/LLMConfigPanel";
 
 function ClearFiltersButton({ activeTab }) {
@@ -83,6 +85,7 @@ const initialState = {
   embeddingModel: "mxbai-embed-large",
   embeddingStatus: { cached: 0, total: 0 },
   notes: [],
+  sets: [],
   vaultReady: false,
   transcriptSortCol: "file",
   transcriptSortDir: "asc",
@@ -254,6 +257,7 @@ export default function ComedyParser() {
           matches: saved.matches || [],
           touchstones: saved.touchstones || { confirmed: [], possible: [] },
           notes: saved.notes || [],
+          sets: saved.sets || [],
           universalCorrections: saved.universalCorrections || [],
         }});
       }
@@ -318,13 +322,14 @@ export default function ComedyParser() {
 
   // ── Hooks ──────────────────────────────────────────────────────
 
-  const { touchstoneNameCache, touchstoneNamingController, runDetection, reasonRefreshQueue } =
+  const { touchstoneNameCache, touchstoneNamingController, runDetection, reasonRefreshQueue, lastReasonBitCount, lastReasonRefreshTime, reasonRefreshFailCount } =
     useTouchstoneDetection({ dispatch, stateRef }, { topics, matches, processing });
 
   const ctx = {
     dispatch, stateRef, addDebugEntry, setShouldStop,
     embeddingStore, opQueue, abortControllerRef, huntControllerRef,
-    touchstoneNamingController, touchstoneNameCache, restoreFileInput,
+    touchstoneNamingController, touchstoneNameCache, restoreFileInput, reasonRefreshQueue,
+    lastReasonBitCount, lastReasonRefreshTime, reasonRefreshFailCount,
   };
 
   const { revalidateMatchesRef, debouncedRevalidate } = useMatchRevalidation(ctx);
@@ -338,6 +343,7 @@ export default function ComedyParser() {
   const transcriptOps = useTranscriptOps(ctx, loadSavedData);
   const tsHandlers = useTouchstoneHandlers(ctx);
   const noteOps = useNotes(ctx);
+  const setOps = useSets(ctx);
 
   const removeOrphanTranscripts = useCallback(async () => {
     try {
@@ -370,11 +376,32 @@ export default function ComedyParser() {
   const reasonRefreshRunning = useRef(false);
   useEffect(() => {
     if (processing || reasonRefreshRunning.current || reasonRefreshQueue.current.length === 0) return;
-    const queue = reasonRefreshQueue.current.splice(0);
+    const queue = [...new Set(reasonRefreshQueue.current.splice(0))]; // dedupe
     reasonRefreshRunning.current = true;
+
+    const runOne = async (id) => {
+      try {
+        await tsHandlers.onRefreshReasons(id);
+        // Track success: update baseline and timestamp, clear failures
+        const s = stateRef.current;
+        const allTs = [...(s.touchstones?.confirmed || []), ...(s.touchstones?.possible || []), ...(s.touchstones?.rejected || [])];
+        const ts = allTs.find(t => t.id === id);
+        if (ts) lastReasonBitCount.current.set(id, ts.bitIds.length);
+        lastReasonRefreshTime.current.set(id, Date.now());
+        reasonRefreshFailCount.current.delete(id);
+      } catch (e) {
+        console.warn("[AutoRefreshReasons]", e);
+        lastReasonRefreshTime.current.set(id, Date.now());
+        reasonRefreshFailCount.current.set(id, (reasonRefreshFailCount.current.get(id) || 0) + 1);
+      }
+    };
+
     (async () => {
-      for (const id of queue) {
-        try { await tsHandlers.onRefreshReasons(id); } catch (e) { console.warn("[AutoRefreshReasons]", e); }
+      for (const id of queue) await runOne(id);
+      // Drain any items that accumulated while we were running
+      while (reasonRefreshQueue.current.length > 0) {
+        const more = [...new Set(reasonRefreshQueue.current.splice(0))];
+        for (const id of more) await runOne(id);
       }
       reasonRefreshRunning.current = false;
     })();
@@ -657,7 +684,7 @@ export default function ComedyParser() {
 
         {/* Row 3: Tabs */}
         <div className="tab-row">
-          {["play", "transcripts", "bits", "touchstones", "notes", "analytics", "graph", "errors", "settings"].map((tab) => (
+          {["play", "transcripts", "bits", "touchstones", "notes", "sets", "analytics", "graph", "errors", "settings"].map((tab) => (
             <button
               key={tab}
               className={`tab-btn ${activeTab === tab ? "active" : ""}`}
@@ -707,6 +734,7 @@ export default function ComedyParser() {
             setSelectedTopic={setSelectedTopic}
             getMatchesForTopic={getMatchesForTopic}
             touchstones={touchstones}
+            onAddToTouchstone={tsHandlers.onAddToTouchstone}
           />
         )}
 
@@ -786,6 +814,7 @@ export default function ComedyParser() {
             }}
             onJoinBits={bitOps.handleJoinBits}
             onReParseGap={bitMgmt.handleReParseGap}
+            onImportGapBits={bitMgmt.handleImportGapBits}
             onDeleteBit={bitMgmt.handleDeleteBit}
             batchFixing={validationBatchFixing}
             setBatchFixing={setValidationBatchFixing}
@@ -849,6 +878,7 @@ export default function ComedyParser() {
               onAutoRelateAll={tsHandlers.onAutoRelateAll}
               onRejectCoreless={tsHandlers.onRejectCoreless}
               onRedetect={runDetection}
+              onAbsorbUnmatched={absorbAllUnmatched}
               notes={notes}
               onGoToNote={(note) => {
                 const tag = (note.tags || [])[0] || null;
@@ -900,6 +930,21 @@ export default function ComedyParser() {
             approvedGaps={approvedGaps}
             onApproveGap={handleApproveGap}
             onGoToPlay={(tr) => { setPlayInitFile(tr.playHash || tr.name); setActiveTab("play"); }}
+            onCreateSetFromTranscript={async (transcript, trBits, allTs) => {
+              // Build set items from transcript bits that belong to touchstones, in bit order
+              const seen = new Set();
+              const items = [];
+              for (const bit of trBits) {
+                const ts = allTs.find(t => (t.instances || []).some(inst => inst.bitId === bit.id));
+                if (!ts || seen.has(ts.id)) continue;
+                seen.add(ts.id);
+                items.push({ type: "touchstone", touchstoneId: ts.id, text: "" });
+              }
+              if (items.length === 0) return;
+              const name = transcript.name.replace(/\.\w+$/, "");
+              const id = await setOps.createSet(name, items);
+              hashRouter.navigateTo("sets");
+            }}
             onRemoveOrphans={removeOrphanTranscripts}
             sortCol={state.transcriptSortCol}
             sortDir={state.transcriptSortDir}
@@ -928,6 +973,25 @@ export default function ComedyParser() {
             onPromoteNote={handlePromoteNote}
             initialNoteNav={noteNav}
             onConsumeNoteNav={() => setNoteNav(null)}
+          />
+        )}
+
+        {/* SETS TAB */}
+        {activeTab === "sets" && (
+          <SetsTab
+            sets={state.sets}
+            touchstones={touchstones}
+            topics={topics}
+            notes={notes}
+            onCreateSet={setOps.createSet}
+            onDeleteSet={setOps.deleteSet}
+            onRenameSet={setOps.renameSet}
+            onUpdateSetItems={setOps.updateSetItems}
+            onAddItem={setOps.addItem}
+            onRemoveItem={setOps.removeItem}
+            onUpdateItem={setOps.updateItem}
+            onImportFromNote={setOps.importFromNote}
+            onGoToTouchstone={(touchstoneId) => { setTouchstoneInit(touchstoneId); hashRouter.navigateTo("touchstones", touchstoneId); }}
           />
         )}
 

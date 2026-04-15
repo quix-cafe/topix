@@ -11,15 +11,21 @@ function getHashParams() {
 }
 
 /**
- * Write query params back to the URL hash (replaceState — no history entry).
+ * Write query params back to the URL hash.
+ * @param {URLSearchParams} params
+ * @param {boolean} push - If true, use pushState (creates history entry); otherwise replaceState.
  */
-function updateHashParams(params) {
+function updateHashParams(params, push = false) {
   const hash = window.location.hash;
   const pathPart = hash.split("?")[0] || "#/play";
   const qs = params.toString();
   const newHash = pathPart + (qs ? `?${qs}` : "");
   if (window.location.hash !== newHash) {
-    history.replaceState(null, "", newHash);
+    if (push) {
+      history.pushState(null, "", newHash);
+    } else {
+      history.replaceState(null, "", newHash);
+    }
   }
 }
 
@@ -30,9 +36,11 @@ function updateHashParams(params) {
  *
  * @param {string} key - The query param key (use tab-prefixed names to avoid collisions, e.g. "bs" for bits search)
  * @param {*} defaultValue - Default value when param is absent (determines type coercion)
+ * @param {Object} [options]
+ * @param {boolean} [options.pushHistory=false] - If true, changes create browser history entries (back button reverses them). Use for detail-view navigation, not filters/search.
  * @returns {[value, setter]} - Like useState but synced with URL
  */
-export function useHashParam(key, defaultValue = "") {
+export function useHashParam(key, defaultValue = "", { pushHistory = false } = {}) {
   const defaultRef = useRef(defaultValue);
 
   const readParam = useCallback(() => {
@@ -57,8 +65,8 @@ export function useHashParam(key, defaultValue = "") {
     } else {
       params.set(key, strVal);
     }
-    updateHashParams(params);
-  }, [key, value]);
+    updateHashParams(params, pushHistory);
+  }, [key, value, pushHistory]);
 
   // Respond to popstate (back/forward)
   useEffect(() => {

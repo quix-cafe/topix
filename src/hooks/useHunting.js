@@ -109,6 +109,88 @@ export function useHunting(ctx) {
   }, []);
 
   /**
+   * Auto-absorb orphan bits that match 90%+ to 2+ bits in the same touchstone.
+   * Stricter than absorbAllUnmatched — requires convergent evidence from multiple members.
+   */
+  const autoAbsorbConvergent = useCallback(() => {
+    const s = stateRef.current;
+    const ts = s.touchstones || {};
+    const allTouchstones = [...(ts.confirmed || []), ...(ts.possible || [])];
+    const touchstoneBitIds = new Set(allTouchstones.flatMap(t => t.bitIds));
+    const bitsById = new Map(s.topics.map(b => [b.id, b]));
+
+    // Build map: bitId → touchstoneId for all touchstone members
+    const bitToTsId = new Map();
+    for (const touchstone of allTouchstones) {
+      for (const bid of touchstone.bitIds) bitToTsId.set(bid, touchstone.id);
+    }
+
+    // For each orphan bit, collect 90%+ matches grouped by touchstone
+    const orphans = s.topics.filter(b => !touchstoneBitIds.has(b.id));
+    let totalAbsorbed = 0;
+
+    for (const bit of orphans) {
+      const tsMatchCounts = new Map(); // tsId → [{ targetId, mp, rel }]
+      for (const m of (s.matches || [])) {
+        const mp = m.matchPercentage || (m.confidence || 0) * 100;
+        if (mp < 90) continue;
+        let otherId = null;
+        if (m.sourceId === bit.id) otherId = m.targetId;
+        else if (m.targetId === bit.id) otherId = m.sourceId;
+        else continue;
+
+        const tsId = bitToTsId.get(otherId);
+        if (!tsId) continue;
+        if (!tsMatchCounts.has(tsId)) tsMatchCounts.set(tsId, []);
+        tsMatchCounts.get(tsId).push({ targetId: otherId, mp: Math.round(mp), rel: m.relationship || 'same_bit' });
+      }
+
+      // Absorb if 2+ matches point to the same touchstone
+      for (const [tsId, targets] of tsMatchCounts) {
+        if (targets.length < 2) continue;
+        const touchstone = allTouchstones.find(t => t.id === tsId);
+        if (!touchstone) continue;
+        if (touchstone.bitIds.includes(bit.id)) continue;
+        const removedSet = new Set(touchstone.removedBitIds || []);
+        if (removedSet.has(bit.id)) continue;
+
+        // Convergent evidence (2+ members at 90%+) is strong enough —
+        // skip the core/sainted/blessed gate that blocks single-match absorption
+        const best = targets.sort((a, b) => b.mp - a.mp)[0];
+        const category = touchstone.category || 'possible';
+        const newInstance = {
+          bitId: bit.id, sourceFile: bit.sourceFile, title: bit.title,
+          instanceNumber: touchstone.instances.length + 1,
+          confidence: best.mp / 100, relationship: best.rel,
+        };
+        update('touchstones', (prev) => {
+          const list = prev[category] || [];
+          const existing = list.find(t => t.id === tsId);
+          if (!existing || existing.bitIds.includes(bit.id)) return prev;
+          return {
+            ...prev,
+            [category]: list.map(t => t.id !== tsId ? t : {
+              ...t,
+              bitIds: [...t.bitIds, bit.id],
+              instances: [...t.instances, newInstance],
+              frequency: t.instances.length + 1,
+            }),
+          };
+        });
+        console.log(`[AutoAbsorb] "${bit.title}" into ${category} "${touchstone.name}" (convergent: ${targets.length} matches, best ${best.mp}%)`);
+        touchstoneBitIds.add(bit.id);
+        totalAbsorbed++;
+        break; // only absorb into one touchstone per bit
+      }
+    }
+
+    if (totalAbsorbed > 0) {
+      console.log(`[AutoAbsorb] Convergent absorption: ${totalAbsorbed} bit(s)`);
+    }
+    return totalAbsorbed;
+  }, [absorbIntoTouchstones]);
+
+  /**
    * Process hunt batch matches: save matches and immediately absorb into touchstones.
    * Shared by huntTouchstones and huntTranscript.
    */
@@ -135,7 +217,10 @@ export function useHunting(ctx) {
       if (srcBit) absorbIntoConfirmed(srcBit, [{ targetId: m.targetId, mp: m.matchPercentage, rel }]);
       if (tgtBit) absorbIntoConfirmed(tgtBit, [{ targetId: m.sourceId, mp: m.matchPercentage, rel }]);
     }
-  }, [absorbIntoTouchstones]);
+
+    // Auto-absorb orphans with convergent 90%+ matches to 2+ bits in same touchstone
+    autoAbsorbConvergent();
+  }, [absorbIntoTouchstones, autoAbsorbConvergent]);
 
   const huntTouchstones = useCallback(async () => {
     const s = stateRef.current;
@@ -444,11 +529,14 @@ export function useHunting(ctx) {
       }
     }
 
+    // Also run convergent absorption for orphans with 2+ matches to same touchstone
+    totalAbsorbed += autoAbsorbConvergent();
+
     set('status', totalAbsorbed > 0
       ? `Absorbed ${totalAbsorbed} bit(s) into touchstones`
       : 'No unmatched bits to absorb — all strong matches already in touchstones');
     return totalAbsorbed;
-  }, [absorbIntoTouchstones]);
+  }, [absorbIntoTouchstones, autoAbsorbConvergent]);
 
   return { huntTouchstones, huntTranscript, matchBitLive, absorbAllUnmatched };
 }

@@ -14,7 +14,9 @@ export function useTouchstoneDetection(ctx, { topics, matches, processing }) {
   const namingInFlight = useRef(new Set());
   const lastDetectionKey = useRef("");
   const reasonRefreshQueue = useRef([]);
-  const lastReasonBitCount = useRef(new Map()); // tsId → bitCount at last reason refresh
+  const lastReasonBitCount = useRef(new Map()); // tsId → bitCount at last reason refresh/baseline
+  const lastReasonRefreshTime = useRef(new Map()); // tsId → timestamp of last successful refresh
+  const reasonRefreshFailCount = useRef(new Map()); // tsId → consecutive failure count
 
   const findCachedName = useCallback((bitIds) => {
     const idSet = new Set(bitIds);
@@ -113,23 +115,36 @@ export function useTouchstoneDetection(ctx, { topics, matches, processing }) {
       const splitJoinCooldown = stateRef.current.lastSplitJoinTime && (Date.now() - stateRef.current.lastSplitJoinTime < 30000);
 
       // Track touchstones with 25%+ content growth for reason refresh
+      const REASON_COOLDOWN_MS = 120_000; // 2 minutes between refreshes per touchstone
+      const now = Date.now();
       const allCategories = [...(named.confirmed || []), ...(named.possible || []), ...(named.rejected || [])];
       for (const ts of allCategories) {
         if (!ts.instances || ts.instances.length < 2) continue;
+        if (reasonRefreshQueue.current.includes(ts.id)) continue;
+
+        // Cooldown: skip if recently refreshed
+        const lastTime = lastReasonRefreshTime.current.get(ts.id);
+        if (lastTime && (now - lastTime) < REASON_COOLDOWN_MS) continue;
+
+        // Back off on repeated failures (double cooldown per failure, max 5 min)
+        const fails = reasonRefreshFailCount.current.get(ts.id) || 0;
+        if (fails > 0 && lastTime && (now - lastTime) < Math.min(REASON_COOLDOWN_MS * Math.pow(2, fails), 300_000)) continue;
+
         const prevCount = lastReasonBitCount.current.get(ts.id);
         const curCount = ts.bitIds.length;
         if (prevCount === undefined) {
-          // First time seeing this touchstone — set baseline but don't queue.
-          // On app launch every touchstone lacks a baseline; queueing them all
-          // caused redundant reason refreshes on every restart.
+          // First time seeing this touchstone — set baseline.
+          // Queue a refresh only if it has no reasons yet (freshly created).
           lastReasonBitCount.current.set(ts.id, curCount);
+          if (!ts.matchInfo?.reasons || ts.matchInfo.reasons.length === 0) {
+            reasonRefreshQueue.current.push(ts.id);
+          }
           continue;
         }
         if (curCount > prevCount) {
           const growth = (curCount - prevCount) / prevCount;
-          if (growth >= 0.25 && !reasonRefreshQueue.current.includes(ts.id)) {
+          if (growth >= 0.25) {
             reasonRefreshQueue.current.push(ts.id);
-            // Update baseline so we don't re-queue until it grows another 25%
             lastReasonBitCount.current.set(ts.id, curCount);
           }
         }
@@ -195,5 +210,5 @@ export function useTouchstoneDetection(ctx, { topics, matches, processing }) {
     };
   }, [topics, matches, processing]);
 
-  return { touchstoneNameCache, touchstoneNamingController, namingInFlight, findCachedName, setCachedName, runDetection, reasonRefreshQueue };
+  return { touchstoneNameCache, touchstoneNamingController, namingInFlight, findCachedName, setCachedName, runDetection, reasonRefreshQueue, lastReasonBitCount, lastReasonRefreshTime, reasonRefreshFailCount };
 }

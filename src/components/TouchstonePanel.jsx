@@ -60,13 +60,14 @@ export function TouchstonePanel({
   onGenerateTitle, onRenameTouchstone, onRemoveInstance, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone, onCreateTouchstone,
   onUpdateInstanceRelationship, onGoToMix, onMergeTouchstone, onRefreshReasons, onUpdateTouchstoneEdits,
   onCommuneTouchstone, onSynthesizeTouchstone, onMassTouchstoneCommunion, onPruneTouchstone, onMassPrune, onRecalcScores, onSaintInstance, onToggleCoreBit,
-  onRelateTouchstone, onUnrelateTouchstone, onAutoRelateAll, onRejectCoreless, onRedetect,
+  onRelateTouchstone, onUnrelateTouchstone, onAutoRelateAll, onRejectCoreless, onRedetect, onAbsorbUnmatched,
   initialTouchstoneId, onConsumeInitialTouchstone, onGoToNote,
   universalCorrections,
   selectedModel,
 }) {
-  const [selectedTouchstoneId, setSelectedTouchstoneIdRaw] = useHashParam("tsid", "");
+  const [selectedTouchstoneId, setSelectedTouchstoneIdRaw] = useHashParam("tsid", "", { pushHistory: true });
   const savedScrollY = useRef(0);
+  const prevTouchstoneId = useRef(selectedTouchstoneId);
   const setSelectedTouchstoneId = (id) => {
     if (id) {
       savedScrollY.current = window.scrollY;
@@ -77,6 +78,15 @@ export function TouchstonePanel({
       requestAnimationFrame(() => window.scrollTo(0, savedScrollY.current));
     }
   };
+
+  // Restore scroll when navigating back via browser back button (popstate updates value directly)
+  useEffect(() => {
+    if (prevTouchstoneId.current && !selectedTouchstoneId) {
+      requestAnimationFrame(() => window.scrollTo(0, savedScrollY.current));
+    }
+    prevTouchstoneId.current = selectedTouchstoneId;
+  }, [selectedTouchstoneId]);
+
   const [autoOpenMerge, setAutoOpenMerge] = useState(false);
   const [autoOpenRelate, setAutoOpenRelate] = useState(false);
   const [creatingFrom, setCreatingFrom] = useState(null); // bit to seed new touchstone
@@ -279,6 +289,17 @@ export function TouchstonePanel({
             border: "1px solid #ff6b6b40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
           }}>
             Reject Coreless
+          </button>
+        )}
+        {onAbsorbUnmatched && (
+          <button onClick={() => {
+            const count = onAbsorbUnmatched();
+            if (!count) alert("No unmatched bits to absorb — all strong matches already in touchstones.");
+          }} disabled={processing} title="Absorb orphan bits into touchstones they strongly match (85%+ single match, or 90%+ to 2+ members of same touchstone)" style={{
+            padding: "6px 12px", background: processing ? "#33333a" : "#1e1e30", color: processing ? "#666" : "#63e6be",
+            border: "1px solid #63e6be40", borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: processing ? "default" : "pointer",
+          }}>
+            Absorb
           </button>
         )}
         {onRedetect && (
@@ -520,6 +541,12 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
   const noteCount = (notes || []).filter(n => n.matchedTouchstoneId === touchstone.id).length;
 
   const avgDuration = useMemo(() => {
+    // Prefer idealText (the synthesized "best version") for duration
+    if (touchstone.idealText) {
+      const words = touchstone.idealText.trim().split(/\s+/).length;
+      return (words / WORDS_PER_MINUTE) * 60;
+    }
+    // Fall back to average across instance fullTexts
     if (!bits || instances.length === 0) return null;
     const durations = instances.map((inst) => {
       const bit = bits.find((b) => b.id === inst.bitId);
@@ -528,7 +555,7 @@ function TouchstoneCard({ touchstone, onClick, onRemove, onConfirm, onRestore, o
     }).filter((d) => d > 0);
     if (durations.length === 0) return null;
     return durations.reduce((a, b) => a + b, 0) / durations.length;
-  }, [instances, bits]);
+  }, [touchstone.idealText, instances, bits]);
 
   const isConfirmed = touchstone.category === "confirmed";
   const isRejected = touchstone.category === "rejected";
@@ -719,7 +746,18 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
         `[Instance ${idx + 1} from "${b.sourceFile}"]:\n${applyCorrections(b.fullText || b.summary)}`
       ).join('\n\n---\n\n');
       system = SYSTEM_SYNTHESIZE_TOUCHSTONE;
-      user = `TOUCHSTONE: "${touchstone.name}"\n\n${instanceBits.length} performance${instanceBits.length > 1 ? 's' : ''} of the same bit:\n\n${instanceTexts}`;
+      const generatedReasons = touchstone.matchInfo?.reasons || [];
+      let reasonsBlock = '';
+      if (userReasons.length > 0 || generatedReasons.length > 0) {
+        reasonsBlock = '\n\n--- WHY THESE ARE THE SAME BIT ---';
+        if (userReasons.length > 0) {
+          reasonsBlock += `\nCOMEDIAN-PROVIDED REASONS (trust these heavily):\n${userReasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}`;
+        }
+        if (generatedReasons.length > 0) {
+          reasonsBlock += `\nAUTO-DETECTED REASONS:\n${generatedReasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}`;
+        }
+      }
+      user = `TOUCHSTONE: "${touchstone.name}"\n\n${instanceBits.length} performance${instanceBits.length > 1 ? 's' : ''} of the same bit:${reasonsBlock}\n\n${instanceTexts}`;
     } else if (type === "commune") {
       const userCriteria = touchstone.userReasons || [];
       const generatedCriteria = touchstone.matchInfo?.reasons || [];
@@ -1100,8 +1138,8 @@ function TouchstoneDetail({ touchstone, bits, allTouchstones, onSelectBit, onBac
           ) : (
             <h2
               onClick={() => {
-                setKeywordDraft(touchstone.keyword);
-                setTitleDraft(touchstone.name);
+                setKeywordDraft(touchstone.keyword || "");
+                setTitleDraft(touchstone.name || "");
                 setEditingTitle(true);
               }}
               title="Click to edit title"

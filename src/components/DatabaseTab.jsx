@@ -9,12 +9,14 @@ export function DatabaseTab({
   setSelectedTopic,
   getMatchesForTopic,
   touchstones,
+  onAddToTouchstone,
 }) {
   const [shuffleKey, setShuffleKey] = useState(0);
   const [search, setSearch] = useHashParam("bs", "");
   const [selectedTags, setSelectedTags] = useHashParamSet("bt");
   const [tagsOpen, setTagsOpen] = useState(() => selectedTags.size > 0);
   const [tagSearch, setTagSearch] = useState("");
+  const [showMaybes, setShowMaybes] = useState(false);
 
   // Map bit IDs to their touchstone names
   const bitToTouchstone = useMemo(() => {
@@ -105,6 +107,33 @@ export function DatabaseTab({
     );
   }, [topics, search]);
 
+  // Bits with "maybe" touchstone connections — not in any TS but matched to TS members
+  const maybeBits = useMemo(() => {
+    const orphans = topics.filter((t) => !touchstoneBitIds.has(t.id));
+    const result = [];
+    for (const bit of orphans) {
+      const topicMatches = getMatchesForTopic(bit.id);
+      let bestPct = 0;
+      const matchedTs = new Map();
+      for (const m of topicMatches) {
+        const otherId = m.sourceId === bit.id ? m.targetId : m.sourceId;
+        const tsList = bitTouchstoneMap.get(otherId);
+        if (tsList) {
+          const pct = m.matchPercentage || (m.confidence || 0) * 100;
+          if (pct > bestPct) bestPct = pct;
+          for (const ts of tsList) {
+            if (!matchedTs.has(ts.id) || matchedTs.get(ts.id).matchPct < pct) {
+              matchedTs.set(ts.id, { ...ts, matchPct: pct });
+            }
+          }
+        }
+      }
+      if (matchedTs.size > 0) result.push({ bit, bestPct, matchedTs: [...matchedTs.values()].sort((a, b) => b.matchPct - a.matchPct) });
+    }
+    result.sort((a, b) => b.bestPct - a.bestPct);
+    return result;
+  }, [topics, touchstoneBitIds, getMatchesForTopic, bitTouchstoneMap]);
+
   // Get bits NOT in any touchstone, then shuffle and take 20
   const displayedBits = useMemo(() => {
     const orphans = topics.filter((t) => !touchstoneBitIds.has(t.id));
@@ -134,7 +163,8 @@ export function DatabaseTab({
 
   // When tags are selected, show tag results instead of normal bit list
   const showingTagResults = tagsOpen && selectedTags.size > 0;
-  const bitsToShow = showingTagResults ? tagFilteredBits : (searchResults || displayedBits);
+  const showingMaybes = showMaybes && !searchResults && !showingTagResults;
+  const bitsToShow = showingTagResults ? tagFilteredBits : (searchResults || (showingMaybes ? maybeBits.map(m => m.bit) : displayedBits));
 
   return (
     <div>
@@ -252,17 +282,36 @@ export function DatabaseTab({
           <span style={{ fontSize: 13, color: "#888" }}>
             {searchResults
               ? `${searchResults.length} result${searchResults.length !== 1 ? "s" : ""} for "${search.trim()}"`
-              : `${orphanCount} bits not in any touchstone \u2014 showing 20 random`
+              : showingMaybes
+                ? `${maybeBits.length} bit${maybeBits.length !== 1 ? "s" : ""} with maybe-touchstone connections`
+                : `${orphanCount} bits not in any touchstone \u2014 showing 20 random`
             }
           </span>
           {!searchResults && (
-            <button
-              className="btn btn-secondary"
-              onClick={reshuffle}
-              style={{ background: "#1a1a2a", color: "#bbb", border: "1px solid #333", fontSize: 12 }}
-            >
-              Reshuffle
-            </button>
+            <div style={{ display: "flex", gap: 6 }}>
+              {maybeBits.length > 0 && (
+                <button
+                  onClick={() => setShowMaybes(!showMaybes)}
+                  style={{
+                    background: showMaybes ? "#ffa94d22" : "#1a1a2a",
+                    color: showMaybes ? "#ffa94d" : "#bbb",
+                    border: `1px solid ${showMaybes ? "#ffa94d44" : "#333"}`,
+                    borderRadius: 6, padding: "4px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600,
+                  }}
+                >
+                  Maybes ({maybeBits.length})
+                </button>
+              )}
+              {!showingMaybes && (
+                <button
+                  className="btn btn-secondary"
+                  onClick={reshuffle}
+                  style={{ background: "#1a1a2a", color: "#bbb", border: "1px solid #333", fontSize: 12 }}
+                >
+                  Reshuffle
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -315,6 +364,51 @@ export function DatabaseTab({
               })}
             </div>
           )}
+          {!touchstoneBitIds.has(topic.id) && (() => {
+            const matchedTs = new Map();
+            const topicMatches = getMatchesForTopic(topic.id);
+            for (const m of topicMatches) {
+              const otherId = m.sourceId === topic.id ? m.targetId : m.sourceId;
+              const tsList = bitTouchstoneMap.get(otherId);
+              if (tsList) {
+                for (const ts of tsList) {
+                  if (!matchedTs.has(ts.id)) matchedTs.set(ts.id, { ...ts, matchPct: m.matchPercentage || (m.confidence || 0) * 100 });
+                }
+              }
+            }
+            if (matchedTs.size === 0) return null;
+            const sorted = [...matchedTs.values()].sort((a, b) => b.matchPct - a.matchPct);
+            return (
+              <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                <span style={{ fontSize: 9, color: "#666", marginRight: 2 }}>maybe:</span>
+                {sorted.map((ts) => (
+                  <span
+                    key={ts.id}
+                    style={{
+                      fontSize: 10, padding: "2px 8px", borderRadius: 4, fontWeight: 600,
+                      background: ts.category === "confirmed" ? "#51cf6618" : "#ffa94d18",
+                      color: ts.category === "confirmed" ? "#51cf66" : "#ffa94d",
+                      display: "inline-flex", alignItems: "center", gap: 4,
+                    }}
+                  >
+                    {ts.keyword ? `${ts.keyword} · ` : ""}{ts.name} ({Math.round(ts.matchPct)}%)
+                    {onAddToTouchstone && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onAddToTouchstone(topic.id, ts.id); }}
+                        style={{
+                          background: "#51cf6622", border: "1px solid #51cf6644", color: "#51cf66",
+                          borderRadius: 3, padding: "0 4px", fontSize: 9, cursor: "pointer",
+                          fontWeight: 700, lineHeight: "16px",
+                        }}
+                      >
+                        +
+                      </button>
+                    )}
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
           {showingTagResults && (bitTouchstoneMap.get(topic.id) || []).length > 0 && (
             <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
               {(bitTouchstoneMap.get(topic.id) || []).map((ts) => (

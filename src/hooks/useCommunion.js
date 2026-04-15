@@ -318,7 +318,20 @@ export function useCommunion(ctx) {
       `[Instance ${idx + 1} from "${b.sourceFile}"]:\n${applyCorrections(b.fullText || b.summary)}`
     ).join('\n\n---\n\n');
 
-    const userMsg = `TOUCHSTONE: "${ts.name}"\n\n${instanceBits.length} performance${instanceBits.length > 1 ? 's' : ''} of the same bit:\n\n${instanceTexts}`;
+    const userReasons = ts.userReasons || [];
+    const generatedReasons = ts.matchInfo?.reasons || [];
+    let reasonsBlock = '';
+    if (userReasons.length > 0 || generatedReasons.length > 0) {
+      reasonsBlock = '\n\n--- WHY THESE ARE THE SAME BIT ---';
+      if (userReasons.length > 0) {
+        reasonsBlock += `\nCOMEDIAN-PROVIDED REASONS (trust these heavily):\n${userReasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}`;
+      }
+      if (generatedReasons.length > 0) {
+        reasonsBlock += `\nAUTO-DETECTED REASONS:\n${generatedReasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}`;
+      }
+    }
+
+    const userMsg = `TOUCHSTONE: "${ts.name}"\n\n${instanceBits.length} performance${instanceBits.length > 1 ? 's' : ''} of the same bit:${reasonsBlock}\n\n${instanceTexts}`;
 
     try {
       set('processing', true);

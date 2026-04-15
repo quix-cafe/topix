@@ -187,6 +187,7 @@ export function assembleAndMergeTouchstones({
       manualName: existing.manualName,
       autoNamed: existing.autoNamed,
       lastNamedBitCount: existing.lastNamedBitCount,
+      matchInfo: existing.matchInfo || ts.matchInfo,
       corrections: existing.corrections,
       userReasons: existing.userReasons,
       rejectedReasons: existing.rejectedReasons,

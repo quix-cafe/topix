@@ -809,12 +809,19 @@ export function MixPanel({ topics, transcripts, touchstones, onJoinBits, onSplit
                         return <span style={{ fontSize: 10, color: "#74c0fc", fontFamily: "'JetBrains Mono', monospace" }}>~{mm}:{ss}</span>;
                       })()}
                       {(bitTouchstoneMap.get(bit.id) || []).map((ts, i) => (
-                        <span key={i} style={{
-                          fontSize: 9, padding: "1px 6px", borderRadius: 3, fontWeight: 600,
-                          background: ts.category === "confirmed" ? "#51cf6618" : "#ffa94d18",
-                          color: ts.category === "confirmed" ? "#51cf66" : "#ffa94d",
-                        }}>
-                          {ts.keyword ? `${ts.keyword} · ` : ""}{ts.name}
+                        <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                          {ts.keyword && (
+                            <span style={{ fontSize: 9, fontWeight: 700, color: "#4ecdc4", background: "#4ecdc418", padding: "1px 5px", borderRadius: 3, border: "1px solid #4ecdc433", textTransform: "uppercase", letterSpacing: 0.3 }}>
+                              {ts.keyword}
+                            </span>
+                          )}
+                          <span style={{
+                            fontSize: 9, padding: "1px 6px", borderRadius: 3, fontWeight: 600,
+                            background: ts.category === "confirmed" ? "#51cf6618" : "#ffa94d18",
+                            color: ts.category === "confirmed" ? "#51cf66" : "#ffa94d",
+                          }}>
+                            {ts.name}
+                          </span>
                         </span>
                       ))}
                     </div>

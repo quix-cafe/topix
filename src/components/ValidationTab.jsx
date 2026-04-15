@@ -1,5 +1,7 @@
 import { useState, useMemo, useRef } from "react";
 import { validateAllBits, autoCorrectPosition } from "../utils/textContinuityValidator";
+import { SYSTEM_PARSE_V3 } from "../utils/prompts";
+import { extractCompleteJsonObjects } from "../utils/jsonParser";
 
 /**
  * ValidationTab - Shows all bit validation issues with rectification UI
@@ -19,6 +21,7 @@ export function ValidationTab({
   onRevalidateBits,
   onJoinBits,
   onReParseGap,
+  onImportGapBits,
   onDeleteBit,
   batchFixing,
   setBatchFixing,
@@ -33,6 +36,7 @@ export function ValidationTab({
   const [newCorrFrom, setNewCorrFrom] = useState("");
   const [newCorrTo, setNewCorrTo] = useState("");
   const [newCorrPattern, setNewCorrPattern] = useState(false);
+  const [gapGeminiModel, setGapGeminiModel] = useState("thinking");
   const setFilter = onFilterChange;
 
   // Build transcript map
@@ -458,6 +462,47 @@ export function ValidationTab({
     setBatchProgress(null);
   };
 
+  // Batch fix: gaps via external LLM (Gemini/Claude)
+  const handleBatchFixGapsExternal = async (provider, geminiModel) => {
+    const issues = categorized.gap;
+    if (issues.length === 0 || !onImportGapBits) return;
+    batchStopRef.current = false;
+    setBatchFixing("gap");
+    setBatchProgress({ done: 0, total: issues.length });
+    for (let i = 0; i < issues.length; i++) {
+      if (batchStopRef.current) break;
+      const issue = issues[i];
+      const transcript = transcriptMap[issue.source];
+      if (!transcript) continue;
+      const cleanText = transcript.text.replace(/\n/g, " ");
+      const gapText = cleanText.substring(issue.gapStart, issue.gapEnd);
+      try {
+        const res = await fetch("/api/llm/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            provider,
+            system: SYSTEM_PARSE_V3,
+            user: `Parse this comedy transcript excerpt:\n\n${gapText}`,
+            ...(geminiModel && { gemini_model: geminiModel }),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "API call failed");
+        let parsed;
+        try { parsed = JSON.parse(data.result); } catch { parsed = extractCompleteJsonObjects(data.result); }
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          await onImportGapBits(parsed, issue.gapStart, issue.gapEnd, transcript.name, transcript.id);
+        }
+      } catch (e) {
+        console.error(`[BatchGapExternal] Error on gap ${i + 1}:`, e.message);
+      }
+      setBatchProgress({ done: i + 1, total: issues.length });
+    }
+    setBatchFixing(null);
+    setBatchProgress(null);
+  };
+
   // Batch fix: joins — auto-join each group of adjacent bits
   const handleBatchFixJoins = async () => {
     const issues = categorized.join;
@@ -678,7 +723,39 @@ export function ValidationTab({
               Deletes large double-parsed bits that overlap 2+ smaller bits
             </span>
           )}
-          {filter === "gap" && !batchFixing && (
+          {filter === "gap" && !batchFixing && onImportGapBits && (
+            <>
+              <span style={{ fontSize: 10, color: "#555" }}>or</span>
+              <select
+                value={gapGeminiModel}
+                onChange={(e) => setGapGeminiModel(e.target.value)}
+                style={{ background: "#0d0d16", border: "1px solid #333", borderRadius: 4, color: "#4285f4", fontSize: 11, padding: "4px 6px", fontWeight: 600 }}
+              >
+                <option value="thinking">Gemini Thinking</option>
+                <option value="pro">Gemini Pro</option>
+                <option value="flash">Gemini Flash</option>
+                <option value="claude">Claude Sonnet</option>
+              </select>
+              <button
+                onClick={() => {
+                  if (batchFixing) return;
+                  const provider = gapGeminiModel === "claude" ? "claude" : "gemini";
+                  const model = gapGeminiModel === "claude" ? undefined : gapGeminiModel;
+                  handleBatchFixGapsExternal(provider, model);
+                }}
+                style={{
+                  padding: "8px 16px",
+                  background: gapGeminiModel === "claude" ? "#c4946a22" : "#4285f422",
+                  border: `1px solid ${gapGeminiModel === "claude" ? "#c4946a44" : "#4285f444"}`,
+                  color: gapGeminiModel === "claude" ? "#c4946a" : "#4285f4",
+                  borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                }}
+              >
+                Send to {gapGeminiModel === "claude" ? "Claude" : `Gemini ${gapGeminiModel.charAt(0).toUpperCase() + gapGeminiModel.slice(1)}`} ({filteredIssues.length})
+              </button>
+            </>
+          )}
+          {filter === "gap" && !batchFixing && !onImportGapBits && (
             <span style={{ fontSize: 10, color: "#888" }}>
               Re-parses each gap region with the LLM
             </span>

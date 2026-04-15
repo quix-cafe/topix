@@ -6,9 +6,20 @@ import { extractCompleteJsonObjects } from "../utils/jsonParser";
 
 
 const TOUCHSTONE_PALETTE = [
-  "#ff6b6b", "#ffa94d", "#ffd43b", "#51cf66",
-  "#4ecdc4", "#74c0fc", "#da77f2", "#f783ac",
-  "#a9e34b", "#63e6be", "#ff8787", "#ffb347",
+  // Primary Distinct Set (High contrast sequence)
+  "#ff8787", "#339af0", "#51cf66", "#fcc419", // Red, Blue, Green, Yellow
+  "#f06595", "#22b8cf", "#94d82d", "#ff922b", // Pink, Cyan, Lime, Orange
+  "#cc5de8", "#20c997", "#f08c00", "#5c7cfa", // Purple, Teal, Dark Orange, Indigo
+  
+  // Secondary High-Luminance Set
+  "#845ef7", "#38d9a9", "#ffd43b", "#ff6b6b", // Violet, Mint, Bright Yellow, Soft Red
+  "#4dabf7", "#69db7c", "#ffa94d", "#da77f2", // Light Blue, Light Green, Peach, Lavender
+  "#15aabf", "#a9e34b", "#fd7e14", "#e64980", // Ocean, Chartreuse, Burnt Orange, Rose
+  
+  // Tertiary Differentiation Set
+  "#74c0fc", "#63e6be", "#fcc419", "#ffc9c9", // Sky, Seafoam, Gold, Pale Red
+  "#be4bdb", "#3bc9db", "#82c91e", "#fab005", // Grape, Electric Blue, Olive-Lime, Amber
+  "#748ffc", "#96f2d7", "#f783ac", "#4ecdc4"  // Periwinkle, Aquamarine, Flamingo, Turquoise
 ];
 function hashStr(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) & 0xffffffff; return Math.abs(h); }
 function tsColor(tsId) { return TOUCHSTONE_PALETTE[hashStr(tsId) % TOUCHSTONE_PALETTE.length]; }
@@ -331,6 +342,7 @@ export function TranscriptTab({
   onGoToPlay,
   onRemoveOrphans,
   onAbsorbUnmatched,
+  onCreateSetFromTranscript,
   sortCol: sortColProp,
   sortDir: sortDirProp,
   onSortChange,
@@ -482,7 +494,9 @@ export function TranscriptTab({
         duration: realDuration || (totalWords / WORDS_PER_MINUTE) * 60,
       };
 
-      return { tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed, timeline };
+      const avgBitLen = bitsParsed.length > 0 && realDuration > 0 ? realDuration / bitsParsed.length : 0;
+
+      return { tr, bitsParsed, lastModel, wordCount, coverage, touchstonePct, unmatchedPct, bitsInTouchstone, parsed, timeline, avgBitLen };
     });
   }, [transcripts, topics, touchstoneBitIds, matches, approvedGaps]);
 
@@ -506,6 +520,7 @@ export function TranscriptTab({
         case "coverage": return dir * (a.coverage - b.coverage);
         case "touchstones": return dir * (a.touchstonePct - b.touchstonePct);
         case "unmatched": return dir * (a.unmatchedPct - b.unmatchedPct);
+        case "avgBit": return dir * (a.avgBitLen - b.avgBitLen);
         case "rating": return dir * (ratingValue(a.parsed.rating) - ratingValue(b.parsed.rating));
         case "duration": {
           const durSecs = (d) => { if (!d) return 0; const [m, s] = d.split(":").map(Number); return m * 60 + s; };
@@ -593,6 +608,20 @@ export function TranscriptTab({
               Play
             </button>
           )}
+          {onCreateSetFromTranscript && (() => {
+            const trBits = topics.filter(t => t.sourceFile === freshTranscript.name || t.transcriptId === freshTranscript.id);
+            const allTs = [...(touchstones?.confirmed || []), ...(touchstones?.possible || [])];
+            const tsBits = trBits.filter(b => allTs.some(ts => (ts.instances || []).some(inst => inst.bitId === b.id)));
+            const hasTouchstones = tsBits.length > 0;
+            return hasTouchstones ? (
+              <button
+                onClick={() => onCreateSetFromTranscript(freshTranscript, trBits, allTs)}
+                style={{ padding: "6px 12px", background: "#15aabf18", color: "#15aabf", border: "1px solid #15aabf33", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+              >
+                Set
+              </button>
+            ) : null;
+          })()}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {selectedParsed.rating && (
@@ -785,7 +814,7 @@ export function TranscriptTab({
             <col style={{ width: 38 }} />{/* cov */}
             <col style={{ width: 50 }} />{/* ts */}
             <col style={{ width: 50 }} />{/* unmatched */}
-            <col style={{ width: 240 }} />{/* actions */}
+            <col style={{ width: 55 }} />{/* avg bit len */}
           </colgroup>
           <thead>
             <tr style={{ borderBottom: "2px solid #1e1e30" }}>
@@ -798,7 +827,7 @@ export function TranscriptTab({
               <th style={{ ...thStyle("coverage"), whiteSpace: "nowrap" }} onClick={() => handleSort("coverage")}>Cov{sortArrow("coverage")}</th>
               <th style={{ ...thStyle("unmatched"), whiteSpace: "nowrap" }} onClick={() => handleSort("unmatched")}>UNM{sortArrow("unmatched")}</th>
               <th style={{ ...thStyle("touchstones"), whiteSpace: "nowrap" }} onClick={() => handleSort("touchstones")}>TS{sortArrow("touchstones")}</th>
-              <th style={{ padding: "10px 6px", textAlign: "center", color: "#888", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: 10, whiteSpace: "nowrap" }}>Actions</th>
+              <th style={{ ...thStyle("avgBit"), whiteSpace: "nowrap" }} onClick={() => handleSort("avgBit")}>Avg Bit{sortArrow("avgBit")}</th>
             </tr>
           </thead>
           <tbody>
@@ -903,31 +932,17 @@ export function TranscriptTab({
                       <span style={{ color: "#555" }}>-</span>
                     )}
                   </td>
-                  <td style={{ padding: "10px 6px", textAlign: "center", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
-                    <button
-                      onClick={() => onHuntTranscript?.(tr)}
-                      disabled={processing || bitsParsed.length === 0}
-                      style={actionBtnStyle("#da77f2", { disabled: processing || bitsParsed.length === 0 })}
-                    >
-                      Hunt
-                    </button>
-                    <ReParseMenu transcript={tr} processing={processing} reParseTranscript={reParseTranscript} onImportParsedJSON={onImportParsedJSON} actionBtnStyle={actionBtnStyle} selectedModel={selectedModel} />
-                    <button
-                      onClick={() => purgeTranscriptData(tr)}
-                      disabled={processing}
-                      title="Delete parsed bits but keep transcript"
-                      style={actionBtnStyle("#ff6b6b", { disabled: processing })}
-                    >
-                      Purge
-                    </button>
-                    <button
-                      onClick={() => removeTranscript(tr)}
-                      disabled={processing}
-                      title="Remove transcript and all its bits"
-                      style={actionBtnStyle("#ff4444", { disabled: processing })}
-                    >
-                      Remove
-                    </button>
+                  <td style={{ padding: "10px 6px", textAlign: "center", color: "#999", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                    {(() => {
+                      const dur = parsed.duration;
+                      if (!dur || bitsParsed.length === 0) return "-";
+                      const [m, s] = dur.split(":").map(Number);
+                      const totalSecs = m * 60 + s;
+                      const avg = Math.round(totalSecs / bitsParsed.length);
+                      const am = Math.floor(avg / 60);
+                      const as = avg % 60;
+                      return am > 0 ? `${am}:${String(as).padStart(2, "0")}` : `${as}s`;
+                    })()}
                   </td>
                 </tr>
               );

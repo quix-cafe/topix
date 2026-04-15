@@ -17,8 +17,25 @@ export function useTranscriptOps(ctx, loadSavedData) {
       const bitsToRemoveIds = new Set(s.topics.filter((t) => t.transcriptId === tr.id).map((t) => t.id));
       const updatedTopics = s.topics.filter((t) => t.transcriptId !== tr.id);
       const updatedMatches = s.matches.filter((m) => !bitsToRemoveIds.has(m.sourceId) && !bitsToRemoveIds.has(m.targetId));
-      dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches } });
-      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: s.touchstones });
+      // Clean purged bits from touchstones
+      const cleanTs = (list) => list.map((t) => {
+        const kept = t.bitIds.filter((id) => !bitsToRemoveIds.has(id));
+        if (kept.length === t.bitIds.length) return t;
+        if (kept.length < 2) return null;
+        return {
+          ...t, bitIds: kept,
+          instances: t.instances.filter((i) => !bitsToRemoveIds.has(i.bitId)),
+          frequency: kept.length,
+          sourceCount: new Set(t.instances.filter((i) => !bitsToRemoveIds.has(i.bitId)).map((i) => i.sourceFile)).size,
+        };
+      }).filter(Boolean);
+      const updatedTouchstones = {
+        confirmed: cleanTs(s.touchstones?.confirmed || []),
+        possible: cleanTs(s.touchstones?.possible || []),
+        rejected: cleanTs(s.touchstones?.rejected || []),
+      };
+      dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches, touchstones: updatedTouchstones } });
+      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: updatedTouchstones });
       set('status', `Purged all data for "${tr.name}"`);
       if (stateRef.current.selectedTranscript?.id === tr.id) dispatch({ type: 'SET', field: 'selectedTranscript', value: null });
     } catch (err) { set('status', `Error purging data: ${err.message}`); }

@@ -196,7 +196,7 @@ export function useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate) {
       body: JSON.stringify({
         model,
         messages: [
-          { role: "system", content: "You are a comedy writing assistant for a comedian named Kai (she/her). Given a comedy bit transcript (which may include multiple versions of the same joke from different performances), generate a short, punchy title (3-6 words max). Focus on the TOPIC or PUNCHLINE rather than the setup — what is the joke fundamentally about? What makes it land? Reply with ONLY the title text, nothing else. No quotes, no punctuation wrapping." },
+          { role: "system", content: "You are a comedy writing assistant. Given a comedy bit transcript, generate a short punchy title (3-6 words). Focus on the TOPIC or PUNCHLINE — what is the joke fundamentally about?\n\nRULES:\n- Reply with ONLY the title text on a single line\n- No quotes, no punctuation wrapping, no explanation\n- No prefixes like \"Title:\" or \"Here's\"\n- Do not include any commentary, alternatives, or reasoning\n- Just the raw title words, nothing else" },
           { role: "user", content: fullText },
         ],
         stream: false,
@@ -206,7 +206,13 @@ export function useBitOperations(ctx, matchBitLiveRef, debouncedRevalidate) {
     });
     if (!res.ok) throw new Error(`Ollama error ${res.status}`);
     const data = await res.json();
-    return (data.message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").replace(/^["'\s]+|["'\s]+$/g, "").trim();
+    return (data.message?.content || "")
+      .replace(/<think>[\s\S]*?<\/think>/g, "")
+      .replace(/^["'\s]+|["'\s]+$/g, "")
+      .split("\n")[0]
+      .replace(/^(title:\s*|here'?s?\s*(a\s*)?|suggested\s*title:\s*)/i, "")
+      .replace(/^["'\s*]+|["'\s*]+$/g, "")
+      .trim();
   }, []);
 
   const handleConfirmRename = useCallback(async (bitId, newTitle) => {

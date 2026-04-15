@@ -2,8 +2,44 @@ import { useRef, useEffect, useState, useMemo } from "react";
 import { useHashParam } from "../hooks/useHashParam";
 import * as d3 from "d3";
 
+// Confidence-based color stops — fixed palette from 50% to 100%
+const COLOR_STOPS = [
+  { pct: 0.50, r: 120, g: 40,  b: 140 },  // 50% — deep purple
+  { pct: 0.55, r: 140, g: 50,  b: 170 },  // 55% — purple
+  { pct: 0.60, r: 155, g: 55,  b: 195 },  // 60% — bright purple
+  { pct: 0.65, r: 160, g: 65,  b: 215 },  // 65% — purple-violet
+  { pct: 0.70, r: 160, g: 60,  b: 210 },  // 70% — purple
+  { pct: 0.75, r: 140, g: 80,  b: 230 },  // 75% — blue-purple
+  { pct: 0.80, r: 100, g: 110, b: 240 },  // 80% — indigo
+  { pct: 0.85, r: 70,  g: 140, b: 220 },  // 85% — blue
+  { pct: 0.90, r: 50,  g: 180, b: 180 },  // 90% — teal
+  { pct: 0.95, r: 50,  g: 200, b: 140 },  // 95% — teal-green
+  { pct: 1.00, r: 80,  g: 210, b: 100 },  // 100% — green
+];
+
+function confidenceColor(confidence, minPct) {
+  const range = 1.0 - minPct;
+  const t = range > 0 ? Math.max(0, Math.min(1, (confidence - minPct) / range)) : 1;
+  // Map t to the absolute color scale
+  const absPct = minPct + t * range;
+  let lo = COLOR_STOPS[0], hi = COLOR_STOPS[COLOR_STOPS.length - 1];
+  for (let i = 0; i < COLOR_STOPS.length - 1; i++) {
+    if (absPct >= COLOR_STOPS[i].pct && absPct <= COLOR_STOPS[i + 1].pct) {
+      lo = COLOR_STOPS[i];
+      hi = COLOR_STOPS[i + 1];
+      break;
+    }
+  }
+  const f = hi.pct === lo.pct ? 0 : (absPct - lo.pct) / (hi.pct - lo.pct);
+  const r = Math.round(lo.r + (hi.r - lo.r) * f);
+  const g = Math.round(lo.g + (hi.g - lo.g) * f);
+  const b = Math.round(lo.b + (hi.b - lo.b) * f);
+  return `rgb(${r},${g},${b})`;
+}
+
 export function NetworkGraph({ topics, matches }) {
   const svgRef = useRef(null);
+  const [minConfidence, setMinConfidence] = useState(0.70);
 
   useEffect(() => {
     if (!svgRef.current || topics.length === 0) return;
@@ -20,10 +56,9 @@ export function NetworkGraph({ topics, matches }) {
       tags: t.tags,
     }));
 
-    // Only include links where both endpoints exist and confidence >= 80%
     const nodeIds = new Set(nodes.map((n) => n.id));
     const links = matches
-      .filter((m) => nodeIds.has(m.sourceId) && nodeIds.has(m.targetId) && (m.confidence || 0) >= 0.80)
+      .filter((m) => nodeIds.has(m.sourceId) && nodeIds.has(m.targetId) && (m.confidence || 0) >= minConfidence)
       .map((m) => ({
         source: m.sourceId,
         target: m.targetId,
@@ -48,37 +83,9 @@ export function NetworkGraph({ topics, matches }) {
       d3.zoom().scaleExtent([0.2, 4]).on("zoom", (e) => g.attr("transform", e.transform))
     );
 
-    // Confidence-based color gradient (mapped to 0.80–1.0 visible range):
-    //   1.00 = neon cyan-blue   (highest)
-    //   0.95 = purple
-    //   0.90 = red
-    //   0.85 = orange
-    //   0.80 = yellow           (lowest shown)
-    const colorStops = [
-      { t: 0.00, r: 230, g: 220, b: 50  },  // 80% — yellow
-      { t: 0.25, r: 255, g: 150, b: 50  },  // 85% — orange
-      { t: 0.50, r: 240, g: 60,  b: 70  },  // 90% — red
-      { t: 0.75, r: 180, g: 80,  b: 240 },  // 95% — purple
-      { t: 1.00, r: 50,  g: 220, b: 255 },  // 100% — neon cyan-blue
-    ];
-
+    const minPct = minConfidence;
     function linkColor(d) {
-      // Map confidence 0.80–1.0 → 0–1 for maximum contrast in the visible range
-      const t = Math.max(0, Math.min(1, (d.confidence - 0.80) * 5));
-      // Find surrounding stops
-      let lo = colorStops[0], hi = colorStops[colorStops.length - 1];
-      for (let i = 0; i < colorStops.length - 1; i++) {
-        if (t >= colorStops[i].t && t <= colorStops[i + 1].t) {
-          lo = colorStops[i];
-          hi = colorStops[i + 1];
-          break;
-        }
-      }
-      const f = hi.t === lo.t ? 0 : (t - lo.t) / (hi.t - lo.t);
-      const r = Math.round(lo.r + (hi.r - lo.r) * f);
-      const g = Math.round(lo.g + (hi.g - lo.g) * f);
-      const b = Math.round(lo.b + (hi.b - lo.b) * f);
-      return `rgb(${r},${g},${b})`;
+      return confidenceColor(d.confidence, minPct);
     }
 
     const link = g
@@ -141,7 +148,7 @@ export function NetworkGraph({ topics, matches }) {
     }
 
     return () => sim.stop();
-  }, [topics, matches]);
+  }, [topics, matches, minConfidence]);
 
   // Table data
   const [tableSortCol, setTableSortCol] = useHashParam("gsc", "confidence");
@@ -173,7 +180,7 @@ export function NetworkGraph({ topics, matches }) {
         };
       })
       .filter(Boolean)
-      .filter((r) => r.confidence >= 0.80);
+      .filter((r) => r.confidence >= minConfidence);
 
     if (filterRel !== "all") {
       rows = rows.filter((r) => r.relationship === filterRel);
@@ -191,7 +198,7 @@ export function NetworkGraph({ topics, matches }) {
     });
 
     return rows;
-  }, [matches, topicMap, tableSortCol, tableSortDir, filterRel]);
+  }, [matches, topicMap, tableSortCol, tableSortDir, filterRel, minConfidence]);
 
   const handleTableSort = (col) => {
     if (tableSortCol === col) {
@@ -230,12 +237,12 @@ export function NetworkGraph({ topics, matches }) {
   const relCounts = useMemo(() => {
     const counts = {};
     for (const m of matches) {
-      if ((m.confidence || 0) < 0.80) continue;
+      if ((m.confidence || 0) < minConfidence) continue;
       const rel = m.relationship || "unknown";
       counts[rel] = (counts[rel] || 0) + 1;
     }
     return counts;
-  }, [matches]);
+  }, [matches, minConfidence]);
 
   const downloadPng = () => {
     const svgEl = svgRef.current;
@@ -308,6 +315,23 @@ export function NetworkGraph({ topics, matches }) {
         ref={svgRef}
         style={{ width: "100%", height: "500px", background: "#0d0d1a", borderRadius: "12px" }}
       />
+
+      {/* Confidence slider */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, padding: "6px 12px", background: "#0d0d1a", borderRadius: 8, border: "1px solid #1e1e30" }}>
+        <span style={{ fontSize: 10, color: "#888", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, whiteSpace: "nowrap" }}>Min confidence</span>
+        <input
+          type="range"
+          min={50}
+          max={95}
+          step={5}
+          value={Math.round(minConfidence * 100)}
+          onChange={(e) => setMinConfidence(Number(e.target.value) / 100)}
+          style={{ flex: 1, accentColor: confidenceColor(minConfidence, 0.50) }}
+        />
+        <span style={{ fontSize: 12, fontWeight: 700, color: confidenceColor(minConfidence, 0.50), minWidth: 36, textAlign: "right" }}>
+          {Math.round(minConfidence * 100)}%
+        </span>
+      </div>
 
       {/* Match table */}
       {matches.length > 0 && (
@@ -384,7 +408,7 @@ export function NetworkGraph({ topics, matches }) {
                         {row.relationship.replace("_", " ")}
                       </span>
                     </td>
-                    <td style={{ padding: "8px", textAlign: "center", fontWeight: 700, color: row.matchPercentage >= 85 ? "#51cf66" : row.matchPercentage >= 70 ? "#ffa94d" : "#ff6b6b" }}>
+                    <td style={{ padding: "8px", textAlign: "center", fontWeight: 700, color: confidenceColor(row.confidence, minConfidence) }}>
                       {row.matchPercentage}%
                     </td>
                     <td style={{ padding: "8px", color: "#888", fontSize: 11, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={row.reason}>

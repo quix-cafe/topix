@@ -64,7 +64,7 @@ export function PlayTab({
   const set = (field, value) => dispatch({ type: "SET", field, value });
 
   // URL-synced state
-  const [hashSelectedHash, setHashSelectedHash] = useHashParam("pf", "");
+  const [hashSelectedHash, setHashSelectedHash] = useHashParam("pf", "", { pushHistory: true });
   const [filter, setFilterParam] = useHashParam("pp", "all");
 
   // Keep a ref to transcripts so computeSyncDiff always uses latest

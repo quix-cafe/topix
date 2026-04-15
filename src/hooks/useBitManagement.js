@@ -14,9 +14,26 @@ export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps, embeddin
     const updatedMatches = s.matches.filter((m) => m.sourceId !== bitId && m.targetId !== bitId);
     console.log(`[Mix] Deleted bit ${bitId}`);
     embeddingStore?.invalidate(bitId);
-    dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches } });
+    // Remove deleted bit from any touchstones that reference it
+    const cleanTs = (list) => list.map((t) => {
+      if (!t.bitIds.includes(bitId)) return t;
+      const kept = t.bitIds.filter((id) => id !== bitId);
+      if (kept.length < 2) return null;
+      return {
+        ...t, bitIds: kept,
+        instances: t.instances.filter((i) => i.bitId !== bitId),
+        frequency: kept.length,
+        sourceCount: new Set(t.instances.filter((i) => i.bitId !== bitId).map((i) => i.sourceFile)).size,
+      };
+    }).filter(Boolean);
+    const updatedTouchstones = {
+      confirmed: cleanTs(s.touchstones?.confirmed || []),
+      possible: cleanTs(s.touchstones?.possible || []),
+      rejected: cleanTs(s.touchstones?.rejected || []),
+    };
+    dispatch({ type: 'MERGE', payload: { topics: updatedTopics, matches: updatedMatches, touchstones: updatedTouchstones } });
     try {
-      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: s.touchstones });
+      await saveVaultState({ topics: updatedTopics, matches: updatedMatches, transcripts: s.transcripts, touchstones: updatedTouchstones });
     } catch (err) { console.error("Error saving after delete:", err); }
   }, []);
 
@@ -200,5 +217,62 @@ export function useBitManagement(ctx, matchBitLiveRef, setApprovedGaps, embeddin
     }
   }, []);
 
-  return { handleDeleteBit, handleAddPhantomBit, handleReParseGap };
+  // Import externally-parsed bits into a gap region (from Gemini/Claude)
+  const handleImportGapBits = useCallback(async (parsedBits, gapStart, gapEnd, sourceFile, transcriptId) => {
+    const s = stateRef.current;
+    const transcript = s.transcripts.find((tr) => tr.name === sourceFile || tr.id === transcriptId);
+    const cleanTranscript = transcript ? transcript.text.replace(/\n/g, " ") : "";
+
+    const newBits = [];
+    for (const bit of parsedBits) {
+      const llmStart = gapStart + (bit.textPosition?.startChar || 0);
+      const llmEnd = gapStart + (bit.textPosition?.endChar || (bit.fullText?.length || 0));
+      const llmText = (bit.fullText || "").trim();
+
+      let finalStart = llmStart, finalEnd = llmEnd, finalText = bit.fullText;
+      if (cleanTranscript && llmText) {
+        const gapText = cleanTranscript.substring(gapStart, gapEnd);
+        const gapExact = gapText.indexOf(llmText);
+        if (gapExact !== -1) {
+          finalStart = gapStart + gapExact;
+          finalEnd = finalStart + llmText.length;
+          finalText = llmText;
+        } else {
+          const exactPos = cleanTranscript.indexOf(llmText);
+          if (exactPos !== -1 && exactPos >= gapStart && exactPos < gapEnd) {
+            finalStart = exactPos;
+            finalEnd = exactPos + llmText.length;
+            finalText = llmText;
+          } else {
+            finalStart = Math.max(gapStart, Math.min(llmStart, gapEnd));
+            finalEnd = Math.max(finalStart, Math.min(llmEnd, gapEnd));
+            if (finalEnd > finalStart) finalText = cleanTranscript.substring(finalStart, finalEnd);
+          }
+        }
+      }
+
+      newBits.push({
+        id: uid(),
+        title: bit.title || "Untitled",
+        summary: bit.summary || "",
+        fullText: finalText,
+        tags: bit.tags || [],
+        keywords: bit.keywords || [],
+        textPosition: { startChar: finalStart, endChar: finalEnd },
+        sourceFile,
+        transcriptId,
+        editHistory: [{ timestamp: Date.now(), action: "import_gap_external", details: { startChar: finalStart, endChar: finalEnd } }],
+      });
+    }
+
+    if (newBits.length > 0) {
+      const latest = stateRef.current;
+      const updatedTopics = [...latest.topics, ...newBits];
+      dispatch({ type: 'MERGE', payload: { topics: updatedTopics } });
+      await saveVaultState({ topics: updatedTopics, matches: latest.matches, transcripts: latest.transcripts, touchstones: latest.touchstones });
+    }
+    return newBits.length;
+  }, []);
+
+  return { handleDeleteBit, handleAddPhantomBit, handleReParseGap, handleImportGapBits };
 }

@@ -1,12 +1,13 @@
 import { useCallback } from "react";
 import { callOllama } from "../utils/ollama";
+import { extractCompleteJsonObjects } from "../utils/jsonParser";
 import { SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
 import { saveVaultState } from "../utils/database";
 import { autoRelateTouchstones } from "../utils/flowRelations";
 
 
 export function useTouchstoneHandlers(ctx) {
-  const { dispatch, stateRef, addDebugEntry, touchstoneNameCache } = ctx;
+  const { dispatch, stateRef, addDebugEntry, touchstoneNameCache, reasonRefreshQueue, lastReasonBitCount, lastReasonRefreshTime, reasonRefreshFailCount } = ctx;
   const set = (field, value) => dispatch({ type: 'SET', field, value });
   const update = (field, fn) => dispatch({ type: 'UPDATE', field, fn });
 
@@ -219,10 +220,12 @@ export function useTouchstoneHandlers(ctx) {
     const anchorBits = allBits.filter(b => anchorIds.has(b.id));
     const candidateBits = allBits.filter(b => !anchorIds.has(b.id));
 
-    // Fallback: if no core/sainted bits, use first bit as anchor
-    if (anchorBits.length === 0) {
-      anchorBits.push(allBits[0]);
+    // Fallback: if no core/sainted bits, or ALL bits are anchors (no candidates),
+    // use first bit as anchor and the rest as candidates
+    if (anchorBits.length === 0 || candidateBits.length === 0) {
+      anchorBits.length = 0;
       candidateBits.length = 0;
+      anchorBits.push(allBits[0]);
       candidateBits.push(...allBits.slice(1));
     }
     if (candidateBits.length === 0) return;
@@ -234,8 +237,22 @@ export function useTouchstoneHandlers(ctx) {
 
     try {
       set('processing', true);
-      set('status', `Refreshing reasoning for "${ts.name}"...`);
-      const result = await callOllama(SYSTEM_TOUCHSTONE_VERIFY, userMsg, () => {}, stateRef.current.selectedModel, stateRef.current.debugMode ? addDebugEntry : null);
+      set('status', `Refreshing reasoning for "${ts.name}" (gemini-thinking)...`);
+      const res = await fetch("/api/llm/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "gemini", gemini_model: "thinking", system: SYSTEM_TOUCHSTONE_VERIFY, user: userMsg }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gemini API call failed");
+      let result;
+      try {
+        result = JSON.parse(data.result);
+      } catch {
+        const extracted = extractCompleteJsonObjects(data.result);
+        result = Array.isArray(extracted) ? extracted[0] : extracted;
+      }
+      if (!result) throw new Error("No valid JSON in Gemini response");
 
       const rejected = new Set((ts.rejectedReasons || []).map((r) => r.toLowerCase().trim()));
       const finalReasons = (result.group_reasoning || []).filter((r) => !rejected.has(r.toLowerCase().trim())).slice(0, 6);
@@ -297,7 +314,7 @@ export function useTouchstoneHandlers(ctx) {
     }
   }, []);
 
-  const onUpdateTouchstoneEdits = useCallback((touchstoneId, edits) => {
+  const onUpdateTouchstoneEdits = useCallback(async (touchstoneId, edits) => {
     update('touchstones', (prev) => {
       const updateIn = (list) => list.map((t) => {
         if (t.id !== touchstoneId) return t;
@@ -325,6 +342,8 @@ export function useTouchstoneHandlers(ctx) {
       });
       return { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };
     });
+    const s = stateRef.current;
+    try { await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }); } catch {}
   }, []);
 
   const onSaintInstance = useCallback((touchstoneId, bitId, newStatus) => {
@@ -384,6 +403,24 @@ export function useTouchstoneHandlers(ctx) {
       });
       return { confirmed: addTo(prev.confirmed || []), possible: addTo(prev.possible || []), rejected: addTo(prev.rejected || []) };
     });
+    // Queue reason refresh if growth threshold met or no reasons yet
+    if (reasonRefreshQueue && !reasonRefreshQueue.current.includes(touchstoneId)) {
+      const s = stateRef.current;
+      const allTs = [...(s.touchstones?.confirmed || []), ...(s.touchstones?.possible || []), ...(s.touchstones?.rejected || [])];
+      const ts = allTs.find(t => t.id === touchstoneId);
+      if (ts && ts.bitIds.length >= 2) {
+        const noReasons = !ts.matchInfo?.reasons || ts.matchInfo.reasons.length === 0;
+        const baseline = lastReasonBitCount?.current.get(touchstoneId);
+        const newCount = ts.bitIds.length + (ts.bitIds.includes(bitId) ? 0 : 1);
+        const growth = baseline ? (newCount - baseline) / baseline : 1;
+        const lastTime = lastReasonRefreshTime?.current.get(touchstoneId);
+        const cooldownOk = !lastTime || (Date.now() - lastTime) >= 120_000;
+        if (cooldownOk && (noReasons || growth >= 0.25)) {
+          reasonRefreshQueue.current.push(touchstoneId);
+          lastReasonBitCount?.current.set(touchstoneId, newCount);
+        }
+      }
+    }
     setTimeout(async () => {
       const s = stateRef.current;
       try { await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }); } catch {}

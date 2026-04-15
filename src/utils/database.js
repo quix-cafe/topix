@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = "comedy-parser-vault";
-const DB_VERSION = 4; // v4: adds notes store
+const DB_VERSION = 5; // v5: adds sets store
 
 const STORES = {
   transcripts: "transcripts",
@@ -68,6 +68,13 @@ function initDatabase() {
           store.createIndex("source", "source", { unique: false });
           store.createIndex("generation", "generation", { unique: false });
           store.createIndex("date", "date", { unique: false });
+        }
+      }
+
+      // v4 → v5: add sets store
+      if (oldVersion < 5) {
+        if (!db.objectStoreNames.contains("sets")) {
+          db.createObjectStore("sets", { keyPath: "id" });
         }
       }
     };
@@ -292,6 +299,38 @@ export async function clearNotes() {
 }
 
 /**
+ * Save sets to database
+ */
+export async function saveSets(sets) {
+  const db = await getDB();
+  const tx = db.transaction(["sets"], "readwrite");
+  const store = tx.objectStore("sets");
+  store.clear();
+  const ts = Date.now();
+  for (const s of sets) {
+    store.put({ ...s, timestamp: ts });
+  }
+  await new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Load sets from database
+ */
+export async function loadSets() {
+  const db = await getDB();
+  if (!db.objectStoreNames.contains("sets")) return [];
+  const store = db.transaction(["sets"], "readonly").objectStore("sets");
+  return new Promise((resolve, reject) => {
+    const request = store.getAll();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result || []);
+  });
+}
+
+/**
  * Load matches from database
  */
 export async function loadMatches() {
@@ -436,6 +475,7 @@ export async function loadVaultState() {
     matches: await loadMatches(),
     touchstones: await loadTouchstones(),
     notes: await loadNotes(),
+    sets: await loadSets(),
     universalCorrections: await loadUniversalCorrections(),
   };
 }

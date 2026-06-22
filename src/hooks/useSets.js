@@ -23,16 +23,26 @@ export function useSets(ctx) {
     }
   }, []);
 
+  const normalizeItem = (item) => {
+    const base = {
+      id: itemUid(),
+      type: item.type || "text", // "touchstone" | "text" | "hr" | "group"
+      touchstoneId: item.touchstoneId || null,
+      text: item.text || "",
+    };
+    if (item.type === "group") {
+      base.title = item.title || "";
+      base.note = item.note || "";
+      base.children = (item.children || []).map(normalizeItem);
+    }
+    return base;
+  };
+
   const createSet = useCallback(async (name = "Untitled Set", items = []) => {
     const newSet = {
       id: uid(),
       name,
-      items: items.map((item) => ({
-        id: itemUid(),
-        type: item.type || "text", // "touchstone" | "text"
-        touchstoneId: item.touchstoneId || null,
-        text: item.text || "",
-      })),
+      items: items.map(normalizeItem),
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -64,20 +74,23 @@ export function useSets(ctx) {
     await persist(sets);
   }, [dispatch, persist, stateRef]);
 
-  const addItem = useCallback(async (setId, item, atIndex) => {
+  const addItem = useCallback(async (setId, item, atIndex, parentGroupId) => {
     const set = stateRef.current.sets.find((s) => s.id === setId);
     if (!set) return;
-    const newItem = {
-      id: itemUid(),
-      type: item.type || "text",
-      touchstoneId: item.touchstoneId || null,
-      text: item.text || "",
-    };
-    const items = [...set.items];
-    if (atIndex !== undefined) {
-      items.splice(atIndex, 0, newItem);
+    const newItem = normalizeItem(item);
+    let items;
+    if (parentGroupId) {
+      items = set.items.map((i) => {
+        if (i.id !== parentGroupId || i.type !== "group") return i;
+        const children = [...(i.children || [])];
+        if (atIndex !== undefined) children.splice(atIndex, 0, newItem);
+        else children.push(newItem);
+        return { ...i, children };
+      });
     } else {
-      items.push(newItem);
+      items = [...set.items];
+      if (atIndex !== undefined) items.splice(atIndex, 0, newItem);
+      else items.push(newItem);
     }
     await updateSetItems(setId, items);
     return newItem.id;
@@ -86,15 +99,32 @@ export function useSets(ctx) {
   const removeItem = useCallback(async (setId, itemId) => {
     const set = stateRef.current.sets.find((s) => s.id === setId);
     if (!set) return;
-    await updateSetItems(setId, set.items.filter((i) => i.id !== itemId));
+    let removed = false;
+    let items = set.items.filter((i) => {
+      if (i.id === itemId) { removed = true; return false; }
+      return true;
+    });
+    if (!removed) {
+      items = set.items.map((i) => {
+        if (i.type !== "group" || !i.children) return i;
+        const filtered = i.children.filter((c) => c.id !== itemId);
+        return filtered.length === i.children.length ? i : { ...i, children: filtered };
+      });
+    }
+    await updateSetItems(setId, items);
   }, [stateRef, updateSetItems]);
 
   const updateItem = useCallback(async (setId, itemId, changes) => {
     const set = stateRef.current.sets.find((s) => s.id === setId);
     if (!set) return;
-    const items = set.items.map((i) =>
-      i.id === itemId ? { ...i, ...changes } : i
-    );
+    const items = set.items.map((i) => {
+      if (i.id === itemId) return { ...i, ...changes };
+      if (i.type === "group" && i.children?.some((c) => c.id === itemId)) {
+        const children = i.children.map((c) => c.id === itemId ? { ...c, ...changes } : c);
+        return { ...i, children };
+      }
+      return i;
+    });
     await updateSetItems(setId, items);
   }, [stateRef, updateSetItems]);
 

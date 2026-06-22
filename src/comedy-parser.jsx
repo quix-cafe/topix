@@ -1,11 +1,10 @@
 import { useReducer, useRef, useCallback, useEffect, useState } from "react";
 import { uid, getAvailableModels, callOllama } from "./utils/ollama";
-import { SYSTEM_MERGE_TAGS } from "./utils/prompts";
 import { validateAllBits } from "./utils/textContinuityValidator";
 import { TouchstonePanel } from "./components/TouchstonePanel";
 import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
 import { getDB, saveVaultState, loadVaultState, getDatabaseStats } from "./utils/database";
-import { EmbeddingStore, setEmbedPaused, isEmbedPaused, embedBatch, cosineSimilarity } from "./utils/embeddings";
+import { EmbeddingStore, setEmbedPaused, isEmbedPaused } from "./utils/embeddings";
 import { OpQueue } from "./utils/opQueue";
 import { NetworkGraph } from "./components/NetworkGraph";
 import { DebugPanel } from "./components/DebugPanel";
@@ -14,7 +13,6 @@ import { PlayTab } from "./components/PlayTab";
 import { DatabaseTab } from "./components/DatabaseTab";
 
 import { TranscriptTab } from "./components/TranscriptTab";
-import { ExportTab } from "./components/ExportTab";
 import { ValidationTab } from "./components/ValidationTab";
 import { DetailPanel } from "./components/DetailPanel";
 
@@ -30,9 +28,10 @@ import { useTranscriptOps } from "./hooks/useTranscriptOps";
 import { useTouchstoneHandlers } from "./hooks/useTouchstoneHandlers";
 import { useNotes } from "./hooks/useNotes";
 import { useSets } from "./hooks/useSets";
+import { useTagMerge } from "./hooks/useTagMerge";
 import NotesTab from "./components/NotesTab";
 import SetsTab from "./components/SetsTab";
-import LLMConfigPanel from "./components/LLMConfigPanel";
+import { SettingsTab } from "./components/SettingsTab";
 
 function ClearFiltersButton({ activeTab }) {
   const [hasFilters, setHasFilters] = useState(() => window.location.hash.includes("?"));
@@ -90,6 +89,7 @@ const initialState = {
   transcriptSortCol: "file",
   transcriptSortDir: "asc",
   tagMergeResult: null,
+  tagMergePreview: null, // { proposals: [{from, to, source, score?}], unchanged: number }
   universalCorrections: [],
 };
 
@@ -157,7 +157,7 @@ export default function ComedyParser() {
     editingMode, touchstones, dbStats, lastSave,
     selectedModel, availableModels, shouldStop, debugMode,
     debugLog, huntProgress, embeddingModel, embeddingStatus, notes, vaultReady,
-    tagMergeResult,
+    tagMergeResult, tagMergePreview,
   } = state;
 
   const set = (field, value) => dispatch({ type: 'SET', field, value });
@@ -454,134 +454,7 @@ export default function ComedyParser() {
     return tsId;
   }, []);
 
-  // ── Tag merge via LLM ─────────────────────────────────────────
-
-  const onMergeTags = useCallback(async () => {
-    const s = stateRef.current;
-
-    // Collect all tags with counts
-    const tagCounts = new Map();
-    for (const t of s.topics) {
-      for (const tag of (t.tags || [])) {
-        tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
-      }
-    }
-    const allTags = [...tagCounts.entries()];
-    if (allTags.length === 0) { set('status', 'No tags to merge.'); return; }
-
-    set('processing', true);
-
-    try {
-      // Step 1: Embed all unique tags for semantic clustering
-      const tagNames = allTags.map(([tag]) => tag);
-      set('status', `Embedding ${tagNames.length} tags for semantic clustering...`);
-      const vectors = await embedBatch(tagNames, s.embeddingModel || "mxbai-embed-large", ({ textsDone, textsTotal }) => {
-        set('status', `Embedding tags: ${textsDone}/${textsTotal}...`);
-      });
-
-      // Step 2: Cluster tags by cosine similarity (greedy single-linkage)
-      const SIM_THRESHOLD = 0.7;
-      const assigned = new Set();
-      const clusters = []; // Array of arrays of indices
-
-      for (let i = 0; i < tagNames.length; i++) {
-        if (assigned.has(i)) continue;
-        const cluster = [i];
-        assigned.add(i);
-        for (let j = i + 1; j < tagNames.length; j++) {
-          if (assigned.has(j)) continue;
-          // Check similarity to any member of this cluster
-          const sim = cluster.some(ci => cosineSimilarity(vectors[ci], vectors[j]) >= SIM_THRESHOLD);
-          if (sim) {
-            cluster.push(j);
-            assigned.add(j);
-          }
-        }
-        if (cluster.length >= 2) {
-          clusters.push(cluster);
-        }
-      }
-
-      if (clusters.length === 0) {
-        set('status', 'No semantically similar tags found — nothing to merge.');
-        set('processing', false);
-        return;
-      }
-
-      set('status', `Found ${clusters.length} tag clusters. Asking LLM to evaluate merges...`);
-
-      // Step 3: Send each cluster to the LLM for merge decisions
-      const allMerges = [];
-      for (let i = 0; i < clusters.length; i++) {
-        const cluster = clusters[i];
-        const clusterTags = cluster.map(idx => [tagNames[idx], tagCounts.get(tagNames[idx])]);
-        set('status', `Evaluating cluster ${i + 1}/${clusters.length} (${clusterTags.length} tags)...`);
-        const tagList = clusterTags.map(([tag, count]) => `${tag} (${count})`).join(", ");
-        const result = await callOllama(
-          SYSTEM_MERGE_TAGS,
-          `Here are the tags with usage counts:\n${tagList}`,
-          () => {},
-          s.selectedModel,
-          s.debugMode ? addDebugEntry : null,
-          null,
-          { label: `merge-tags-cluster-${i + 1}` }
-        );
-        const merges = Array.isArray(result) ? result.filter((m) => m.merge && m.into) : [];
-        allMerges.push(...merges);
-      }
-
-      if (allMerges.length === 0) {
-        set('status', 'No tag merges recommended.');
-        set('processing', false);
-        return;
-      }
-
-      // Build final rename map (resolving chains: a→b→c becomes a→c)
-      const finalMap = new Map();
-      for (const op of allMerges) {
-        for (const oldTag of op.merge) {
-          if (oldTag !== op.into) finalMap.set(oldTag, op.into);
-        }
-      }
-      for (const [from, to] of finalMap) {
-        let resolved = to;
-        let depth = 0;
-        while (finalMap.has(resolved) && depth < 10) { resolved = finalMap.get(resolved); depth++; }
-        if (resolved !== to) finalMap.set(from, resolved);
-      }
-
-      // Apply to all topics
-      set('status', 'Applying tag merges...');
-      update('topics', (prev) => prev.map((t) => {
-        if (!t.tags || t.tags.length === 0) return t;
-        const newTags = [...new Set(t.tags.map((tag) => finalMap.get(tag) || tag))];
-        if (newTags.length === t.tags.length && newTags.every((tag, i) => tag === t.tags[i])) return t;
-        return { ...t, tags: newTags };
-      }));
-
-      // Build verbose description
-      const mergeGroups = new Map();
-      for (const [from, to] of finalMap) {
-        if (!mergeGroups.has(to)) mergeGroups.set(to, []);
-        mergeGroups.get(to).push(from);
-      }
-      const descriptions = [...mergeGroups.entries()].map(([into, froms]) =>
-        `${froms.join(", ")} → ${into}`
-      );
-      set('tagMergeResult', descriptions);
-      set('status', `Merged ${finalMap.size} tag(s) into ${mergeGroups.size} group(s).`);
-      set('processing', false);
-
-      // Save
-      setTimeout(async () => {
-        const s2 = stateRef.current;
-        try { await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }); } catch {}
-      }, 100);
-    } catch (err) {
-      set('status', `Tag merge failed: ${err.message}`);
-      set('processing', false);
-    }
-  }, []);
+  const { onMergeTags, onConfirmMergePreview, onCancelMergePreview } = useTagMerge(ctx);
 
   // ── Helpers ────────────────────────────────────────────────────
 
@@ -753,6 +626,9 @@ export default function ComedyParser() {
                 processing={processing}
                 tagMergeResult={tagMergeResult}
                 onDismissMergeResult={() => set('tagMergeResult', null)}
+                tagMergePreview={tagMergePreview}
+                onConfirmMergePreview={onConfirmMergePreview}
+                onCancelMergePreview={onCancelMergePreview}
               />
             )}
           </div>
@@ -879,6 +755,9 @@ export default function ComedyParser() {
               onRejectCoreless={tsHandlers.onRejectCoreless}
               onRedetect={runDetection}
               onAbsorbUnmatched={absorbAllUnmatched}
+              onGenerateTags={tsHandlers.onGenerateTags}
+              onGenerateAllTags={tsHandlers.onGenerateAllTags}
+              onModernizeTitles={tsHandlers.onModernizeTitles}
               notes={notes}
               onGoToNote={(note) => {
                 const tag = (note.tags || [])[0] || null;
@@ -973,6 +852,7 @@ export default function ComedyParser() {
             onPromoteNote={handlePromoteNote}
             initialNoteNav={noteNav}
             onConsumeNoteNav={() => setNoteNav(null)}
+            onGoToTouchstone={(touchstoneId) => { setTouchstoneInit(touchstoneId); hashRouter.navigateTo("touchstones", touchstoneId); }}
           />
         )}
 
@@ -997,116 +877,24 @@ export default function ComedyParser() {
 
         {/* SETTINGS TAB */}
         {activeTab === "settings" && (
-          <div className="settings-container">
-            {/* Model Selection */}
-            <h2 className="section-heading">Models</h2>
-            <div className="card card-static card-flex">
-              {availableModels.length > 0 && (
-                <div>
-                  <div className="field-label">LLM Model</div>
-                  <select
-                    value={selectedModel}
-                    onChange={(e) => set('selectedModel', e.target.value)}
-                    className="dark-select"
-                  >
-                    {availableModels.map((model) => (
-                      <option key={model} value={model}>{model}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {availableModels.filter(m => m.toLowerCase().includes("embed")).length > 0 && (
-                <div>
-                  <div className="field-label">Embedding Model</div>
-                  <select
-                    value={embeddingModel}
-                    onChange={(e) => {
-                      const newModel = e.target.value;
-                      if (newModel !== stateRef.current.embeddingModel) {
-                        embeddingStore.clear();
-                        set('embeddingStatus', { cached: 0, total: 0 });
-                      }
-                      set('embeddingModel', newModel);
-                    }}
-                    title="Embedding model for semantic search"
-                    className="dark-select embed"
-                  >
-                    {availableModels.filter(m => m.toLowerCase().includes("embed")).map((model) => (
-                      <option key={model} value={model}>{model}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-
-            {/* API Keys */}
-            <h2 className="section-heading mt">External LLMs</h2>
-            <div className="card card-static">
-              <p className="settings-description">
-                Configure API keys for high-end models. Used by "Send to..." on touchstone details. Keys are stored server-side only.
-              </p>
-              <LLMConfigPanel />
-            </div>
-
-            {/* Match Maintenance */}
-            <h2 className="section-heading mt">Match Maintenance</h2>
-            <div className="card card-static">
-              <p className="settings-description">
-                Mass Communion re-evaluates every stored match via the LLM, removing false positives. Processes the most-matched bits first.
-              </p>
-              <div className="action-row">
-                <button
-                  onClick={communion.handleMassCommunion}
-                  disabled={processing || matches.length === 0}
-                  className={`mass-communion-btn ${processing || matches.length === 0 ? "disabled" : "enabled"}`}
-                >
-                  {processing ? "Running..." : `Mass Communion (${matches.length} matches)`}
-                </button>
-                <span className="connection-count">
-                  {topics.filter((t) => {
-                    return matches.some((m) => m.sourceId === t.id || m.targetId === t.id);
-                  }).length} bits with connections
-                </span>
-              </div>
-            </div>
-
-            {/* Data Management */}
-            <h2 className="section-heading mt">Data Management</h2>
-            <div className="card card-static">
-              <div className="data-btn-row">
-                {[
-                  { label: "Backup", icon: "📥", onClick: transcriptOps.handleBackup, title: "Download a full database backup as JSON", bg: "#1a1a2a", border: "#2a2a40", color: "#888" },
-                  { label: "Restore", icon: "📤", onClick: transcriptOps.handleRestore, title: "Restore database from a backup JSON file", bg: "#1a1a2a", border: "#2a2a40", color: "#888" },
-                  { label: "Reset Touchstones", icon: "🔄", onClick: transcriptOps.handleResetTouchstones, title: "Clear all touchstones and matches for re-detection", bg: "#1a1a2a", border: "#2a2a40", color: "#ff6b6b" },
-                  { label: "Reset Transcripts", icon: "🔄", onClick: transcriptOps.clearProcessedData, title: "Clear bits, matches, touchstones — keep transcripts", bg: "#1a2a3a", border: "#224466", color: "#74c0fc" },
-                  { label: "Fresh DB", icon: "⚠️", onClick: transcriptOps.clearAllData, title: "Delete all data and start over", bg: "#3a1a1a", border: "#662222", color: "#ff6b6b" },
-                ].map(({ label, icon, onClick, title, bg, border, color }) => (
-                  <button
-                    key={label}
-                    onClick={onClick}
-                    title={title}
-                    className="data-btn"
-                    style={{ background: bg, border: `1px solid ${border}`, color }}
-                    onMouseEnter={(e) => { e.target.style.borderColor = color; }}
-                    onMouseLeave={(e) => { e.target.style.borderColor = border; }}
-                  >
-                    {icon} {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Export */}
-            <div className="export-spacer" />
-            <ExportTab
-              topics={topics}
-              exportVault={transcriptOps.exportVault}
-              exportMarkdownZip={transcriptOps.exportMarkdownZip}
-              exportSingleMd={transcriptOps.exportSingleMd}
-              syncToVault={transcriptOps.syncToVault}
-              undoVaultSync={transcriptOps.undoVaultSync}
-            />
-          </div>
+          <SettingsTab
+            availableModels={availableModels}
+            selectedModel={selectedModel}
+            onSelectModel={(m) => set('selectedModel', m)}
+            embeddingModel={embeddingModel}
+            onSelectEmbeddingModel={(newModel) => {
+              if (newModel !== stateRef.current.embeddingModel) {
+                embeddingStore.clear();
+                set('embeddingStatus', { cached: 0, total: 0 });
+              }
+              set('embeddingModel', newModel);
+            }}
+            processing={processing}
+            matches={matches}
+            topics={topics}
+            onMassCommunion={communion.handleMassCommunion}
+            transcriptOps={transcriptOps}
+          />
         )}
       </div>
 

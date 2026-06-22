@@ -517,7 +517,7 @@ function createTouchstone(cluster, matches = []) {
     frequency: cluster.length,
     crossTranscript,
     sourceCount: sourceFiles.length,
-    tags: [...new Set(cluster.flatMap((b) => b.tags || []))],
+    bitTags: [...new Set(cluster.flatMap((b) => b.tags || []))],
     commonWords,
     matchInfo: {
       totalMatches: relevantMatches.length,

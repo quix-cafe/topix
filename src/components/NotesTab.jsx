@@ -25,7 +25,7 @@ export default function NotesTab({
   notes, touchstones, topics, embeddingStore, embeddingModel,
   onImportClickUp, onImportKeep, onSyncJournals, onClearImports, onRemoveNote,
   onUpdateSortOrders, onLoadListMeta, onUpdateListMeta, onUpdateNote, onRenameListTag, onPromoteNote,
-  initialNoteNav, onConsumeNoteNav,
+  initialNoteNav, onConsumeNoteNav, onGoToTouchstone,
 }) {
   const [search, setSearch] = useHashParam("ns", "");
   const [genFilter, setGenFilter] = useHashParam("ng", "all");
@@ -950,7 +950,10 @@ export default function NotesTab({
                   {/* Matched touchstone badge */}
                   {matchedTs && !rearranging && (
                     <div style={{ fontSize: 11, marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ background: "#1e3a2f", color: "#6ee7b7", border: "1px solid #059669", padding: "1px 6px", borderRadius: 8, fontSize: 10 }}>
+                      <span
+                        onClick={onGoToTouchstone ? (e) => { e.stopPropagation(); onGoToTouchstone(matchedTs.id); } : undefined}
+                        title={onGoToTouchstone ? "Go to touchstone detail" : undefined}
+                        style={{ background: "#1e3a2f", color: "#6ee7b7", border: "1px solid #059669", padding: "1px 6px", borderRadius: 8, fontSize: 10, cursor: onGoToTouchstone ? "pointer" : "default" }}>
                         {matchedTs._cat === "confirmed" ? "\u2713" : "?"} {matchedTs.name}{note.matchScore ? ` (${note.matchScore}%)` : ""}
                       </span>
                       <button

@@ -42,9 +42,17 @@ export function searchTouchstones(touchstones, query) {
       if ((r || "").toLowerCase().includes(q)) { score += 15; break; }
     }
 
-    // Tags on instances / bit tags
-    const tagStr = (ts.tags || []).join(" ").toLowerCase();
-    if (tagStr.includes(q)) score += 10;
+    // Touchstone-level tags (high weight — selective thematic tags)
+    for (const tag of (ts.themeTags || [])) {
+      const tl = tag.toLowerCase();
+      if (tl === q) { score += 100; break; }
+      else if (tl.startsWith(q)) { score += 60; break; }
+      else if (tl.includes(q)) { score += 35; break; }
+    }
+
+    // Bit-level tags (lower weight — broad/messy but still useful for search)
+    const bitTagStr = (ts.bitTags || []).join(" ").toLowerCase();
+    if (bitTagStr.includes(q)) score += 10;
 
     // Instance titles
     for (const inst of (ts.instances || [])) {

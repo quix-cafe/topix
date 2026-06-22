@@ -422,14 +422,61 @@ async def _gemini_attempt(page: Page, prompt: str, gemini_model: str | None = No
 
     # Click send — try aria-label first, fall back to Enter key
     send_btn = page.locator('button[aria-label="Send message"]')
+    stop_btn = page.locator('button[aria-label="Stop response"], button[aria-label="Stop generating"]')
+    clicked_send = False
     try:
         await send_btn.wait_for(state="visible", timeout=5000)
         await send_btn.click()
+        clicked_send = True
     except Exception:
         log.warning("Gemini send button not found, pressing Enter")
         await page.keyboard.press("Enter")
 
-    await page.wait_for_timeout(1500)
+    # Confirm submit actually kicked off: after a short grace period, either the
+    # Stop button should be visible OR a new response should have started. If
+    # neither, the click may have missed — re-press up to 2 times. Do NOT re-press
+    # if Send has already flipped to Stop (that means it's processing).
+    submitted = False
+    for repress in range(3):
+        await page.wait_for_timeout(1000)
+        try:
+            if await stop_btn.count() > 0 and await stop_btn.first.is_visible():
+                submitted = True
+                break
+        except Exception:
+            pass
+        try:
+            if await page.locator('.model-response-text').count() > resp_before:
+                submitted = True
+                break
+        except Exception:
+            pass
+        # Still no sign of processing — re-press submit (unless editor is empty,
+        # meaning the prompt did go out but response just hasn't rendered yet).
+        try:
+            editor_text = (await editor.inner_text()).strip()
+        except Exception:
+            editor_text = ""
+        if not editor_text:
+            # Prompt left the editor — assume it submitted, just slow to start.
+            log.info("Gemini: editor empty after send, assuming submitted (waiting for response)")
+            submitted = True
+            break
+        if repress < 2:
+            log.warning("Gemini: no Stop button or new response after send; re-pressing submit (attempt %d)", repress + 2)
+            try:
+                if await send_btn.count() > 0 and await send_btn.first.is_visible():
+                    await send_btn.first.click()
+                    clicked_send = True
+                else:
+                    await page.keyboard.press("Enter")
+            except Exception as e:
+                log.warning("Gemini re-press failed: %s", e)
+
+    if not submitted:
+        log.warning("Gemini: submit confirmation never seen, proceeding to response wait anyway")
+
+    await page.wait_for_timeout(500)
 
     # Check for error dialogs
     for retry_attempt in range(3):

@@ -71,8 +71,13 @@ export default function SetsTab({
   const [textDraft, setTextDraft] = useState("");
   const [editingItemId, setEditingItemId] = useState(null);
   const [editItemText, setEditItemText] = useState("");
-  const [dragFromIdx, setDragFromIdx] = useState(null);
-  const [dropGapIdx, setDropGapIdx] = useState(null);
+  const [editingGroupField, setEditingGroupField] = useState(null); // { id, field: "title"|"note" }
+  const [editGroupValue, setEditGroupValue] = useState("");
+  const [addingToGroupId, setAddingToGroupId] = useState(null);
+  const [dragItemId, setDragItemId] = useState(null);
+  // dropTarget: { kind: "top", idx } | { kind: "groupEnd", groupId } | { kind: "child", groupId, idx }
+  const [dropTarget, setDropTarget] = useState(null);
+  const draggedItemRef = useRef(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [confirmRemoveItemId, setConfirmRemoveItemId] = useState(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -124,10 +129,31 @@ export default function SetsTab({
 
   const getItemDuration = useCallback((item) => {
     if (item.type === "hr") return 0;
+    if (item.type === "group") {
+      let total = 0;
+      for (const c of item.children || []) {
+        if (c.type === "hr") continue;
+        if (c.touchstoneId) total += getTouchstoneDuration(c.touchstoneId);
+        else if (c.text) total += textWordDuration(c.text);
+      }
+      return total;
+    }
     if (item.touchstoneId) return getTouchstoneDuration(item.touchstoneId);
     if (item.text) return textWordDuration(item.text);
     return 0;
   }, [getTouchstoneDuration]);
+
+  const flattenItems = useCallback((items) => {
+    const out = [];
+    for (const it of items) {
+      if (it.type === "group") {
+        for (const c of it.children || []) out.push(c);
+      } else {
+        out.push(it);
+      }
+    }
+    return out;
+  }, []);
 
   const getListCategory = useCallback((tag) => {
     const cat = listMeta[tag]?.category;
@@ -162,13 +188,13 @@ export default function SetsTab({
 
   const usedTouchstoneIds = useMemo(() => {
     if (!selectedSet) return new Set();
-    return new Set(selectedSet.items.filter((i) => i.touchstoneId).map((i) => i.touchstoneId));
-  }, [selectedSet]);
+    return new Set(flattenItems(selectedSet.items).filter((i) => i.touchstoneId).map((i) => i.touchstoneId));
+  }, [selectedSet, flattenItems]);
 
   const relatedTouchstoneIds = useMemo(() => {
     if (!selectedSet) return new Set();
     const related = new Set();
-    for (const item of selectedSet.items) {
+    for (const item of flattenItems(selectedSet.items)) {
       if (item.touchstoneId) {
         const ts = allTouchstones.find((t) => t.id === item.touchstoneId);
         if (ts?.relatedTouchstoneIds) {
@@ -179,7 +205,7 @@ export default function SetsTab({
       }
     }
     return related;
-  }, [selectedSet, allTouchstones, usedTouchstoneIds]);
+  }, [selectedSet, allTouchstones, usedTouchstoneIds, flattenItems]);
 
   const relatedTouchstones = useMemo(() => {
     return allTouchstones.filter((t) => relatedTouchstoneIds.has(t.id));
@@ -214,7 +240,8 @@ export default function SetsTab({
 
   const suggestions = useMemo(() => {
     if (!selectedSet || selectedSet.items.length === 0) return allTouchstones.slice(0, 10);
-    const setTsIds = new Set(selectedSet.items.filter((i) => i.touchstoneId).map((i) => i.touchstoneId));
+    const flat = flattenItems(selectedSet.items);
+    const setTsIds = new Set(flat.filter((i) => i.touchstoneId).map((i) => i.touchstoneId));
     if (setTsIds.size === 0) return allTouchstones.slice(0, 10);
     const setTs = allTouchstones.filter((t) => setTsIds.has(t.id));
     const setSourceFiles = new Set();
@@ -242,7 +269,7 @@ export default function SetsTab({
       }
     }
     return result;
-  }, [selectedSet, allTouchstones, touchstones.confirmed]);
+  }, [selectedSet, allTouchstones, touchstones.confirmed, flattenItems]);
 
   const getTouchstone = useCallback(
     (id) => allTouchstones.find((ts) => ts.id === id) || null,
@@ -260,28 +287,132 @@ export default function SetsTab({
 
   // --- handlers ---
 
-  const handleDragStart = useCallback((e, idx) => {
-    setDragFromIdx(idx);
+  const handleDragStart = useCallback((e, item) => {
+    e.stopPropagation();
+    setDragItemId(item.id);
+    draggedItemRef.current = item;
     e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", item.id); } catch {}
+    // Use the parent row as the drag image so user sees what they're moving
+    const row = e.currentTarget.closest?.(".set-item");
+    if (row && e.dataTransfer.setDragImage) {
+      try { e.dataTransfer.setDragImage(row, 10, 10); } catch {}
+    }
   }, []);
-  const handleDragOver = useCallback((e, idx) => {
+  const handleTopDragOver = useCallback((e, idx) => {
     e.preventDefault();
+    e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
     const midY = rect.top + rect.height / 2;
-    setDropGapIdx(e.clientY < midY ? idx : idx + 1);
+    setDropTarget({ kind: "top", idx: e.clientY < midY ? idx : idx + 1 });
   }, []);
-  const handleDragEnd = useCallback(() => { setDragFromIdx(null); setDropGapIdx(null); }, []);
+  // Outer handler covers group header/note/add-buttons area.
+  // When dragging a group, always set top above/below (no nesting).
+  // When dragging a non-group, treat header as "into group" — edges only fire above/below within ~8px.
+  const handleGroupOuterDragOver = useCallback((e, idx, groupId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const draggingGroup = draggedItemRef.current?.type === "group";
+    if (draggingGroup) {
+      const midY = rect.top + rect.height / 2;
+      setDropTarget({ kind: "top", idx: e.clientY < midY ? idx : idx + 1 });
+      return;
+    }
+    const edge = 8;
+    if (e.clientY < rect.top + edge) {
+      setDropTarget({ kind: "top", idx });
+    } else {
+      setDropTarget({ kind: "groupEnd", groupId });
+    }
+  }, []);
+  // Children-area handler: anywhere over the children container is "into this group" (when not dragging a group).
+  const handleGroupBodyDragOver = useCallback((e, groupId) => {
+    e.preventDefault();
+    if (draggedItemRef.current?.type === "group") return; // let outer handler decide above/below
+    e.stopPropagation();
+    setDropTarget({ kind: "groupEnd", groupId });
+  }, []);
+  const handleChildDragOver = useCallback((e, groupId, idx) => {
+    e.preventDefault();
+    // If dragging a group, don't claim child target — let outer group handler win
+    if (draggedItemRef.current?.type === "group") return;
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    setDropTarget({ kind: "child", groupId, idx: e.clientY < midY ? idx : idx + 1 });
+  }, []);
+  const handleDragEnd = useCallback(() => { setDragItemId(null); setDropTarget(null); draggedItemRef.current = null; }, []);
   const handleDrop = useCallback(async (e) => {
     e.preventDefault();
-    if (dragFromIdx === null || dropGapIdx === null || !selectedSet) return;
-    const items = [...selectedSet.items];
-    const [moved] = items.splice(dragFromIdx, 1);
-    const insertIdx = dropGapIdx > dragFromIdx ? dropGapIdx - 1 : dropGapIdx;
-    items.splice(insertIdx, 0, moved);
-    await onUpdateSetItems(selectedSet.id, items);
-    setDragFromIdx(null);
-    setDropGapIdx(null);
-  }, [dragFromIdx, dropGapIdx, selectedSet, onUpdateSetItems]);
+    if (!dragItemId || !dropTarget || !selectedSet) return;
+
+    // Locate dragged item (top-level or in a group's children)
+    let dragged = null;
+    let sourceTopIdx = -1;
+    let sourceGroupId = null;
+    let sourceChildIdx = -1;
+    const items = selectedSet.items;
+    sourceTopIdx = items.findIndex((i) => i.id === dragItemId);
+    if (sourceTopIdx >= 0) {
+      dragged = items[sourceTopIdx];
+    } else {
+      for (const it of items) {
+        if (it.type !== "group") continue;
+        const ci = (it.children || []).findIndex((c) => c.id === dragItemId);
+        if (ci >= 0) {
+          dragged = it.children[ci];
+          sourceGroupId = it.id;
+          sourceChildIdx = ci;
+          break;
+        }
+      }
+    }
+    if (!dragged) { setDragItemId(null); setDropTarget(null); draggedItemRef.current = null; return; }
+
+    // Disallow dropping a group inside any group
+    if (dragged.type === "group" && dropTarget.kind !== "top") {
+      setDragItemId(null); setDropTarget(null); draggedItemRef.current = null; return;
+    }
+
+    let target = { ...dropTarget };
+
+    // Remove from source
+    let newItems;
+    if (sourceTopIdx >= 0) {
+      newItems = items.filter((_, i) => i !== sourceTopIdx);
+      if (target.kind === "top" && target.idx > sourceTopIdx) target.idx -= 1;
+    } else {
+      newItems = items.map((g) =>
+        g.id === sourceGroupId ? { ...g, children: g.children.filter((c) => c.id !== dragItemId) } : g
+      );
+      if (target.kind === "child" && target.groupId === sourceGroupId && target.idx > sourceChildIdx) {
+        target.idx -= 1;
+      }
+    }
+
+    // Insert at target
+    if (target.kind === "top") {
+      newItems = [...newItems];
+      newItems.splice(target.idx, 0, dragged);
+    } else if (target.kind === "groupEnd") {
+      newItems = newItems.map((g) =>
+        g.id === target.groupId ? { ...g, children: [...(g.children || []), dragged] } : g
+      );
+    } else if (target.kind === "child") {
+      newItems = newItems.map((g) => {
+        if (g.id !== target.groupId) return g;
+        const children = [...(g.children || [])];
+        children.splice(target.idx, 0, dragged);
+        return { ...g, children };
+      });
+    }
+
+    await onUpdateSetItems(selectedSet.id, newItems);
+    setDragItemId(null);
+    setDropTarget(null);
+    draggedItemRef.current = null;
+  }, [dragItemId, dropTarget, selectedSet, onUpdateSetItems]);
 
   const handleCreateNew = async () => {
     const id = await onCreateSet("New Set");
@@ -314,17 +445,34 @@ export default function SetsTab({
 
   const handleAddTouchstone = async (ts) => {
     if (!selectedSet) return;
-    await onAddItem(selectedSet.id, { type: "touchstone", touchstoneId: ts.id, text: "" }, addAtTopRef.current ? 0 : undefined);
+    if (addingToGroupId) {
+      await onAddItem(selectedSet.id, { type: "touchstone", touchstoneId: ts.id, text: "" }, undefined, addingToGroupId);
+    } else {
+      await onAddItem(selectedSet.id, { type: "touchstone", touchstoneId: ts.id, text: "" }, addAtTopRef.current ? 0 : undefined);
+    }
   };
   const handleAddText = async () => {
     if (!selectedSet || !textDraft.trim()) return;
-    await onAddItem(selectedSet.id, { type: "text", text: textDraft.trim() }, addAtTopRef.current ? 0 : undefined);
+    if (addingToGroupId) {
+      await onAddItem(selectedSet.id, { type: "text", text: textDraft.trim() }, undefined, addingToGroupId);
+    } else {
+      await onAddItem(selectedSet.id, { type: "text", text: textDraft.trim() }, addAtTopRef.current ? 0 : undefined);
+    }
     setTextDraft("");
     textInputRef.current?.focus();
   };
   const handleAddHr = async () => {
     if (!selectedSet) return;
     await onAddItem(selectedSet.id, { type: "hr", text: "" }, addAtTopRef.current ? 0 : undefined);
+  };
+  const handleAddGroup = async () => {
+    if (!selectedSet) return;
+    await onAddItem(selectedSet.id, { type: "group", title: "New Group", note: "", children: [] }, addAtTopRef.current ? 0 : undefined);
+  };
+  const handleSaveGroupField = async () => {
+    if (!editingGroupField) return;
+    await onUpdateItem(selectedSet.id, editingGroupField.id, { [editingGroupField.field]: editGroupValue });
+    setEditingGroupField(null);
   };
 
   const handleMatchItem = async (itemId, ts) => {
@@ -400,11 +548,12 @@ export default function SetsTab({
 
   const renderAddButtons = (top) => (
     <div style={{ display: "flex", gap: 6 }}>
-      <button className={`btn-sm ${addMode === "touchstone" ? "btn-green" : ""}`}
-        onClick={() => { addAtTopRef.current = top; setAddMode(addMode === "touchstone" ? null : "touchstone"); setSearchQuery(""); }}>+ touchstone</button>
-      <button className={`btn-sm ${addMode === "text" ? "btn-green" : ""}`}
-        onClick={() => { addAtTopRef.current = top; setAddMode(addMode === "text" ? null : "text"); }}>+ text</button>
-      <button className="btn-sm" onClick={() => { addAtTopRef.current = top; handleAddHr(); }} title="Insert divider">+ hr</button>
+      <button className={`btn-sm ${addMode === "touchstone" && !addingToGroupId ? "btn-green" : ""}`}
+        onClick={() => { addAtTopRef.current = top; setAddingToGroupId(null); setAddMode(addMode === "touchstone" && !addingToGroupId ? null : "touchstone"); setSearchQuery(""); }}>+ touchstone</button>
+      <button className={`btn-sm ${addMode === "text" && !addingToGroupId ? "btn-green" : ""}`}
+        onClick={() => { addAtTopRef.current = top; setAddingToGroupId(null); setAddMode(addMode === "text" && !addingToGroupId ? null : "text"); }}>+ text</button>
+      <button className="btn-sm" onClick={() => { addAtTopRef.current = top; setAddingToGroupId(null); handleAddHr(); }} title="Insert divider">+ hr</button>
+      <button className="btn-sm" onClick={() => { addAtTopRef.current = top; setAddingToGroupId(null); handleAddGroup(); }} title="Insert group">+ group</button>
     </div>
   );
 
@@ -452,7 +601,7 @@ export default function SetsTab({
 
       {sets.map((s) => {
         const dur = getSetDuration(s.items);
-        const bitCount = s.items.filter((i) => i.type !== "hr").length;
+        const bitCount = flattenItems(s.items).filter((i) => i.type !== "hr").length;
         return (
           <div key={s.id}
             className={`card card-static ${selectedSetId === s.id && !viewingPendingList ? "set-selected" : ""}`}
@@ -526,7 +675,161 @@ export default function SetsTab({
 
   // --- set item ---
 
-  const renderItem = (item, idx) => {
+  const renderGroup = (item, idx) => {
+    const dur = getItemDuration(item);
+    const childCount = (item.children || []).filter((c) => c.type !== "hr").length;
+    const isEditingTitle = editingGroupField?.id === item.id && editingGroupField.field === "title";
+    const isEditingNote = editingGroupField?.id === item.id && editingGroupField.field === "note";
+    const isAddingHere = addingToGroupId === item.id;
+
+    const isDropTargetEnd = dropTarget?.kind === "groupEnd" && dropTarget.groupId === item.id && dragItemId !== item.id;
+    return (
+      <div key={item.id}>
+        {dropTarget?.kind === "top" && dropTarget.idx === idx && dragItemId !== item.id && (
+          <div style={{ height: 2, background: "#3b82f6", borderRadius: 1, margin: "2px 0" }} />
+        )}
+        <div
+          className={`set-item group ${dragItemId === item.id ? "dragging" : ""}`}
+          onDragOver={(e) => handleGroupOuterDragOver(e, idx, item.id)} onDragEnd={handleDragEnd}
+          style={{
+            flexDirection: "column", alignItems: "stretch", gap: 8,
+            borderLeft: "3px solid #845ef7", paddingLeft: 10,
+            background: "#16121f", borderRadius: 5,
+            boxShadow: isDropTargetEnd ? "inset 0 0 0 2px #845ef7" : undefined,
+          }}
+        >
+          {/* Header row */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span className="set-item-handle"
+              draggable
+              onDragStart={(e) => handleDragStart(e, item)}
+              style={{ cursor: "grab" }}
+              title="Drag group">&#x2807;</span>
+            <span className="set-item-num">{idx + 1}</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#b197fc", background: "#845ef722", padding: "1px 6px", borderRadius: 3, border: "1px solid #845ef755", letterSpacing: 0.4, textTransform: "uppercase" }}>group</span>
+            {isEditingTitle ? (
+              <form onSubmit={(e) => { e.preventDefault(); handleSaveGroupField(); }} style={{ flex: 1 }}>
+                <input value={editGroupValue} onChange={(e) => setEditGroupValue(e.target.value)}
+                  onBlur={handleSaveGroupField}
+                  onKeyDown={(e) => { if (e.key === "Escape") setEditingGroupField(null); }}
+                  className="dark-input" style={{ width: "100%", fontSize: 14, fontWeight: 600 }} autoFocus />
+              </form>
+            ) : (
+              <span style={{ flex: 1, fontWeight: 600, fontSize: 14, color: "#ddd", cursor: "pointer" }}
+                onClick={() => { setEditingGroupField({ id: item.id, field: "title" }); setEditGroupValue(item.title || ""); }}
+                title="Click to rename group">
+                {item.title || <span style={{ color: "#555" }}>(untitled group)</span>}
+              </span>
+            )}
+            <span style={{ color: "#888", fontSize: 11, whiteSpace: "nowrap" }}>
+              {childCount} bit{childCount !== 1 ? "s" : ""}
+              {dur > 0 && <span style={{ color: "#74c0fc", marginLeft: 6 }}>{formatDuration(dur)}</span>}
+            </span>
+            <button className="btn-sm" style={{ padding: "1px 6px", fontSize: 10 }}
+              onClick={() => {
+                setEditingGroupField({ id: item.id, field: "note" });
+                setEditGroupValue(item.note || "");
+              }}
+              title={item.note ? "Edit note" : "Add note"}>{item.note ? "edit note" : "+ note"}</button>
+            {confirmRemoveItemId === item.id ? (
+              <>
+                <button className="btn-sm btn-red" style={{ padding: "1px 6px", fontSize: 10 }}
+                  onClick={() => { onRemoveItem(selectedSet.id, item.id); setConfirmRemoveItemId(null); }}>remove</button>
+                <button className="btn-sm" style={{ padding: "1px 6px", fontSize: 10 }}
+                  onClick={() => setConfirmRemoveItemId(null)}>cancel</button>
+              </>
+            ) : (
+              <button className="set-item-remove" onClick={() => setConfirmRemoveItemId(item.id)} title="Remove group (and its bits)">&times;</button>
+            )}
+          </div>
+
+          {/* Note */}
+          {isEditingNote ? (
+            <form onSubmit={(e) => { e.preventDefault(); handleSaveGroupField(); }}>
+              <input value={editGroupValue} onChange={(e) => setEditGroupValue(e.target.value)}
+                onBlur={handleSaveGroupField}
+                onKeyDown={(e) => { if (e.key === "Escape") setEditingGroupField(null); }}
+                placeholder="Optional group note..." className="dark-input" style={{ width: "100%", fontSize: 12 }} autoFocus />
+            </form>
+          ) : item.note ? (
+            <div style={{ fontSize: 12, color: "#aaa", fontStyle: "italic", paddingLeft: 4 }}>{item.note}</div>
+          ) : null}
+
+          {/* Children */}
+          {(() => {
+            const children = item.children || [];
+            const isActiveTarget = dropTarget?.kind === "groupEnd" && dropTarget.groupId === item.id && dragItemId !== item.id;
+            const showDropHint = dragItemId && draggedItemRef.current?.type !== "group" && dragItemId !== item.id;
+            return (
+              <div
+                style={{
+                  display: "flex", flexDirection: "column", gap: 4, paddingLeft: 8,
+                  minHeight: showDropHint ? 60 : 24,
+                  border: showDropHint ? `2px dashed ${isActiveTarget ? "#b197fc" : "#3a2a55"}` : "none",
+                  borderRadius: 4,
+                  background: isActiveTarget ? "#1f1830" : "transparent",
+                  padding: showDropHint ? 8 : undefined,
+                  transition: "background 0.1s, border-color 0.1s",
+                }}
+                onDragOver={(e) => handleGroupBodyDragOver(e, item.id)}
+              >
+                {children.length === 0 && (
+                  <div style={{ color: showDropHint ? "#b197fc" : "#555", fontSize: 11, padding: "4px 0", textAlign: showDropHint ? "center" : "left", fontWeight: showDropHint ? 600 : 400 }}>
+                    {showDropHint ? "↓ Drop here to add to group ↓" : "Empty group. Add bits below or drag in."}
+                  </div>
+                )}
+                {children.map((child, ci) => (
+                  <div key={child.id}>
+                    {dropTarget?.kind === "child" && dropTarget.groupId === item.id && dropTarget.idx === ci && dragItemId !== child.id && (
+                      <div style={{ height: 2, background: "#3b82f6", borderRadius: 1, margin: "2px 0" }} />
+                    )}
+                    {renderItem(child, ci, { inGroup: true, groupId: item.id, childIdx: ci })}
+                  </div>
+                ))}
+                {dropTarget?.kind === "child" && dropTarget.groupId === item.id && dropTarget.idx === children.length && (
+                  <div style={{ height: 2, background: "#3b82f6", borderRadius: 1, margin: "2px 0" }} />
+                )}
+                {showDropHint && children.length > 0 && (
+                  <div style={{ color: isActiveTarget ? "#b197fc" : "#555", fontSize: 10, padding: "4px 0", textAlign: "center", fontStyle: "italic" }}>
+                    drop to add to group
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Add to group buttons */}
+          <div style={{ display: "flex", gap: 6, paddingLeft: 8 }}>
+            <button className={`btn-sm ${isAddingHere && addMode === "touchstone" ? "btn-green" : ""}`}
+              style={{ fontSize: 10 }}
+              onClick={() => {
+                setAddingToGroupId(item.id);
+                setAddMode(isAddingHere && addMode === "touchstone" ? null : "touchstone");
+                setSearchQuery("");
+              }}>+ touchstone</button>
+            <button className={`btn-sm ${isAddingHere && addMode === "text" ? "btn-green" : ""}`}
+              style={{ fontSize: 10 }}
+              onClick={() => {
+                setAddingToGroupId(item.id);
+                setAddMode(isAddingHere && addMode === "text" ? null : "text");
+              }}>+ text</button>
+          </div>
+
+          {isAddingHere && addMode && (
+            <div style={{ paddingLeft: 8 }}>{addPanel}</div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderItem = (item, idx, opts = {}) => {
+    const inGroup = !!opts.inGroup;
+
+    if (item.type === "group" && !inGroup) {
+      return renderGroup(item, idx);
+    }
+
     const ts = item.touchstoneId ? getTouchstone(item.touchstoneId) : null;
     const dur = getItemDuration(item);
     const isExpanded = detailView || expandedItemId === item.id;
@@ -537,15 +840,19 @@ export default function SetsTab({
     if (item.type === "hr") {
       return (
         <div key={item.id}>
-          {dropGapIdx === idx && dragFromIdx !== null && dragFromIdx !== idx && (
+          {!inGroup && dropTarget?.kind === "top" && dropTarget.idx === idx && dragItemId !== item.id && (
             <div style={{ height: 2, background: "#3b82f6", borderRadius: 1, margin: "2px 0" }} />
           )}
           <div
-            className={`set-item hr ${dragFromIdx === idx ? "dragging" : ""}`}
-            draggable onDragStart={(e) => handleDragStart(e, idx)}
-            onDragOver={(e) => handleDragOver(e, idx)} onDragEnd={handleDragEnd}
+            className={`set-item hr ${dragItemId === item.id ? "dragging" : ""}`}
+            onDragOver={!inGroup ? (e) => handleTopDragOver(e, idx) : (e) => handleChildDragOver(e, opts.groupId, idx)}
+            onDragEnd={handleDragEnd}
           >
-            <span className="set-item-handle">&#x2807;</span>
+            <span className="set-item-handle"
+              draggable
+              onDragStart={(e) => handleDragStart(e, item)}
+              style={{ cursor: "grab" }}
+              title="Drag">&#x2807;</span>
             <hr style={{ flex: 1, border: "none", borderTop: "1px solid #333", margin: "0 8px" }} />
             {confirmRemoveItemId === item.id ? (
               <span style={{ display: "flex", gap: 2, flexShrink: 0 }}>
@@ -562,17 +869,21 @@ export default function SetsTab({
 
     return (
       <div key={item.id}>
-        {dropGapIdx === idx && dragFromIdx !== null && dragFromIdx !== idx && (
+        {!inGroup && dropTarget?.kind === "top" && dropTarget.idx === idx && dragItemId !== item.id && (
           <div style={{ height: 2, background: "#3b82f6", borderRadius: 1, margin: "2px 0" }} />
         )}
         <div
-          className={`set-item ${ts ? "touchstone" : "text"} ${dragFromIdx === idx ? "dragging" : ""}`}
-          draggable onDragStart={(e) => handleDragStart(e, idx)}
-          onDragOver={(e) => handleDragOver(e, idx)} onDragEnd={handleDragEnd}
+          className={`set-item ${ts ? "touchstone" : "text"} ${dragItemId === item.id ? "dragging" : ""}`}
+          onDragOver={!inGroup ? (e) => handleTopDragOver(e, idx) : (e) => handleChildDragOver(e, opts.groupId, idx)}
+          onDragEnd={handleDragEnd}
           style={{ flexWrap: "wrap" }}
         >
-          <span className="set-item-handle">&#x2807;</span>
-          <span className="set-item-num">{idx + 1}</span>
+          <span className="set-item-handle"
+            draggable
+            onDragStart={(e) => handleDragStart(e, item)}
+            style={{ cursor: "grab" }}
+            title="Drag">&#x2807;</span>
+          {!inGroup && <span className="set-item-num">{idx + 1}</span>}
 
           {ts ? (
             <span className="set-item-label" style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}
@@ -581,13 +892,16 @@ export default function SetsTab({
               <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
                 <span className={`ts-dot ${getTouchstoneCategory(item.touchstoneId)}`} />
                 {onGoToTouchstone ? (
-                  <span onClick={(e) => { e.stopPropagation(); onGoToTouchstone(ts.id); }} style={{ cursor: "pointer" }} title="Go to touchstone detail">
+                  <span onClick={(e) => { e.stopPropagation(); onGoToTouchstone(ts.id); }} style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }} title="Go to touchstone detail">
                     <KeywordBadge keyword={ts.keyword} />
+                    <span style={{ color: "#ddd" }}>{ts.name}</span>
                   </span>
                 ) : (
-                  <KeywordBadge keyword={ts.keyword} />
+                  <>
+                    <KeywordBadge keyword={ts.keyword} />
+                    <span style={{ color: "#ddd" }}>{ts.name}</span>
+                  </>
                 )}
-                <span style={{ color: "#ddd" }}>{ts.name}</span>
               </span>
               {item.text && <span style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>{item.text}</span>}
             </span>
@@ -732,9 +1046,9 @@ export default function SetsTab({
         </div>
 
         {/* Timeline bar — 100% width = 15 min, wraps if longer, scales if shorter */}
-        {selectedSet.items.filter(i => i.type !== "hr").length > 0 && (() => {
+        {flattenItems(selectedSet.items).filter(i => i.type !== "hr").length > 0 && (() => {
           const ROW_DURATION = 900; // 15 min in seconds
-          const timelineItems = selectedSet.items.filter(i => i.type !== "hr");
+          const timelineItems = flattenItems(selectedSet.items).filter(i => i.type !== "hr");
           const durations = timelineItems.map(i => Math.max(getItemDuration(i), 1));
           const hoveredItem = hoveredTimelineIdx !== null ? timelineItems[hoveredTimelineIdx] : null;
           const hoveredTs = hoveredItem?.touchstoneId ? allTouchstones.find(t => t.id === hoveredItem.touchstoneId) : null;
@@ -801,42 +1115,80 @@ export default function SetsTab({
 
         {viewMode === "fulltext" && (() => {
           const textBlocks = [];
-          for (const item of selectedSet.items) {
-            if (item.type === "hr") { textBlocks.push({ type: "hr" }); continue; }
+          const pushItem = (item) => {
+            if (item.type === "hr") { textBlocks.push({ type: "hr" }); return; }
             const ts = item.touchstoneId ? getTouchstone(item.touchstoneId) : null;
             const text = ts?.idealText || item.text || "";
             if (text) textBlocks.push({ type: "text", text, name: ts?.name || item.text, keyword: ts?.keyword });
+          };
+          for (const item of selectedSet.items) {
+            if (item.type === "group") {
+              textBlocks.push({ type: "groupHeader", title: item.title, note: item.note });
+              for (const c of item.children || []) pushItem(c);
+            } else {
+              pushItem(item);
+            }
           }
           return (
             <div style={{ padding: "12px 0", lineHeight: 1.7, fontSize: 14, color: "#ccc" }}>
-              {textBlocks.map((block, i) => block.type === "hr"
-                ? <hr key={i} style={{ border: "none", borderTop: "1px solid #333", margin: "16px 0" }} />
-                : <div key={i} style={{ marginBottom: 12 }}>
+              {textBlocks.map((block, i) => {
+                if (block.type === "hr") return <hr key={i} style={{ border: "none", borderTop: "1px solid #333", margin: "16px 0" }} />;
+                if (block.type === "groupHeader") return (
+                  <div key={i} style={{ marginTop: 16, marginBottom: 8, paddingLeft: 8, borderLeft: "3px solid #845ef7" }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#b197fc", textTransform: "uppercase", letterSpacing: 0.5 }}>{block.title || "Group"}</div>
+                    {block.note && <div style={{ fontSize: 12, color: "#888", fontStyle: "italic" }}>{block.note}</div>}
+                  </div>
+                );
+                return (
+                  <div key={i} style={{ marginBottom: 12 }}>
                     {block.keyword && <span style={{ fontSize: 10, fontWeight: 700, color: "#4ecdc4", textTransform: "uppercase", letterSpacing: 0.5 }}>{block.keyword}</span>}
                     <div style={{ whiteSpace: "pre-wrap" }}>{block.text}</div>
                   </div>
-              )}
+                );
+              })}
               {textBlocks.length === 0 && <div style={{ color: "#666" }}>No text content in this set.</div>}
             </div>
           );
         })()}
 
         {viewMode === "setlist" && (() => {
+          let counter = 0;
+          const renderRow = (item, indent = false) => {
+            if (item.type === "hr") return <hr key={item.id} style={{ border: "none", borderTop: "2px solid #555", margin: "12px 0" }} />;
+            const ts = item.touchstoneId ? getTouchstone(item.touchstoneId) : null;
+            const dur = getItemDuration(item);
+            const label = ts?.keyword || ts?.name || item.text || "(untitled)";
+            const clickable = ts && onGoToTouchstone;
+            counter++;
+            return (
+              <div key={item.id}
+                onClick={clickable ? () => onGoToTouchstone(ts.id) : undefined}
+                style={{ padding: "6px 0", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid #1a1a2a", cursor: clickable ? "pointer" : "default", paddingLeft: indent ? 24 : 0 }}
+                title={clickable ? "Go to touchstone detail" : undefined}>
+                <span style={{ color: "#555", fontSize: 11, minWidth: 20, textAlign: "right" }}>{counter}</span>
+                {ts && <span className={`ts-dot ${getTouchstoneCategory(item.touchstoneId)}`} />}
+                <span style={{ fontSize: 15, fontWeight: ts ? 600 : 400, color: ts ? "#ddd" : "#999", flex: 1 }}>{label}</span>
+                {dur > 0 && <span style={{ color: "#74c0fc", fontSize: 12 }}>{formatDuration(dur)}</span>}
+              </div>
+            );
+          };
           return (
             <div style={{ padding: "12px 0" }}>
-              {selectedSet.items.map((item, idx) => {
-                if (item.type === "hr") return <hr key={item.id} style={{ border: "none", borderTop: "2px solid #555", margin: "12px 0" }} />;
-                const ts = item.touchstoneId ? getTouchstone(item.touchstoneId) : null;
-                const dur = getItemDuration(item);
-                const label = ts?.keyword || ts?.name || item.text || "(untitled)";
-                return (
-                  <div key={item.id} style={{ padding: "6px 0", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid #1a1a2a" }}>
-                    <span style={{ color: "#555", fontSize: 11, minWidth: 20, textAlign: "right" }}>{idx + 1}</span>
-                    {ts && <span className={`ts-dot ${getTouchstoneCategory(item.touchstoneId)}`} />}
-                    <span style={{ fontSize: 15, fontWeight: ts ? 600 : 400, color: ts ? "#ddd" : "#999", flex: 1 }}>{label}</span>
-                    {dur > 0 && <span style={{ color: "#74c0fc", fontSize: 12 }}>{formatDuration(dur)}</span>}
-                  </div>
-                );
+              {selectedSet.items.map((item) => {
+                if (item.type === "group") {
+                  const dur = getItemDuration(item);
+                  return (
+                    <div key={item.id} style={{ borderLeft: "3px solid #845ef7", paddingLeft: 10, marginTop: 12, marginBottom: 4 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: "#b197fc", textTransform: "uppercase", letterSpacing: 0.5, flex: 1 }}>{item.title || "Group"}</span>
+                        {dur > 0 && <span style={{ color: "#74c0fc", fontSize: 12 }}>{formatDuration(dur)}</span>}
+                      </div>
+                      {item.note && <div style={{ fontSize: 12, color: "#888", fontStyle: "italic", marginBottom: 4 }}>{item.note}</div>}
+                      {(item.children || []).map((c) => renderRow(c, true))}
+                    </div>
+                  );
+                }
+                return renderRow(item, false);
               })}
               {selectedSet.items.length === 0 && <div style={{ color: "#666", fontSize: 13, padding: "24px 0", textAlign: "center" }}>Empty set.</div>}
             </div>
@@ -857,8 +1209,18 @@ export default function SetsTab({
                 <div style={{ color: "#666", fontSize: 13, padding: "24px 0", textAlign: "center" }}>Empty set. Add touchstones or text above.</div>
               )}
               {selectedSet.items.map((item, idx) => renderItem(item, idx))}
-              {dropGapIdx === selectedSet.items.length && dragFromIdx !== null && (
+              {dropTarget?.kind === "top" && dropTarget.idx === selectedSet.items.length && dragItemId && (
                 <div style={{ height: 2, background: "#3b82f6", borderRadius: 1, margin: "2px 0" }} />
+              )}
+              {dragItemId && (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDropTarget({ kind: "top", idx: selectedSet.items.length });
+                  }}
+                  style={{ height: 32 }}
+                />
               )}
             </div>
 

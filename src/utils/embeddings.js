@@ -25,6 +25,16 @@ export function isEmbedPaused() {
   return _embedPaused;
 }
 
+/** Number of embedding tasks currently queued (not yet running). */
+export function getEmbedQueueDepth() {
+  return _embedQueue.length;
+}
+
+/** Whether an embedding task is actively running. */
+export function isEmbedRunning() {
+  return _embedRunning;
+}
+
 function enqueueEmbed(fn) {
   return new Promise((resolve, reject) => {
     _embedQueue.push({ fn, resolve, reject });

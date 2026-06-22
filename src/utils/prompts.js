@@ -252,18 +252,40 @@ group_reasoning rules:
 
 No markdown, no backticks, no preamble.`;
 
-export const SYSTEM_MERGE_TAGS = `You are a comedy tagging system optimizer. Given a list of tags with their usage counts, identify tags that should be merged because they represent the same concept or are redundant.
+export const SYSTEM_TOUCHSTONE_TAG = `You assign thematic tags to touchstones (recurring comedy bits). The comedian is Kai (she/her).
 
-RULES:
-- Only merge tags where the meaning is truly the same or one is a strict subset of the other (e.g. "self-deprecating" and "self-deprecation", "dating" and "dates", "act-out" and "acting-out")
-- Do NOT merge tags that are merely related but capture different nuances (e.g. "dating" and "relationship" are different; "dark-humor" and "edgy" are different; "storytelling" and "anecdote" capture different things)
-- Prefer the more commonly-used tag as the survivor
-- Prefer shorter, more standard tag names
-- The goal is to reduce redundancy WITHOUT losing any categorical nuance
+You receive:
+1. TOUCHSTONE NAME — the name of the joke
+2. WHY MATCHED — reasons these instances are the same joke
+3. IDEAL TEXT — the synthesized best version of the bit (if available)
 
-Respond with a JSON array of merge operations. Each entry:
-{"merge": ["tag-to-remove", "tag-to-remove-2"], "into": "surviving-tag"}
+Your job: assign 1-3 thematic tags that describe what the comedy set is ABOUT. Think "the comedy set about ______" where the blank is the tag.
 
-If no merges are needed, return an empty array: []
+TAG RULES:
+- Tags should be selective and specific — NOT the same as broad bit-level tags
+- Each tag should complete the phrase "the set about ______"
+- Use lowercase, single words or short hyphenated phrases
+- Common tags include: dating, disability, transness, gender, society, philosophy, sex-work, comedy-meta, personality, mental-health, absurdity, relationships, hospital, death, hobbies, family, work, body, identity, trauma, sexuality, drugs, religion, money, food, growing-up, friendship, loneliness, power-dynamics, consent, therapy, appearance
+- Prefer existing tags when they fit. Only coin new ones when nothing existing captures the topic.
+- Order tags from most to least central to the bit
+
+Respond JSON only:
+{"tags": ["primary-tag", "secondary-tag"]}
+
+No markdown, no backticks, no preamble.`;
+
+export const SYSTEM_DEFINE_MASTER_TAGS = `You are a taxonomy designer for a stand-up comedian's bit-tracking system. You will be given the comedian's most-used tags (with usage counts). Your job is to define a strict, canonical "master list" of parent categories that every existing and future tag can map cleanly into.
+
+REQUIREMENTS:
+- Return AT MOST 200 canonical tags (fewer is better — aim for ~80-150).
+- Each canonical tag should be a stable, broad-but-meaningful category (e.g. "dating", "family", "body-image", "self-deprecation", "callback", "act-out").
+- Use lowercase, hyphenated form. No spaces.
+- Cover the conceptual space of the input tags — every distinct concept in the input should be representable by at least one canonical tag.
+- Do NOT merge meaningfully different concepts. Two tags that capture different nuances each deserve their own canonical entry.
+- Prefer existing high-frequency input tags as canonicals when they are already good category names.
+- Avoid hyper-specific tags (e.g. prefer "relationships" over "first-date-disasters"; prefer "family" over "my-uncle-dave").
+
+Respond with a JSON object in this exact shape:
+{"canonical": ["tag-one", "tag-two", "tag-three", ...]}
 
 No markdown, no backticks, no preamble.`;

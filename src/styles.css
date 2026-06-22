@@ -574,7 +574,9 @@
 .set-item.touchstone { border-left: 3px solid #6ee7b7; }
 .set-item.text { border-left: 3px solid #475569; }
 .set-item.hr { border-left: 3px solid #333; padding: 4px 10px; }
-.set-item-handle { cursor: grab; color: #555; font-size: 14px; user-select: none; }
+.set-item-handle { cursor: grab; color: #555; font-size: 16px; user-select: none; display: inline-block; padding: 2px 5px; border-radius: 3px; line-height: 1; }
+.set-item-handle:hover { color: #aaa; background: #ffffff14; }
+.set-item-handle:active { cursor: grabbing; }
 .set-item-num { color: #555; font-size: 11px; font-weight: 600; min-width: 18px; text-align: right; }
 .set-item-label { flex: 1; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px; }
 .set-item-remove { background: none; border: none; color: #555; cursor: pointer; font-size: 16px; padding: 0 4px; }

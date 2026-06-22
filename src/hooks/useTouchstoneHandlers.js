@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { callOllama } from "../utils/ollama";
 import { extractCompleteJsonObjects } from "../utils/jsonParser";
-import { SYSTEM_TOUCHSTONE_VERIFY } from "../utils/prompts";
+import { SYSTEM_TOUCHSTONE_VERIFY, SYSTEM_TOUCHSTONE_TAG } from "../utils/prompts";
 import { saveVaultState } from "../utils/database";
 import { autoRelateTouchstones } from "../utils/flowRelations";
 
@@ -338,6 +338,8 @@ export function useTouchstoneHandlers(ctx) {
         }
         if (edits.manualName !== undefined) updated.manualName = edits.manualName;
         if (edits.keyword !== undefined) updated.keyword = edits.keyword;
+        if (edits.themeTags !== undefined) updated.themeTags = edits.themeTags;
+        if (edits.autoNamed !== undefined) updated.autoNamed = edits.autoNamed;
         return updated;
       });
       return { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };
@@ -345,6 +347,68 @@ export function useTouchstoneHandlers(ctx) {
     const s = stateRef.current;
     try { await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: s.touchstones }); } catch {}
   }, []);
+
+  const onGenerateTags = useCallback(async (touchstoneId) => {
+    const s = stateRef.current;
+    const allTs = [...(s.touchstones?.confirmed || []), ...(s.touchstones?.possible || []), ...(s.touchstones?.rejected || [])];
+    const ts = allTs.find(t => t.id === touchstoneId);
+    if (!ts) return;
+
+    const reasons = [...(ts.userReasons || []), ...(ts.matchInfo?.reasons || [])];
+    const reasonsBlock = reasons.length > 0 ? `\nWHY MATCHED:\n${reasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}` : '';
+    const idealBlock = ts.idealText ? `\nIDEAL TEXT:\n${ts.idealText}` : '';
+    const userMsg = `TOUCHSTONE: "${ts.name}"${reasonsBlock}${idealBlock}`;
+
+    try {
+      set('processing', true);
+      set('status', `Generating tags for "${ts.name}" (gemini-thinking)...`);
+      const res = await fetch("/api/llm/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "gemini", gemini_model: "thinking", system: SYSTEM_TOUCHSTONE_TAG, user: userMsg }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gemini API call failed");
+      let result;
+      try {
+        result = JSON.parse(data.result);
+      } catch {
+        const extracted = extractCompleteJsonObjects(data.result);
+        result = Array.isArray(extracted) ? extracted[0] : extracted;
+      }
+      if (!result?.tags || !Array.isArray(result.tags)) throw new Error("No valid tags in response");
+
+      const themeTags = result.tags.map(t => t.toLowerCase().trim()).filter(Boolean).slice(0, 3);
+      update('touchstones', (prev) => {
+        const updateIn = (list) => list.map((t) => t.id !== touchstoneId ? t : { ...t, themeTags });
+        return { confirmed: updateIn(prev.confirmed || []), possible: updateIn(prev.possible || []), rejected: updateIn(prev.rejected || []) };
+      });
+
+      set('status', `Tagged "${ts.name}": ${themeTags.join(', ')}`);
+      set('processing', false);
+    } catch (err) {
+      set('status', `Tag generation failed: ${err.message}`);
+      set('processing', false);
+    }
+  }, []);
+
+  const onGenerateAllTags = useCallback(async () => {
+    const s = stateRef.current;
+    const allTs = [...(s.touchstones?.confirmed || []), ...(s.touchstones?.possible || [])];
+    const untagged = allTs.filter(t => !t.themeTags || t.themeTags.length === 0);
+    if (untagged.length === 0) return 0;
+
+    set('processing', true);
+    let count = 0;
+    for (const ts of untagged) {
+      try {
+        await onGenerateTags(ts.id);
+        count++;
+      } catch {}
+    }
+    set('processing', false);
+    return count;
+  }, [onGenerateTags]);
 
   const onSaintInstance = useCallback((touchstoneId, bitId, newStatus) => {
     const prev = stateRef.current.touchstones;
@@ -556,11 +620,140 @@ export function useTouchstoneHandlers(ctx) {
     return rejectedIds.length;
   }, []);
 
+  // One-time modernize: rename every auto-generated (non-manual) touchstone title via
+  // gemini-flash using ideal text + why-matched reasons. Writes name with
+  // manualName:false / autoNamed:true so the "edited" badge stays off.
+  const onModernizeTitles = useCallback(async () => {
+    const s = stateRef.current;
+    const all = [
+      ...(s.touchstones?.confirmed || []),
+      ...(s.touchstones?.possible || []),
+      ...(s.touchstones?.rejected || []),
+    ];
+    const targets = all.filter((t) => t.name && !t.manualName);
+    if (targets.length === 0) {
+      set('status', 'No auto-generated titles to modernize (everything is manually edited).');
+      return 0;
+    }
+
+    set('processing', true);
+    let done = 0, failed = 0;
+    const systemPrompt = "You are titling a recurring stand-up comedy bit. Given the bit's ideal text and the reasons multiple performances are considered the same joke, write ONE great bit title. A great bit title is usually a direct reference to the punchline, the tag, or a short unique/quotable phrase from the joke itself — not a generic topic label. Aim for 3-7 words. Use the comedian's own phrasing when it's distinctive. Reply with ONLY the title text — no quotes, no \"or, alternate\" alt-titles, no preamble, no explanations.";
+
+    const MAX_ATTEMPTS = 3;
+    const INTER_CALL_DELAY_MS = 1200;
+    const PER_CALL_TIMEOUT_MS = 90_000;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // Validate: empty, too-short, or obvious leftovers from an interrupted response.
+    const looksValid = (title) => {
+      if (!title) return false;
+      if (title.length < 3) return false;
+      // Bail on obvious interruption artifacts.
+      if (/^<think/i.test(title) || /^```/.test(title)) return false;
+      // Reasonable upper bound — flash sometimes spills paragraphs when interrupted/restarted.
+      if (title.length > 120) return false;
+      // Must contain at least one letter.
+      if (!/[a-z]/i.test(title)) return false;
+      return true;
+    };
+
+    const cleanTitle = (raw) => {
+      let t = String(raw || '')
+        .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .replace(/```[\s\S]*?```/g, '')
+        .split('\n').map((l) => l.trim()).filter(Boolean)[0] || '';
+      t = t.replace(/^["'\s*_\-]+|["'\s*_\-]+$/g, '').trim();
+      return t;
+    };
+
+    for (let i = 0; i < targets.length; i++) {
+      const ts = targets[i];
+
+      const reasons = [...(ts.userReasons || []), ...(ts.matchInfo?.reasons || [])];
+      const ideal = ts.idealText || '';
+      const reasonsBlock = reasons.length > 0
+        ? `WHY MATCHED (reasons these performances are the same bit):\n${reasons.map((r, idx) => `${idx + 1}. ${r}`).join('\n')}`
+        : '';
+      const idealBlock = ideal ? `IDEAL TEXT:\n${ideal}` : '';
+      const userMsg = [
+        `CURRENT TITLE: "${ts.name}"`,
+        idealBlock,
+        reasonsBlock,
+      ].filter(Boolean).join('\n\n');
+
+      let title = '';
+      let lastErr = null;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const attemptLabel = attempt > 1 ? ` [retry ${attempt}/${MAX_ATTEMPTS}]` : '';
+        set('status', `Modernizing ${i + 1}/${targets.length} via gemini-flash${attemptLabel}: "${(ts.name || '').slice(0, 50)}"...`);
+        const ctrl = new AbortController();
+        const timeout = setTimeout(() => ctrl.abort(), PER_CALL_TIMEOUT_MS);
+        try {
+          const res = await fetch('/api/llm/call', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: 'gemini', gemini_model: 'flash', system: systemPrompt, user: userMsg }),
+            signal: ctrl.signal,
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `gemini-flash error ${res.status}`);
+          const candidate = cleanTitle(data.result);
+          if (looksValid(candidate)) { title = candidate; break; }
+          lastErr = new Error(`Invalid/interrupted response: ${JSON.stringify(String(data.result || '').slice(0, 80))}`);
+          console.warn(`[Modernize] ${ts.id} attempt ${attempt} got invalid response: ${lastErr.message}`);
+        } catch (err) {
+          lastErr = err;
+          console.warn(`[Modernize] ${ts.id} attempt ${attempt} failed:`, err.message);
+        } finally {
+          clearTimeout(timeout);
+        }
+        if (attempt < MAX_ATTEMPTS) {
+          // Exponential backoff to let the upstream cool down.
+          const backoff = INTER_CALL_DELAY_MS * Math.pow(2, attempt - 1);
+          set('status', `Modernizing ${i + 1}/${targets.length} — backing off ${Math.round(backoff)}ms before retry...`);
+          await sleep(backoff);
+        }
+      }
+
+      if (!title) {
+        console.error(`[Modernize] Giving up on ${ts.id} ("${ts.name}") after ${MAX_ATTEMPTS} attempts:`, lastErr?.message);
+        failed++;
+      } else {
+        update('touchstones', (prev) => {
+          const renameIn = (list) => list.map((t) => {
+            if (t.id !== ts.id) return t;
+            const key = [...t.bitIds].sort().join(',');
+            touchstoneNameCache.current.set(key, title);
+            return { ...t, name: title, manualName: false, autoNamed: true };
+          });
+          return {
+            confirmed: renameIn(prev.confirmed || []),
+            possible: renameIn(prev.possible || []),
+            rejected: renameIn(prev.rejected || []),
+          };
+        });
+        done++;
+      }
+
+      // Cooldown between touchstones — keeps gemini-flash from racing itself.
+      if (i < targets.length - 1) await sleep(INTER_CALL_DELAY_MS);
+    }
+
+    const s2 = stateRef.current;
+    try { await saveVaultState({ topics: s2.topics, matches: s2.matches, transcripts: s2.transcripts, touchstones: s2.touchstones }); } catch {}
+    set('status', `Modernized ${done}/${targets.length} title${targets.length !== 1 ? 's' : ''}${failed ? ` (${failed} failed)` : ''}.`);
+    set('processing', false);
+    return done;
+  }, []);
+
   return {
     onRenameTouchstone, onRemoveTouchstone, onConfirmTouchstone, onRestoreTouchstone,
     onRemoveInstance, onUpdateInstanceRelationship,
     onMergeTouchstone, onRefreshReasons, onUpdateTouchstoneEdits,
     onSaintInstance, onRemoveFromTouchstone, onAddToTouchstone,
     onRelateTouchstone, onUnrelateTouchstone, onAutoRelateAll, onToggleCoreBit, onRejectCoreless,
+    onGenerateTags, onGenerateAllTags,
+    onModernizeTitles,
   };
 }

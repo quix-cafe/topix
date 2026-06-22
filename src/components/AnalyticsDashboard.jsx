@@ -46,7 +46,7 @@ const SECTION_HEADER = {
 /**
  * AnalyticsDashboard - Comprehensive statistics and insights
  */
-export function AnalyticsDashboard({ topics, matches, touchstones, transcripts, onMergeTags, processing, tagMergeResult, onDismissMergeResult }) {
+export function AnalyticsDashboard({ topics, matches, touchstones, transcripts, onMergeTags, processing, tagMergeResult, onDismissMergeResult, tagMergePreview, onConfirmMergePreview, onCancelMergePreview }) {
   const stats = useMemo(
     () => calculateStats(topics, matches, touchstones, transcripts),
     [topics, matches, touchstones, transcripts]
@@ -100,6 +100,60 @@ export function AnalyticsDashboard({ topics, matches, touchstones, transcripts, 
               })}
             </div>
           </div>
+          {tagMergePreview && tagMergePreview.proposals?.length > 0 && (() => {
+            const groups = new Map();
+            for (const p of tagMergePreview.proposals) {
+              if (!groups.has(p.to)) groups.set(p.to, []);
+              groups.get(p.to).push(p);
+            }
+            const groupArr = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+            return (
+              <div style={{ marginTop: 12, padding: "12px 14px", background: "#0a0a14", border: "1px solid #ffa94d44", borderRadius: 6 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#ffa94d", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    Dry-run preview · {tagMergePreview.proposals.length} merge{tagMergePreview.proposals.length !== 1 ? "s" : ""} → {groups.size} canonical · {tagMergePreview.unchanged} unchanged · {tagMergePreview.masterCount} master tags
+                  </span>
+                  <span style={{ display: "flex", gap: 6 }}>
+                    <button
+                      onClick={onConfirmMergePreview}
+                      disabled={processing}
+                      style={{ padding: "3px 12px", background: "#1e3a2f", border: "1px solid #51cf66", color: "#6ee7b7", borderRadius: 4, cursor: processing ? "default" : "pointer", fontSize: 11, fontWeight: 600 }}
+                    >
+                      Apply Merges
+                    </button>
+                    <button
+                      onClick={onCancelMergePreview}
+                      disabled={processing}
+                      style={{ padding: "3px 10px", background: "transparent", border: "1px solid #444", color: "#aaa", borderRadius: 4, cursor: processing ? "default" : "pointer", fontSize: 11 }}
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                </div>
+                <div style={{ maxHeight: 280, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                  {groupArr.map(([into, props]) => (
+                    <div key={into} style={{ fontSize: 11, color: "#ccc", lineHeight: 1.5 }}>
+                      <span style={{ color: "#888" }}>
+                        {props.map((p, i) => (
+                          <span key={p.from} title={`${p.source}${p.score != null ? ` · ${(p.score * 100).toFixed(0)}%` : ""}`}>
+                            {i > 0 && ", "}
+                            <span style={{ color: p.source === "lexical" ? "#74c0fc" : p.source === "master-exact" ? "#a9e34b" : "#ddd" }}>{p.from}</span>
+                          </span>
+                        ))}
+                      </span>
+                      <span style={{ color: "#666" }}> → </span>
+                      <span style={{ color: "#ffa94d", fontWeight: 600 }}>{into}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginTop: 8, fontSize: 10, color: "#555", display: "flex", gap: 12 }}>
+                  <span><span style={{ color: "#74c0fc" }}>■</span> lexical</span>
+                  <span><span style={{ color: "#a9e34b" }}>■</span> master-exact</span>
+                  <span><span style={{ color: "#ddd" }}>■</span> embedding-assigned</span>
+                </div>
+              </div>
+            );
+          })()}
           {tagMergeResult && tagMergeResult.length > 0 && (
             <div style={{ marginTop: 12, padding: "10px 12px", background: "#0a1a0a", border: "1px solid #51cf6633", borderRadius: 6 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>

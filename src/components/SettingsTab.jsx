@@ -111,6 +111,7 @@ export function SettingsTab({
         exportVault={transcriptOps.exportVault}
         exportMarkdownZip={transcriptOps.exportMarkdownZip}
         exportSingleMd={transcriptOps.exportSingleMd}
+        previewVaultSync={transcriptOps.previewVaultSync}
         syncToVault={transcriptOps.syncToVault}
         undoVaultSync={transcriptOps.undoVaultSync}
       />

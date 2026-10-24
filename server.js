@@ -858,8 +858,77 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // POST /api/export/obsidian — write generated vault files directly to ~/ownCloud/Comedy/
-    // Backs up existing files first so the sync can be undone.
+    // POST /api/export/obsidian/preview — compare generated files against the vault
+    // without writing anything. Returns a summary of new/changed/unchanged counts.
+    if (req.url === "/api/export/obsidian/preview" && req.method === "POST") {
+      const body = await parseBody(req);
+      const { files } = body;
+      if (!Array.isArray(files)) {
+        json(res, 400, { error: "files array required" });
+        return;
+      }
+      const VAULT_DIR = "/home/kai/ownCloud/Comedy";
+      let created = 0, modified = 0, unchanged = 0;
+      const byFolder = {};
+      for (const f of files) {
+        if (!f.name || typeof f.content !== "string") continue;
+        const filePath = path.join(VAULT_DIR, f.name);
+        if (!filePath.startsWith(VAULT_DIR)) continue;
+        const folder = f.name.includes("/") ? f.name.split("/")[0] : "(root)";
+        const slot = byFolder[folder] || (byFolder[folder] = { created: 0, modified: 0 });
+        try {
+          const existing = await fs.readFile(filePath, "utf-8");
+          if (existing === f.content) {
+            unchanged++;
+          } else {
+            modified++;
+            slot.modified++;
+          }
+        } catch {
+          // File doesn't exist yet — it would be created
+          created++;
+          slot.created++;
+        }
+      }
+      // Only report folders that actually have pending changes
+      const folders = Object.fromEntries(
+        Object.entries(byFolder).filter(([, c]) => c.created > 0 || c.modified > 0)
+      );
+      json(res, 200, { total: files.length, created, modified, unchanged, folders });
+      return;
+    }
+
+    // GET /api/export/obsidian/state — current vault joke files + last-sync base manifest.
+    // Used by the client to pull hand-edited changes back out of the vault.
+    if (req.url === "/api/export/obsidian/state" && req.method === "GET") {
+      const VAULT_DIR = "/home/kai/ownCloud/Comedy";
+      const JOKES_DIR = path.join(VAULT_DIR, "Jokes");
+      const MANIFEST_PATH = path.join(VAULT_DIR, ".topix-sync", "manifest.json");
+      const jokes = [];
+      try {
+        const entries = await fs.readdir(JOKES_DIR);
+        for (const name of entries) {
+          if (!name.endsWith(".md")) continue;
+          try {
+            const fp = path.join(JOKES_DIR, name);
+            const content = await fs.readFile(fp, "utf-8");
+            let mtimeMs = 0;
+            try { mtimeMs = (await fs.stat(fp)).mtimeMs; } catch {}
+            jokes.push({ path: `Jokes/${name}`, content, mtimeMs });
+          } catch {}
+        }
+      } catch {
+        // Jokes/ doesn't exist yet — first sync
+      }
+      let manifest = {};
+      try { manifest = JSON.parse(await fs.readFile(MANIFEST_PATH, "utf-8")); } catch {}
+      json(res, 200, { jokes, manifest });
+      return;
+    }
+
+    // POST /api/export/obsidian — write generated vault files directly to ~/ownCloud/Comedy/.
+    // Backs up overwritten files (for undo), records a base manifest of joke files keyed
+    // by touchstone id, and removes files left behind when a joke is renamed.
     if (req.url === "/api/export/obsidian" && req.method === "POST") {
       const body = await parseBody(req);
       const { files } = body;
@@ -869,6 +938,20 @@ const server = http.createServer(async (req, res) => {
       }
       const VAULT_DIR = "/home/kai/ownCloud/Comedy";
       const BACKUP_DIR = path.join(VAULT_DIR, ".topix-backup");
+      const SYNC_DIR = path.join(VAULT_DIR, ".topix-sync");
+      const MANIFEST_PATH = path.join(SYNC_DIR, "manifest.json");
+      const idOf = (content) => {
+        const m = (content || "").match(/<!--\s*topix:([^\s>]+)\s*-->/);
+        return m ? m[1] : null;
+      };
+
+      // Where each joke id lives now (from the incoming files)
+      const newPathById = {};
+      for (const f of files) {
+        if (!f.name || typeof f.content !== "string" || !f.name.startsWith("Jokes/")) continue;
+        const id = idOf(f.content);
+        if (id) newPathById[id] = f.name;
+      }
 
       // Save backup of files we're about to overwrite
       const backup = [];
@@ -884,6 +967,27 @@ const server = http.createServer(async (req, res) => {
           backup.push({ name: f.name, content: null });
         }
       }
+
+      // Enforce one joke file per touchstone id: any existing Jokes/ file whose
+      // embedded id is one we're writing, but at a different path (a rename, or a
+      // leftover duplicate), gets backed up and removed.
+      const JOKES_DIR = path.join(VAULT_DIR, "Jokes");
+      const staleDuplicates = [];
+      try {
+        const entries = await fs.readdir(JOKES_DIR);
+        for (const name of entries) {
+          if (!name.endsWith(".md")) continue;
+          const relName = `Jokes/${name}`;
+          let existing;
+          try { existing = await fs.readFile(path.join(JOKES_DIR, name), "utf-8"); } catch { continue; }
+          const id = idOf(existing);
+          if (id && newPathById[id] && newPathById[id] !== relName) {
+            backup.push({ name: relName, content: existing }); // restorable via undo
+            staleDuplicates.push(relName);
+          }
+        }
+      } catch {}
+
       // Write backup manifest
       try {
         await fs.mkdir(BACKUP_DIR, { recursive: true });
@@ -914,7 +1018,28 @@ const server = http.createServer(async (req, res) => {
           errors.push({ name: f.name, error: e.message });
         }
       }
-      json(res, 200, { written: written.length, errors, files: written, hasBackup: backup.length > 0 });
+
+      // Remove stale duplicate joke files (renames / leftovers)
+      let removedRenamed = 0;
+      for (const name of staleDuplicates) {
+        try { await fs.unlink(path.join(VAULT_DIR, name)); removedRenamed++; } catch {}
+      }
+
+      // Save the new base manifest from written joke files
+      const newManifest = {};
+      for (const f of files) {
+        if (!f.name || typeof f.content !== "string" || !f.name.startsWith("Jokes/")) continue;
+        const id = idOf(f.content);
+        if (id) newManifest[id] = { path: f.name, content: f.content };
+      }
+      try {
+        await fs.mkdir(SYNC_DIR, { recursive: true });
+        await fs.writeFile(MANIFEST_PATH, JSON.stringify(newManifest), "utf-8");
+      } catch (e) {
+        console.warn("[Export] Manifest save failed:", e.message);
+      }
+
+      json(res, 200, { written: written.length, errors, files: written, hasBackup: backup.length > 0, renamed: removedRenamed });
       return;
     }
 

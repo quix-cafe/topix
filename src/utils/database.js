@@ -189,7 +189,12 @@ export async function loadTopics() {
   return new Promise((resolve, reject) => {
     const request = store.getAll();
     request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result || []);
+    request.onsuccess = () => {
+      // Drop the deprecated bitFlow ("joke structure") field so it's
+      // purged from storage on the next autosave.
+      const topics = (request.result || []).map(({ bitFlow, ...topic }) => topic);
+      resolve(topics);
+    };
   });
 }
 

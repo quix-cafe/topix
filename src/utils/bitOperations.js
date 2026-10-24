@@ -71,7 +71,6 @@ export function prepareJoinUpdate(bitsToJoin, joinedBit, topics, matches, touchs
     id: uid(),
     timestamp: Date.now(),
     parsedWithModel: bitsToJoin[0]?.parsedWithModel || selectedModel || "qwen3.5:9b",
-    bitFlow: bitsToJoin[0]?.bitFlow || null,
   };
   const updatedTopics = [...withoutOriginals, completeBit];
 

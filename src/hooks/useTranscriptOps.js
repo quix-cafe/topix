@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { uid, requestOllamaRestart } from "../utils/ollama";
 import { saveVaultState, exportDatabaseAsJSON, importDatabaseFromJSON, getDatabaseStats } from "../utils/database";
-import { generateObsidianVault } from "../utils/obsidianExport";
+import { generateObsidianVault, mergeVaultEdits } from "../utils/obsidianExport";
 import { findTextPosition } from "../utils/textMatcher";
 
 export function useTranscriptOps(ctx, loadSavedData) {
@@ -396,12 +396,12 @@ export function useTranscriptOps(ctx, loadSavedData) {
 
   const exportVault = useCallback(() => {
     const s = stateRef.current;
-    const files = generateObsidianVault(s.topics, s.matches, s.transcripts, [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])]);
+    const files = generateObsidianVault(s.topics, s.matches, s.transcripts, [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])], s.sets || []);
     const manifest = {
       vaultName: "Comedy Bit Vault", exportDate: new Date().toISOString(),
       stats: { totalBits: s.topics.length, touchstones: (s.touchstones.confirmed || []).length + (s.touchstones.possible || []).length, connections: s.matches.length, transcripts: s.transcripts.length },
       files,
-      instructions: "Extract into your Comedy vault (~/ownCloud/Comedy/). Folders: 'Jokes/', 'Touchstones/', 'Performance Flows/'. The MOC file goes in the vault root.",
+      instructions: "Extract into your Comedy vault (~/ownCloud/Comedy/). Folders: 'Jokes/' (one file per touchstone) and 'Sets/' (one file per set).",
     };
     const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "comedy-vault-export.json"; a.click(); URL.revokeObjectURL(url);
@@ -409,7 +409,7 @@ export function useTranscriptOps(ctx, loadSavedData) {
 
   const exportMarkdownZip = useCallback(() => {
     const s = stateRef.current;
-    const files = generateObsidianVault(s.topics, s.matches, s.transcripts, [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])]);
+    const files = generateObsidianVault(s.topics, s.matches, s.transcripts, [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])], s.sets || []);
     files.forEach((f) => {
       const blob = new Blob([f.content], { type: "text/markdown" });
       const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = f.name; a.click(); URL.revokeObjectURL(url);
@@ -418,17 +418,89 @@ export function useTranscriptOps(ctx, loadSavedData) {
 
   const exportSingleMd = useCallback(() => {
     const s = stateRef.current;
-    const files = generateObsidianVault(s.topics, s.matches, s.transcripts, [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])]);
+    const files = generateObsidianVault(s.topics, s.matches, s.transcripts, [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])], s.sets || []);
     const combined = files.map((f) => `<!-- FILE: ${f.name} -->\n${f.content}`).join("\n\n---\n\n");
     const blob = new Blob([combined], { type: "text/markdown" });
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "comedy-vault-combined.md"; a.click(); URL.revokeObjectURL(url);
   }, []);
 
+  const previewVaultSync = useCallback(async () => {
+    const s = stateRef.current;
+    const touchstones = [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])];
+
+    // Read current vault joke files + last-sync base, then run the same merge the
+    // sync would — without applying it — to see what would be pulled from Obsidian.
+    let vaultJokes = [], manifest = {};
+    try {
+      const stateRes = await fetch("/api/export/obsidian/state");
+      if (stateRes.ok) {
+        const sd = await stateRes.json();
+        vaultJokes = sd.jokes || [];
+        manifest = sd.manifest || {};
+      }
+    } catch { /* vault unreadable — preview the plain forward sync */ }
+
+    const { pulls, summary } = mergeVaultEdits(touchstones, vaultJokes, manifest, s.topics);
+
+    // Apply pulls to a local copy so the forward diff reflects the post-merge files
+    const applyPulls = (list) => list.map((t) => {
+      const e = pulls.get(t.id);
+      return e ? { ...t, ...e } : t;
+    });
+    const ts2 = [...applyPulls(s.touchstones.confirmed || []), ...applyPulls(s.touchstones.possible || [])];
+    const files = generateObsidianVault(s.topics, s.matches, s.transcripts, ts2, s.sets || []);
+
+    const res = await fetch("/api/export/obsidian/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Preview failed");
+    return { ...data, pulled: summary.pulled, conflicts: summary.conflicts, pulledItems: summary.pulledItems };
+  }, []);
+
   const syncToVault = useCallback(async () => {
     const s = stateRef.current;
-    const files = generateObsidianVault(s.topics, s.matches, s.transcripts, [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])]);
-    set("status", `Syncing ${files.length} files to Obsidian vault...`);
+    const touchstones = [...(s.touchstones.confirmed || []), ...(s.touchstones.possible || [])];
     try {
+      // 1. Read the current vault joke files + last-sync base manifest
+      set("status", "Reading vault for changes...");
+      let vaultJokes = [], manifest = {};
+      try {
+        const stateRes = await fetch("/api/export/obsidian/state");
+        if (stateRes.ok) {
+          const sd = await stateRes.json();
+          vaultJokes = sd.jokes || [];
+          manifest = sd.manifest || {};
+        }
+      } catch { /* vault unreadable — fall through to a plain forward sync */ }
+
+      // 2. Pull hand-edited title/text/tags from the vault back into touchstones
+      const { pulls, summary } = mergeVaultEdits(touchstones, vaultJokes, manifest, s.topics);
+      let mergedTouchstones = s.touchstones;
+      if (pulls.size > 0) {
+        const applyPulls = (list) => list.map((t) => {
+          const e = pulls.get(t.id);
+          if (!e) return t;
+          if (e.name !== undefined) {
+            try { touchstoneNameCache?.current?.set([...(t.bitIds || [])].sort().join(","), e.name); } catch {}
+          }
+          return { ...t, ...e };
+        });
+        mergedTouchstones = {
+          confirmed: applyPulls(s.touchstones.confirmed || []),
+          possible: applyPulls(s.touchstones.possible || []),
+          rejected: applyPulls(s.touchstones.rejected || []),
+        };
+        dispatch({ type: "MERGE", payload: { touchstones: mergedTouchstones } });
+        await saveVaultState({ topics: s.topics, matches: s.matches, transcripts: s.transcripts, touchstones: mergedTouchstones });
+      }
+
+      // 3. Regenerate vault files from the merged touchstones and write them
+      const ts2 = [...(mergedTouchstones.confirmed || []), ...(mergedTouchstones.possible || [])];
+      const files = generateObsidianVault(s.topics, s.matches, s.transcripts, ts2, s.sets || []);
+      set("status", `Syncing ${files.length} files to Obsidian vault...`);
       const res = await fetch("/api/export/obsidian", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -437,8 +509,11 @@ export function useTranscriptOps(ctx, loadSavedData) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Export failed");
       const errCount = data.errors?.length || 0;
-      set("status", `Synced ${data.written} files to vault.${errCount > 0 ? ` ${errCount} errors.` : ""}`);
-      return data;
+      const pulledMsg = summary.pulled > 0
+        ? ` Pulled ${summary.pulled} edit${summary.pulled !== 1 ? "s" : ""} from Obsidian${summary.conflicts ? ` (${summary.conflicts} conflict${summary.conflicts !== 1 ? "s" : ""} → Obsidian)` : ""}.`
+        : "";
+      set("status", `Synced ${data.written} files to vault.${pulledMsg}${errCount > 0 ? ` ${errCount} errors.` : ""}`);
+      return { ...data, pulled: summary.pulled, conflicts: summary.conflicts, conflictTitles: summary.conflictTitles };
     } catch (e) {
       set("status", `Vault sync failed: ${e.message}`);
       throw e;
@@ -464,6 +539,6 @@ export function useTranscriptOps(ctx, loadSavedData) {
     handleCreateTouchstoneFromBit, rectifyOverlaps,
     clearProcessedData, clearAllData, handleHardStop,
     handleBackup, handleRestore, handleRestoreFile, handleResetTouchstones,
-    exportVault, exportMarkdownZip, exportSingleMd, syncToVault, undoVaultSync,
+    exportVault, exportMarkdownZip, exportSingleMd, previewVaultSync, syncToVault, undoVaultSync,
   };
 }

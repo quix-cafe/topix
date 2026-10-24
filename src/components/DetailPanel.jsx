@@ -59,9 +59,6 @@ export function DetailPanel({
     : [...(touchstones?.confirmed || []), ...(touchstones?.possible || []), ...(touchstones?.rejected || [])];
   const topicTouchstones = getBitTouchstones(selectedTopic.id, allTouchstones);
 
-  // Estimated delivery from bitFlow
-  const estimatedDelivery = selectedTopic.bitFlow?.analysis?.estimatedDeliveryTime;
-
   return (
     <div className="detail-panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "0 0 12px", borderBottom: "1px solid #1a1a2a", flexShrink: 0, position: "sticky", top: 0, background: "inherit", zIndex: 1 }}>
@@ -293,9 +290,6 @@ export function DetailPanel({
           const ss = String(secs % 60).padStart(2, "0");
           return <span style={{ color: "#4ecdc4" }}>~{mm}:{ss}</span>;
         })()}
-        {estimatedDelivery && (
-          <span style={{ color: "#4ecdc4" }}>~{estimatedDelivery}s delivery</span>
-        )}
       </div>
 
       {/* Note metadata for promoted bits */}
